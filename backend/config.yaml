@@ -1,0 +1,57 @@
+# 板块强度选股系统配置文件
+
+# 选股规则
+rules:
+  # 板块最小成交额（元）
+  sector_amount_min: 80000000000.0  # 800亿
+  # 个股最小成交额（元）
+  stock_amount_min: 800000000.0  # 8亿
+  # 个股最小RPS值
+  stock_rps_min: 80.0
+  # 板块是否要求收盘价高于MA30
+  require_sector_above_ma30: false
+  # 是否要求股价高于MA20
+  require_above_ma20: true
+  # 直接剔除的低人气/低质量板块关键词
+  excluded_sector_keywords:
+    - "ST"
+    - "退市"
+    - "养猪"
+    - "猪肉"
+    - "猪产业"
+    - "鸡肉"
+    - "养鸡"
+    - "饲料"
+    - "动物保健"
+    - "环保"
+    - "污水处理"
+    - "垃圾分类"
+    - "园林"
+
+# 服务器配置
+server:
+  host: "127.0.0.1"
+  port: 8080
+  debug: false
+
+# 缓存配置
+cache:
+  # 快照缓存时间（秒）
+  snapshot_ttl: 600  # 10分钟
+  # 名称映射缓存时间（秒）
+  name_map_ttl: 86400  # 24小时
+  # 最新可用数据交易日缓存（秒）
+  latest_data_trade_date_ttl: 900  # 15分钟
+  # 批量缓存最大数量
+  max_batch_cache: 5
+  # 最大缓存条目数
+  max_cache_size: 1000
+  # 启动预热时预加载的最近交易日快照数量
+  warmup_snapshot_days: 0
+
+# 日志配置
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+  log_file: "logs/app.log"
+  max_bytes: 10485760  # 10MB
+  backup_count: 3

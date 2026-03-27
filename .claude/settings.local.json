@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip show:*)",
+      "Bash(open:*)",
+      "Bash(lsof:*)",
+      "Bash(osascript -e 'tell application \"\"Google Chrome\"\" to reload')",
+      "Bash(osascript -e 'tell application \"\"Safari\"\" to URL \"\"http://127.0.0.1:5173\"\"')"
+    ]
+  }
+}

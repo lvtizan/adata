@@ -1,0 +1,270 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+from __future__ import annotations
+
+import json
+import logging
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from typing import Any
+from urllib.parse import parse_qs, urlparse
+
+from config import get_config, init_logging
+from market_engine import MarketEngine
+from watchlist_store import WatchlistStore
+
+# 初始化日志和配置
+init_logging()
+logger = logging.getLogger(__name__)
+
+ROOT = Path(__file__).resolve().parent.parent
+WEB_DIR = ROOT / "web"
+WATCHLIST_DB = ROOT / "backend" / "data" / "watchlist.db"
+
+# 加载配置
+config = get_config()
+
+# 初始化引擎
+logger.info("初始化MarketEngine...")
+engine = MarketEngine(config)
+watchlist_store = WatchlistStore(WATCHLIST_DB)
+
+# 预热缓存（后台线程）
+logger.info("启动缓存预热...")
+warmup_thread = threading.Thread(target=engine.warmup, daemon=True, name="WarmupThread")
+warmup_thread.start()
+
+
+def json_response(handler: BaseHTTPRequestHandler, obj: Any, code: int = 200) -> None:
+    """发送JSON响应"""
+    try:
+        payload = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+        handler.send_response(code)
+        handler.send_header("Content-Type", "application/json; charset=utf-8")
+        handler.send_header("Content-Length", str(len(payload)))
+        handler.end_headers()
+        handler.wfile.write(payload)
+    except Exception as e:
+        logger.error(f"发送JSON响应失败: {e}")
+
+
+class Handler(BaseHTTPRequestHandler):
+    """HTTP请求处理器"""
+
+    def log_message(self, format: str, *args):
+        """自定义日志格式"""
+        logger.info(f"{self.address_string()} - {format % args}")
+
+    def do_GET(self):
+        self.dispatch_request("GET")
+
+    def do_POST(self):
+        self.dispatch_request("POST")
+
+    def do_PUT(self):
+        self.dispatch_request("PUT")
+
+    def do_DELETE(self):
+        self.dispatch_request("DELETE")
+
+    def dispatch_request(self, method: str):
+        """处理HTTP请求"""
+        parsed = urlparse(self.path)
+        path = parsed.path
+        q = parse_qs(parsed.query)
+        body = None
+
+        try:
+            if path.startswith("/api/"):
+                if method in {"POST", "PUT"}:
+                    body = self.read_json_body()
+                return self.handle_api(method, path, q, body)
+            if method != "GET":
+                return json_response(self, {"error": "method not allowed"}, 405)
+            return self.handle_static(path)
+        except ValueError as e:
+            logger.warning(f"请求参数错误: {path}, 错误: {e}")
+            json_response(self, {"error": f"参数错误: {e}"}, 400)
+        except Exception as exc:
+            logger.error(f"请求处理失败: {path}, 错误: {exc}", exc_info=config.server.debug)
+            json_response(self, {"error": "服务器内部错误"}, 500)
+
+    def read_json_body(self) -> dict[str, Any]:
+        length = int(self.headers.get("Content-Length", "0") or 0)
+        if length <= 0:
+            return {}
+        raw = self.rfile.read(length)
+        if not raw:
+            return {}
+        try:
+            data = json.loads(raw.decode("utf-8"))
+        except json.JSONDecodeError as e:
+            raise ValueError(f"无效JSON: {e}") from e
+        if not isinstance(data, dict):
+            raise ValueError("JSON body 必须是对象")
+        return data
+
+    def handle_api(self, method: str, path: str, q: dict[str, list[str]], body: dict[str, Any] | None):
+        """处理API请求"""
+        if path == "/api/watchlist":
+            if method == "GET":
+                return json_response(self, {"items": watchlist_store.list_items()})
+            if method == "POST":
+                return json_response(self, {"item": watchlist_store.upsert_item(body or {})}, 201)
+            return json_response(self, {"error": "method not allowed"}, 405)
+
+        if path.startswith("/api/watchlist/"):
+            ts_code = path.split("/")[3]
+            if not ts_code:
+                return json_response(self, {"error": "missing tsCode"}, 400)
+            if method == "PUT":
+                return json_response(self, {"item": watchlist_store.update_item(ts_code, body or {})})
+            if method == "DELETE":
+                deleted = watchlist_store.delete_item(ts_code)
+                if not deleted:
+                    return json_response(self, {"error": "not found"}, 404)
+                return json_response(self, {"ok": True})
+            return json_response(self, {"error": "method not allowed"}, 405)
+
+        if method != "GET":
+            return json_response(self, {"error": "method not allowed"}, 405)
+
+        # 获取交易日
+        trade_date = q.get("tradeDate", [engine.latest_data_trade_date()])[0]
+
+        # 配置规则API
+        if path == "/api/config/rules":
+            r = engine.rules
+            return json_response(
+                self,
+                {
+                    "sectorAmountMin": r.sector_amount_min,
+                    "stockAmountMin": r.stock_amount_min,
+                    "stockRpsMin": r.stock_rps_min,
+                    "requireAboveMa20": r.require_above_ma20,
+                },
+            )
+
+        # 市场概览API
+        if path == "/api/market/overview":
+            logger.debug(f"获取市场概览: {trade_date}")
+            return json_response(self, engine.market_overview(trade_date))
+
+        # 板块排行API
+        if path == "/api/sectors/rankings":
+            sort_by = q.get("sortBy", ["rps10"])[0]
+            keyword = q.get("keyword", [""])[0]
+            logger.debug(f"获取板块排行: {trade_date}, sort={sort_by}, keyword={keyword}")
+            return json_response(self, {"items": engine.sector_rankings(trade_date, sort_by=sort_by, keyword=keyword)})
+
+        # 板块成分股API
+        if path.startswith("/api/sectors/") and path.endswith("/stocks"):
+            sector_code = path.split("/")[3]
+            sort_by = q.get("sortBy", ["rps10"])[0]
+            logger.debug(f"获取板块成分股: {sector_code}, {trade_date}")
+            return json_response(
+                self,
+                {"sectorCode": sector_code, "items": engine.sector_stocks(sector_code, trade_date, sort_by=sort_by)},
+            )
+
+        # 个股K线API
+        if path.startswith("/api/charts/stock/"):
+            ts_code = path.split("/")[4]
+            bars = int(q.get("bars", ["180"])[0])
+            logger.debug(f"获取个股K线: {ts_code}, {trade_date}, bars={bars}")
+            return json_response(self, engine.stock_kline(ts_code, trade_date, bars=bars))
+
+        # 板块K线API
+        if path.startswith("/api/charts/sector/"):
+            sector_code = path.split("/")[4]
+            bars = int(q.get("bars", ["180"])[0])
+            logger.debug(f"获取板块K线: {sector_code}, {trade_date}, bars={bars}")
+            return json_response(self, engine.sector_kline(sector_code, trade_date, bars=bars))
+
+        # 相对强弱API
+        if path == "/api/relative-strength":
+            ts_code = q.get("tsCode", [""])[0]
+            sector_code = q.get("sectorCode", [""])[0]
+            if not ts_code or not sector_code:
+                return json_response(self, {"error": "missing tsCode or sectorCode"}, 400)
+            logger.debug(f"获取相对强弱: {ts_code} vs {sector_code}")
+            return json_response(self, engine.relative_strength(ts_code, sector_code, trade_date))
+
+        # 未找到API
+        logger.warning(f"未找到API: {path}")
+        return json_response(self, {"error": "not found"}, 404)
+
+    def handle_static(self, path: str):
+        """处理静态文件请求"""
+        if path == "/":
+            path = "/index.html"
+
+        file_path = (WEB_DIR / path.lstrip("/")).resolve()
+
+        # 安全检查
+        if WEB_DIR not in file_path.parents and file_path != WEB_DIR:
+            logger.warning(f"非法路径访问: {path}")
+            self.send_error(403)
+            return
+
+        if not file_path.exists() or not file_path.is_file():
+            logger.debug(f"文件不存在: {path}")
+            self.send_error(404)
+            return
+
+        # 读取文件
+        data = file_path.read_bytes()
+
+        # 设置Content-Type
+        content_types = {
+            ".html": "text/html; charset=utf-8",
+            ".css": "text/css; charset=utf-8",
+            ".js": "application/javascript; charset=utf-8",
+            ".json": "application/json; charset=utf-8",
+            ".png": "image/png",
+            ".jpg": "image/jpeg",
+            ".svg": "image/svg+xml",
+            ".ico": "image/x-icon",
+        }
+        content_type = content_types.get(file_path.suffix, "application/octet-stream")
+
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+
+class ThreadedHTTPServer(ThreadingHTTPServer):
+    """支持多线程的HTTP服务器"""
+    daemon_threads = True
+    timeout = 30
+
+
+def main():
+    """主函数"""
+    server_config = config.server
+
+    logger.info("=" * 50)
+    logger.info("板块强度选股系统启动中...")
+    logger.info(f"服务器地址: http://{server_config.host}:{server_config.port}")
+    logger.info(f"调试模式: {server_config.debug}")
+    logger.info("=" * 50)
+
+    try:
+        httpd = ThreadedHTTPServer((server_config.host, server_config.port), Handler)
+        logger.info("✅ 服务器启动成功，按 Ctrl+C 停止")
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        logger.info("收到停止信号，正在关闭服务器...")
+    except OSError as e:
+        logger.error(f"端口被占用或无法绑定: {e}")
+        logger.error(f"请检查端口 {server_config.port} 是否被占用")
+        raise
+    finally:
+        logger.info("服务器已停止")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>板块强度选股系统</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="page">
+      <header class="topbar">
+        <h1>板块强度选股系统</h1>
+        <div class="meta">
+          <button id="jumpWatchlist" class="tab" title="查看我的自选">我的自选</button>
+          <button id="resetLayout" class="tab" title="恢复默认三列布局">恢复默认布局</button>
+          <span id="tradeDate"></span>
+          <span class="badge" id="marketLabel">-</span>
+          <span class="badge" id="openLight">-</span>
+        </div>
+      </header>
+
+      <section class="cards" id="overviewCards">
+        <article class="card">
+          <h3>市场环境</h3>
+          <div id="marketState"></div>
+        </article>
+        <article class="card">
+          <h3>市场宽度</h3>
+          <div id="breadth"></div>
+        </article>
+        <article class="card">
+          <h3>情绪温度</h3>
+          <div id="emotion"></div>
+        </article>
+        <article class="card">
+          <h3>最强4板块</h3>
+          <div id="topSectors"></div>
+        </article>
+      </section>
+
+      <section class="main-grid">
+        <div class="panel">
+          <div class="panel-head">
+            <h2>板块排行</h2>
+            <div class="filter-box">
+              <input id="sectorKeyword" type="text" placeholder="输入关键词，如：电池 / CPO / 液冷" />
+            </div>
+            <div class="tabs">
+              <button data-sort="rps10" class="tab active">RPS</button>
+              <button data-sort="5d" class="tab">5日</button>
+              <button data-sort="10d" class="tab">10日</button>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table id="sectorTable">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>板块</th>
+                  <th data-sort-col="limitUpCount">涨停个数</th>
+                  <th data-sort-col="rps10">RPS10</th>
+                  <th data-sort-col="pctChange5d">5日%</th>
+                  <th data-sort-col="pctChange10d">10日%</th>
+                  <th data-sort-col="amount">成交额(亿)</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="col-resizer" id="resizerLeft" title="拖动调整列宽"></div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>板块内强股</h2>
+          </div>
+          <div id="stockTableNotice" class="table-notice" style="display: none;"></div>
+          <div class="table-wrap">
+            <table id="stockTable">
+              <thead>
+                <tr>
+                  <th>名称</th>
+                  <th data-sort-col="rps20">RPS20</th>
+                  <th data-sort-col="pctChange5d">5日%</th>
+                  <th data-sort-col="pctChange10d">10日%</th>
+                  <th data-sort-col="amount">成交额(亿)</th>
+                  <th>自选</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="col-resizer" id="resizerRight" title="拖动调整列宽"></div>
+
+        <div class="panel chart-panel">
+          <div class="chart-card">
+            <h3 id="sectorChartTitle">细分板块K线</h3>
+            <div class="draw-tools">
+              <button id="sectorToolCursor" class="tool-btn active" title="指针">⌖</button>
+              <button id="sectorToolLine" class="tool-btn" title="趋势线">／</button>
+              <button id="sectorDrawClear" class="tool-btn" title="清空画线">🗑</button>
+            </div>
+            <div id="sectorChart" class="chart"></div>
+          </div>
+          <div class="chart-card">
+            <h3 id="stockChartTitle">个股K线</h3>
+            <div class="draw-tools">
+              <button id="stockToolCursor" class="tool-btn active" title="指针">⌖</button>
+              <button id="stockToolLine" class="tool-btn" title="趋势线">／</button>
+              <button id="stockDrawClear" class="tool-btn" title="清空画线">🗑</button>
+            </div>
+            <div id="stockChart" class="chart"></div>
+          </div>
+          <div class="chart-card">
+            <h3>个股 vs 板块强弱</h3>
+            <div id="rsSummary" class="summary"></div>
+            <div id="rsChart" class="chart"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="watchlist-section" id="watchlistSection">
+        <div class="watchlist-head">
+          <div>
+            <h2>我的自选</h2>
+            <p id="watchlistSummary">从板块内强股里添加收藏后，会显示在这里。</p>
+          </div>
+        </div>
+        <div id="watchlistGrid" class="watchlist-grid"></div>
+      </section>
+    </div>
+
+    <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+    <div id="layoutHint" class="layout-hint"></div>
+    <div id="miniKTooltip" class="mini-k-tooltip">
+      <div class="mini-k-title" id="miniKTitle">-</div>
+      <div id="miniKChart" class="mini-k-chart"></div>
+    </div>
+    <script src="/app.js"></script>
+  </body>
+</html>

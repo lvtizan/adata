@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Node
+node_modules/
+frontend/dist/
+
+# 环境与密钥
+.env
+backend/.env
+
+# 后端缓存数据（SQLite 等）
+backend/data/
+
+# 旧版输出目录
+output/
+
+# 系统文件
+.DS_Store
+*.log
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# npm / package 调试日志
+npm-debug.log*

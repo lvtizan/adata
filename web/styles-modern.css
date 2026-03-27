@@ -1,0 +1,543 @@
+/* ============================================
+   现代化国际化布局方案
+   参考: Bloomberg Terminal, TradingView, Linear
+   ============================================ */
+
+:root {
+  /* 颜色系统 */
+  --bg: #f8fafc;
+  --panel: #ffffff;
+  --text: #0f172a;
+  --sub: #64748b;
+  --up: #ef4444;
+  --down: #10b981;
+  --line: #e2e8f0;
+  --primary: #3b82f6;
+  --warn: #f59e0b;
+
+  /* 布局比例 - 使用fr单位而非px */
+  --col-sidebar: 0.24fr;
+  --col-list: 0.28fr;
+  --col-chart: 0.48fr;
+  --gap: 12px;
+
+  /* 预设布局 */
+  --layout-default: 0.24fr 0.28fr 0.48fr;
+  --layout-chart-focus: 0.20fr 0.25fr 0.55fr;
+  --layout-data-focus: 0.30fr 0.35fr 0.35fr;
+  --layout-balanced: 0.25fr 0.30fr 0.45fr;
+}
+
+/* [data-layout] 属性切换布局 */
+[data-layout="chart-focus"] {
+  --col-sidebar: 0.20fr;
+  --col-list: 0.25fr;
+  --col-chart: 0.55fr;
+}
+
+[data-layout="data-focus"] {
+  --col-sidebar: 0.30fr;
+  --col-list: 0.35fr;
+  --col-chart: 0.35fr;
+}
+
+[data-layout="balanced"] {
+  --col-sidebar: 0.25fr;
+  --col-list: 0.30fr;
+  --col-chart: 0.45fr;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
+  background: linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 50%, #f0fdf4 100%);
+  color: var(--text);
+  line-height: 1.5;
+}
+
+.page {
+  padding: 16px;
+  max-width: 2560px;
+  margin: 0 auto;
+}
+
+/* 顶部栏 */
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.topbar h1 {
+  margin: 0;
+  font-size: clamp(20px, 2.5vw, 28px);
+  font-weight: 700;
+}
+
+.meta {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.badge {
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.9);
+  padding: 6px 12px;
+  border-radius: 20px;
+  color: var(--sub);
+  font-size: 13px;
+  font-weight: 500;
+  backdrop-filter: blur(8px);
+}
+
+/* 概览卡片 - Bento Grid风格 */
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.card,
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.05);
+  transition: box-shadow 0.2s ease, transform 0.2s ease;
+}
+
+.card:hover,
+.panel:hover {
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.08);
+}
+
+.card {
+  padding: 16px;
+}
+
+.card h3 {
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: var(--sub);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-weight: 600;
+}
+
+/* 主网格布局 - 现代三列 */
+.main-grid {
+  position: relative;
+  display: grid;
+  grid-template-columns: var(--col-sidebar) var(--col-list) var(--col-chart);
+  gap: var(--gap);
+  min-height: calc(100vh - 240px);
+  align-items: start;
+}
+
+/* 可拖动调整器 */
+.col-resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  margin-left: -4px;
+  border-radius: 4px;
+  background: linear-gradient(to bottom, #cbd5e1, #94a3b8);
+  cursor: col-resize;
+  user-select: none;
+  z-index: 20;
+  opacity: 0;
+  transition: opacity 0.2s ease, transform 0.1s ease;
+}
+
+.col-resizer:hover {
+  transform: scaleX(1.5);
+  background: linear-gradient(to bottom, #3b82f6, #2563eb);
+}
+
+.main-grid:hover .col-resizer {
+  opacity: 0.6;
+}
+
+.main-grid:hover .col-resizer:hover {
+  opacity: 1;
+}
+
+.panel {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  min-height: 500px;
+}
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.panel-head h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.tabs {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.filter-box {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.filter-box input {
+  height: 36px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0 12px;
+  min-width: 200px;
+  font-size: 14px;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.filter-box input:focus {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+.tab {
+  border: 1px solid var(--line);
+  background: #f1f5f9;
+  color: var(--sub);
+  border-radius: 10px;
+  padding: 8px 16px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  transition: all 0.2s ease;
+}
+
+.tab:hover {
+  background: #e2e8f0;
+}
+
+.tab.active {
+  background: var(--primary);
+  color: #fff;
+  border-color: var(--primary);
+}
+
+.table-wrap {
+  overflow: auto;
+  flex: 1;
+  max-height: calc(100vh - 340px);
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 13px;
+}
+
+th,
+td {
+  border-bottom: 1px solid #f1f5f9;
+  padding: 10px 8px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+th {
+  font-weight: 600;
+  color: var(--sub);
+  position: sticky;
+  top: 0;
+  background: var(--panel);
+  z-index: 10;
+}
+
+th[data-sort-col] {
+  cursor: pointer;
+  user-select: none;
+}
+
+th[data-sort-col]:hover {
+  color: var(--primary);
+}
+
+tbody tr {
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+tbody tr:hover {
+  background: #f8fafc;
+}
+
+tbody tr.active {
+  background: #eff6ff;
+}
+
+.up {
+  color: var(--up);
+}
+
+.down {
+  color: var(--down);
+}
+
+.chart-panel {
+  gap: 12px;
+}
+
+.chart-card {
+  position: relative;
+  border: 1px solid #f1f5f9;
+  border-radius: 12px;
+  padding: 12px;
+  background: #fafbfc;
+}
+
+.chart-card h3 {
+  margin: 0 0 8px;
+  font-size: 14px;
+  color: var(--sub);
+  font-weight: 600;
+}
+
+.chart {
+  width: 100%;
+  height: 240px;
+  position: relative;
+}
+
+/* ============================================
+   响应式设计 - 多断点系统
+   ============================================ */
+
+/* 大屏优化 (1920px+) */
+@media (min-width: 1920px) {
+  .page {
+    padding: 24px;
+  }
+
+  .card {
+    padding: 20px;
+  }
+
+  .panel {
+    padding: 20px;
+  }
+
+  .chart {
+    height: 280px;
+  }
+
+  table {
+    font-size: 14px;
+  }
+}
+
+/* 中等屏幕 (1400px - 1919px) */
+@media (max-width: 1919px) and (min-width: 1400px) {
+  .main-grid {
+    grid-template-columns: 0.26fr 0.30fr 0.44fr;
+  }
+}
+
+/* 小桌面 (1200px - 1399px) */
+@media (max-width: 1399px) and (min-width: 1200px) {
+  .main-grid {
+    grid-template-columns: 0.28fr 0.32fr 1fr;
+  }
+}
+
+/* 平板横屏 (900px - 1199px) */
+@media (max-width: 1199px) and (min-width: 900px) {
+  .main-grid {
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: auto auto;
+  }
+
+  .panel:nth-child(3) {
+    grid-column: 1 / -1;
+  }
+
+  .col-resizer {
+    display: none;
+  }
+
+  .cards {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+/* 平板竖屏 (600px - 899px) */
+@media (max-width: 899px) and (min-width: 600px) {
+  .main-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .col-resizer {
+    display: none;
+  }
+
+  .cards {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .table-wrap {
+    max-height: 400px;
+  }
+}
+
+/* 手机 (< 600px) */
+@media (max-width: 599px) {
+  .page {
+    padding: 8px;
+  }
+
+  .topbar {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .cards {
+    grid-template-columns: 1fr;
+  }
+
+  .main-grid {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .card,
+  .panel {
+    padding: 12px;
+    border-radius: 12px;
+  }
+
+  .panel-head {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .tabs {
+    width: 100%;
+  }
+
+  .tab {
+    flex: 1;
+    text-align: center;
+  }
+
+  .filter-box input {
+    width: 100%;
+    min-width: unset;
+  }
+
+  .table-wrap {
+    max-height: 350px;
+  }
+
+  table {
+    font-size: 12px;
+  }
+
+  th,
+  td {
+    padding: 8px 4px;
+  }
+
+  .chart {
+    height: 200px;
+  }
+}
+
+/* 超宽屏优化 (2560px+) */
+@media (min-width: 2560px) {
+  .page {
+    padding: 32px;
+  }
+
+  .main-grid {
+    grid-template-columns: 0.22fr 0.26fr 0.52fr;
+  }
+
+  .chart {
+    height: 320px;
+  }
+}
+
+/* 触摸设备优化 */
+@media (hover: none) and (pointer: coarse) {
+  .col-resizer {
+    width: 16px;
+    margin-left: -8px;
+    opacity: 0.8;
+  }
+
+  .tab,
+  th[data-sort-col] {
+    padding: 12px 16px;
+  }
+
+  tbody tr {
+    padding: 4px 0;
+  }
+}
+
+/* 深色模式支持 */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f172a;
+    --panel: #1e293b;
+    --text: #f1f5f9;
+    --sub: #94a3b8;
+    --line: #334155;
+  }
+
+  body {
+    background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #0f172a 100%);
+  }
+
+  .badge {
+    background: rgba(30, 41, 59, 0.9);
+  }
+}
+
+/* 打印样式 */
+@media print {
+  .col-resizer,
+  .draw-tools {
+    display: none !important;
+  }
+
+  .main-grid {
+    display: block;
+  }
+
+  .panel {
+    page-break-inside: avoid;
+    margin-bottom: 20px;
+  }
+}
