@@ -1246,3 +1246,76 @@ class MarketEngine:
                 "label": label,
             },
         }
+
+    def stock_financials(self, ts_code: str, periods: int = 8) -> dict[str, Any]:
+        """获取个股最近 N 个季度的核心财务数据（营收、净利润、毛利率等）"""
+        name = self.stock_name_map().get(ts_code, ts_code)
+
+        # 利润表：营收、净利润
+        try:
+            income_df = self.pro.income(
+                ts_code=ts_code,
+                fields="ts_code,ann_date,f_ann_date,end_date,report_type,"
+                       "revenue,operate_profit,total_profit,n_income,"
+                       "basic_eps,diluted_eps",
+            )
+        except Exception as exc:
+            logger.warning(f"利润表加载失败: {ts_code}, {exc}")
+            income_df = pd.DataFrame()
+
+        # 财务指标：毛利率、净利率、ROE 等
+        try:
+            indicator_df = self.pro.fina_indicator(
+                ts_code=ts_code,
+                fields="ts_code,ann_date,end_date,grossprofit_margin,"
+                       "netprofit_margin,roe,current_ratio,debt_to_assets,"
+                       "revenue_ps,extra_item",
+            )
+        except Exception as exc:
+            logger.warning(f"财务指标加载失败: {ts_code}, {exc}")
+            indicator_df = pd.DataFrame()
+
+        results: list[dict[str, Any]] = []
+
+        if income_df is not None and not income_df.empty:
+            # 只取合并报表（report_type == 1）且去重
+            if "report_type" in income_df.columns:
+                income_df = income_df[income_df["report_type"].astype(str) == "1"]
+            income_df = income_df.drop_duplicates(subset=["end_date"], keep="first")
+            income_df = income_df.sort_values("end_date", ascending=False).head(periods)
+
+            # 合并指标
+            for _, row in income_df.iterrows():
+                end_date = str(row["end_date"])
+                item: dict[str, Any] = {
+                    "endDate": end_date,
+                    "annDate": str(row.get("ann_date", "")),
+                    "revenue": float(row["revenue"]) if pd.notna(row.get("revenue")) else None,
+                    "operateProfit": float(row["operate_profit"]) if pd.notna(row.get("operate_profit")) else None,
+                    "netIncome": float(row["n_income"]) if pd.notna(row.get("n_income")) else None,
+                    "basicEps": float(row["basic_eps"]) if pd.notna(row.get("basic_eps")) else None,
+                }
+
+                # 从 indicator_df 找同期指标
+                if indicator_df is not None and not indicator_df.empty:
+                    matched = indicator_df[indicator_df["end_date"] == end_date]
+                    if not matched.empty:
+                        ind = matched.iloc[0]
+                        item["grossMargin"] = float(ind["grossprofit_margin"]) if pd.notna(ind.get("grossprofit_margin")) else None
+                        item["netMargin"] = float(ind["netprofit_margin"]) if pd.notna(ind.get("netprofit_margin")) else None
+                        item["roe"] = float(ind["roe"]) if pd.notna(ind.get("roe")) else None
+                        item["debtToAssets"] = float(ind["debt_to_assets"]) if pd.notna(ind.get("debt_to_assets")) else None
+
+                results.append(item)
+
+        # 计算同比增速（如果有去年同期）
+        for item in results:
+            end = item["endDate"]
+            yoy_end = str(int(end[:4]) - 1) + end[4:]
+            prev = next((r for r in results if r["endDate"] == yoy_end), None)
+            if prev and item.get("revenue") and prev.get("revenue") and prev["revenue"] != 0:
+                item["revenueYoY"] = round((item["revenue"] / prev["revenue"] - 1) * 100, 2)
+            if prev and item.get("netIncome") and prev.get("netIncome") and prev["netIncome"] != 0:
+                item["netIncomeYoY"] = round((item["netIncome"] / prev["netIncome"] - 1) * 100, 2)
+
+        return {"code": ts_code, "name": name, "periods": results}

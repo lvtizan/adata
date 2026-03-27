@@ -60,3 +60,15 @@ export async function getSectorChart(sectorCode, bars = 120) {
 export async function getRelativeStrength(tsCode, sectorCode) {
   return api(`/api/relative-strength?tsCode=${encodeURIComponent(tsCode)}&sectorCode=${encodeURIComponent(sectorCode)}`);
 }
+
+export async function getBullCamp() {
+  return api("/api/bullcamp");
+}
+
+export async function preloadBullCampAssets(item) {
+  // Preload chart data for the first bull camp item
+  if (item?.tsCode) {
+    return getStockChart(item.tsCode, 120);
+  }
+  return Promise.resolve();
+}

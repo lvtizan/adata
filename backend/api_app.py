@@ -94,6 +94,12 @@ async def get_relative_strength(tsCode: str, sectorCode: str):
     return engine.relative_strength(tsCode, sectorCode, date)
 
 
+# ===== 个股财务 =====
+@app.get("/api/stock/{ts_code}/financials")
+async def get_stock_financials(ts_code: str, periods: int = 8):
+    return engine.stock_financials(ts_code, periods=periods)
+
+
 # ===== 自选股 =====
 @app.get("/api/watchlist")
 async def get_watchlist():
@@ -106,6 +112,13 @@ async def get_bull_stocks():
     date = engine.latest_data_trade_date()
     items = engine.bull_camp(date)
     return {"tradeDate": date, "items": items}
+
+
+@app.get("/api/bullcamp")
+async def get_bullcamp():
+    date = engine.latest_data_trade_date()
+    items = engine.bull_camp(date)
+    return {"items": items}
 
 
 @app.post("/api/watchlist")
