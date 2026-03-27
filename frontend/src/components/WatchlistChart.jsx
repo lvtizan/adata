@@ -1,5 +1,10 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { CandlestickSeries, HistogramSeries, LineSeries, createChart } from "lightweight-charts";
+import {
+  CandlestickSeries,
+  HistogramSeries,
+  LineSeries,
+  createChart,
+} from "lightweight-charts";
 import { getRelativeStrength, getStockChart } from "../lib/api";
 
 function toChartDate(value) {
@@ -34,19 +39,24 @@ function createBaseOptions() {
 export default function WatchlistChart({ tsCode, sectorCode, stockName, showTools = true }) {
   const priceContainerRef = useRef(null);
   const lowerContainerRef = useRef(null);
+  const rpsContainerRef = useRef(null);
   const priceChartRef = useRef(null);
   const lowerChartRef = useRef(null);
+  const rpsChartRef = useRef(null);
   const candleSeriesRef = useRef(null);
   const volumeSeriesRef = useRef(null);
   const rsSeriesRef = useRef(null);
+  const stockRpsSeriesRef = useRef(null);
+  const sectorRpsSeriesRef = useRef(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
   useLayoutEffect(() => {
-    if (!priceContainerRef.current || !lowerContainerRef.current) return undefined;
+    if (!priceContainerRef.current || !lowerContainerRef.current || !rpsContainerRef.current) return undefined;
 
     const priceChart = createChart(priceContainerRef.current, createBaseOptions());
     const lowerChart = createChart(lowerContainerRef.current, createBaseOptions());
+    const rpsChart = createChart(rpsContainerRef.current, createBaseOptions());
 
     candleSeriesRef.current = priceChart.addSeries(CandlestickSeries, {
       upColor: "#f23645",
@@ -69,40 +79,68 @@ export default function WatchlistChart({ tsCode, sectorCode, stockName, showTool
       lineWidth: 2,
       priceLineVisible: false,
       lastValueVisible: false,
-      priceScaleId: "left",
+      priceScaleId: "",
     });
 
-    lowerChart.priceScale("left").applyOptions({
+    stockRpsSeriesRef.current = rpsChart.addSeries(LineSeries, {
+      color: "#f23645",
+      lineWidth: 2,
+      priceLineVisible: false,
+      lastValueVisible: true,
+      priceScaleId: "rps",
+      title: "个股RPS",
+    });
+
+    sectorRpsSeriesRef.current = rpsChart.addSeries(LineSeries, {
+      color: "#2962ff",
+      lineWidth: 2,
+      priceLineVisible: false,
+      lastValueVisible: true,
+      priceScaleId: "rps",
+      title: "板块RPS",
+    });
+
+    rpsChart.priceScale("rps").applyOptions({
       visible: true,
       borderColor: "#eceff3",
+      scaleMargins: { top: 0.08, bottom: 0.12 },
+    });
+
+    lowerChart.priceScale("").applyOptions({
+      visible: false,
       scaleMargins: { top: 0.08, bottom: 0.22 },
     });
 
     let lock = false;
-    priceChart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
-      if (lock || !range || !lowerChartRef.current) return;
-      lock = true;
-      lowerChartRef.current.timeScale().setVisibleLogicalRange(range);
-      lock = false;
-    });
-    lowerChart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
-      if (lock || !range || !priceChartRef.current) return;
-      lock = true;
-      priceChartRef.current.timeScale().setVisibleLogicalRange(range);
-      lock = false;
-    });
+    const syncCharts = (source, targets) => {
+      source.timeScale().subscribeVisibleLogicalRangeChange((range) => {
+        if (lock || !range) return;
+        lock = true;
+        targets.forEach(t => t.timeScale().setVisibleLogicalRange(range));
+        lock = false;
+      });
+    };
+
+    syncCharts(priceChart, [lowerChart, rpsChart]);
+    syncCharts(lowerChart, [priceChart, rpsChart]);
+    syncCharts(rpsChart, [priceChart, lowerChart]);
 
     priceChartRef.current = priceChart;
     lowerChartRef.current = lowerChart;
+    rpsChartRef.current = rpsChart;
 
     return () => {
       priceChart.remove();
       lowerChart.remove();
+      rpsChart.remove();
       priceChartRef.current = null;
       lowerChartRef.current = null;
+      rpsChartRef.current = null;
       candleSeriesRef.current = null;
       volumeSeriesRef.current = null;
       rsSeriesRef.current = null;
+      stockRpsSeriesRef.current = null;
+      sectorRpsSeriesRef.current = null;
     };
   }, []);
 
@@ -110,7 +148,7 @@ export default function WatchlistChart({ tsCode, sectorCode, stockName, showTool
     let active = true;
 
     async function loadData() {
-      if (!tsCode || !candleSeriesRef.current || !volumeSeriesRef.current || !rsSeriesRef.current) {
+      if (!tsCode || !candleSeriesRef.current) {
         return;
       }
 
@@ -143,22 +181,45 @@ export default function WatchlistChart({ tsCode, sectorCode, stockName, showTool
           color: point.close >= point.open ? "rgba(242, 54, 69, 0.42)" : "rgba(41, 98, 255, 0.42)",
         }));
 
-        const rs = (rsData?.spreadSeries || []).map((point) => ({
-          time: toChartDate(point.time),
-          value: point.value,
-        }));
+        const candleTimes = new Set(candles.map(c => c.time));
+
+        const rs = (rsData?.spreadSeries || [])
+          .filter(point => candleTimes.has(toChartDate(point.time)))
+          .map((point) => ({
+            time: toChartDate(point.time),
+            value: point.value,
+          }));
+
+        const stockRps = (rsData?.stock?.rpsSeries || [])
+          .filter(point => candleTimes.has(toChartDate(point.time)))
+          .map((point) => ({
+            time: toChartDate(point.time),
+            value: point.value,
+          }));
+
+        const sectorRps = (rsData?.sector?.rpsSeries || [])
+          .filter(point => candleTimes.has(toChartDate(point.time)))
+          .map((point) => ({
+            time: toChartDate(point.time),
+            value: point.value,
+          }));
 
         candleSeriesRef.current.setData(candles);
         volumeSeriesRef.current.setData(volumes);
         rsSeriesRef.current.setData(rs);
+        stockRpsSeriesRef.current.setData(stockRps);
+        sectorRpsSeriesRef.current.setData(sectorRps);
         priceChartRef.current?.timeScale().fitContent();
         lowerChartRef.current?.timeScale().fitContent();
+        rpsChartRef.current?.timeScale().fitContent();
         setLoading(false);
       } catch (loadError) {
         if (!active) return;
         candleSeriesRef.current?.setData([]);
         volumeSeriesRef.current?.setData([]);
         rsSeriesRef.current?.setData([]);
+        stockRpsSeriesRef.current?.setData([]);
+        sectorRpsSeriesRef.current?.setData([]);
         setLoading(false);
         setError(loadError.message || "加载失败");
       }
@@ -172,19 +233,12 @@ export default function WatchlistChart({ tsCode, sectorCode, stockName, showTool
 
   return (
     <section className="watch-chart-terminal">
-      <div className="watch-chart-header terminal-section-head">
-        <div>
-          <h3>{stockName || tsCode || "价格图"}</h3>
-          <p>主图显示日线 K 线，副图叠加成交额与 RPS 强弱曲线</p>
-        </div>
-      </div>
-
       <div className={`watch-chart-stack ${showTools ? "" : "chart-plain"}`}>
         <div className="watch-chart-main-shell">
           {showTools && (
-            <aside className="watch-chart-tools" aria-label="图表画线工具">
-              {["＋", "/", "∕", "—", "|", "~", "T"].map((icon) => (
-                <button key={icon} type="button" className="watch-chart-tool">
+            <aside className="watch-chart-tools" aria-label="图表工具">
+              {["📏", "🗑"].map((icon) => (
+                <button key={icon} type="button" className="watch-chart-tool" title={icon === "📏" ? "画线工具（开发中）" : "清除画线"}>
                   <span>{icon}</span>
                 </button>
               ))}
@@ -197,6 +251,8 @@ export default function WatchlistChart({ tsCode, sectorCode, stockName, showTool
         </div>
 
         <div ref={lowerContainerRef} className="watch-chart-pane watch-chart-pane-lower" />
+
+        <div ref={rpsContainerRef} className="watch-chart-pane watch-chart-pane-lower" />
       </div>
     </section>
   );

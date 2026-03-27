@@ -1,8 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 import WatchlistChart from "./WatchlistChart";
+import FinancialsPanel from "./FinancialsPanel";
+
+const TABS = [
+  { key: "chart", label: "图表" },
+  { key: "financials", label: "财务" },
+  { key: "news", label: "资讯" },
+];
 
 const COLUMNS = [
-  { key: "tsCode", label: "代码" },
   { key: "stockName", label: "名称" },
   { key: "sectorName", label: "板块" },
   { key: "close", label: "现价", numeric: true },
@@ -46,10 +52,25 @@ function compareValues(left, right) {
   return String(left).localeCompare(String(right), "zh-Hans-CN");
 }
 
+function CampTag({ item }) {
+  if (!item) return null;
+  const tags = [];
+  if (item.isNew) {
+    tags.push(<span key="new" className="camp-tag camp-tag-new">新</span>);
+  } else if (item.daysInCamp && item.daysInCamp >= 3) {
+    tags.push(<span key="days" className="camp-tag camp-tag-days">{item.daysInCamp}D</span>);
+  }
+  if (item.hasRecentAnnouncement) {
+    tags.push(<span key="ann" className="camp-tag camp-tag-ann">财</span>);
+  }
+  return tags.length ? <>{tags}</> : null;
+}
+
 export default function BullCampWorkbench({ items }) {
   const [selectedCode, setSelectedCode] = useState(items[0]?.tsCode || "");
   const [sortState, setSortState] = useState({ key: "campScore", direction: "desc" });
   const [sidebarWidth, setSidebarWidth] = useState(560);
+  const [activeTab, setActiveTab] = useState("chart");
 
   useEffect(() => {
     setSelectedCode((current) => (current && items.some((item) => item.tsCode === current) ? current : items[0]?.tsCode || ""));
@@ -110,8 +131,10 @@ export default function BullCampWorkbench({ items }) {
                   className={item.tsCode === selectedItem?.tsCode ? "active" : ""}
                   onClick={() => setSelectedCode(item.tsCode)}
                 >
-                  <td className="mono">{item.tsCode}</td>
-                  <td>{item.stockName}</td>
+                  <td>
+                    <span>{item.stockName}</span>
+                    <CampTag item={item} />
+                  </td>
                   <td>{item.sectorName}</td>
                   <td>{fmtValue(item.close)}</td>
                   <td className={tone(item.pctChange5d)}>{fmtPct(item.pctChange5d)}</td>
@@ -150,10 +173,14 @@ export default function BullCampWorkbench({ items }) {
       />
 
       <section className="watchlist-main bull-camp-main">
+        {/* Header: stock info + quick metrics */}
         <div className="watchlist-main-head">
           <div>
             <div className="eyebrow">Bull Camp</div>
-            <h2>{selectedItem?.stockName || "--"}</h2>
+            <h2>
+              {selectedItem?.stockName || "--"}
+              <CampTag item={selectedItem} />
+            </h2>
             <p>{selectedItem?.tsCode || "--"} · {selectedItem?.sectorName || "--"}</p>
           </div>
           <div className="watchlist-quick-metrics">
@@ -172,30 +199,48 @@ export default function BullCampWorkbench({ items }) {
           </div>
         </div>
 
-        <div className="watchlist-toolbar bull-camp-toolbar">
-          <div className="watchlist-subgroup">
-            <span>5日强度</span>
-            <strong className={tone((selectedItem?.pctChange5d ?? 0) - (selectedItem?.sectorPctChange5d ?? 0))}>
-              {fmtPct(selectedItem?.pctChange5d)} / {fmtPct(selectedItem?.sectorPctChange5d)}
-            </strong>
-          </div>
-          <div className="watchlist-subgroup">
-            <span>成交额</span>
-            <strong>{fmtAmount(selectedItem?.amount)}</strong>
-          </div>
-          <div className="watchlist-subgroup">
-            <span>板块 RPS10</span>
-            <strong>{fmtValue(selectedItem?.sectorRps10)}</strong>
-          </div>
-        </div>
+        {/* Tab bar */}
+        <nav className="camp-tab-bar">
+          {TABS.map((tab) => (
+            <button
+              key={tab.key}
+              className={`camp-tab-btn ${activeTab === tab.key ? "active" : ""}`}
+              onClick={() => setActiveTab(tab.key)}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </nav>
 
-        <WatchlistChart
-          key={`${selectedItem?.tsCode || ""}:${selectedItem?.sectorCode || ""}`}
-          tsCode={selectedItem?.tsCode || ""}
-          sectorCode={selectedItem?.sectorCode || ""}
-          stockName={selectedItem?.stockName || ""}
-          showTools={false}
-        />
+        {/* Tab content */}
+        <div className="camp-tab-content">
+          {activeTab === "chart" && (
+            <WatchlistChart
+              key={`${selectedItem?.tsCode || ""}:${selectedItem?.sectorCode || ""}`}
+              tsCode={selectedItem?.tsCode || ""}
+              sectorCode={selectedItem?.sectorCode || ""}
+              stockName={selectedItem?.stockName || ""}
+              showTools={true}
+            />
+          )}
+
+          {activeTab === "financials" && (
+            <FinancialsPanel
+              key={selectedItem?.tsCode || ""}
+              tsCode={selectedItem?.tsCode || ""}
+            />
+          )}
+
+          {activeTab === "news" && (
+            <div className="camp-news-placeholder">
+              <div className="camp-news-placeholder-inner">
+                <h3>资讯面板</h3>
+                <p>DeerFlow AI 研究简报和公告/新闻列表将在 P1/P2 阶段实现。</p>
+                <p>功能包含：个股最近公告列表、行业新闻、AI 一键生成研究简报。</p>
+              </div>
+            </div>
+          )}
+        </div>
       </section>
     </section>
   );

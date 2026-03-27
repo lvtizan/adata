@@ -257,7 +257,15 @@ export default function App() {
                       className={item.sectorCode === selectedSectorCode ? "active" : ""}
                       onClick={() => setSelectedSectorCode(item.sectorCode)}
                     >
-                      <td>{index + 1}</td>
+                      <td>
+                        <span>{index + 1}</span>
+                        {item.rankChange != null && item.rankChange !== 0 && (
+                          <span className={`rank-change ${item.rankChange > 0 ? "up" : "down"}`}>
+                            {item.rankChange > 0 ? `↑${item.rankChange}` : `↓${Math.abs(item.rankChange)}`}
+                          </span>
+                        )}
+                        {item.rankChange === 0 && <span className="rank-change flat">-</span>}
+                      </td>
                       <td>
                         <div className="symbol-cell">
                           <strong>{item.sectorName}</strong>

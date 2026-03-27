@@ -65,6 +65,10 @@ export async function getBullCamp() {
   return api("/api/bullcamp");
 }
 
+export async function getStockFinancials(tsCode) {
+  return api(`/api/stock/${encodeURIComponent(tsCode)}/financials`);
+}
+
 export async function preloadBullCampAssets(item) {
   // Preload chart data for the first bull camp item
   if (item?.tsCode) {

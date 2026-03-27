@@ -725,6 +725,22 @@ class MarketEngine:
         limit_count_scope = 30
         top_df = df.head(display_limit).copy()
 
+        # ── 计算昨日排名，得出排名变化 ──
+        prev_rank_map: dict[str, int] = {}
+        try:
+            dates = self.trade_dates(trade_date, need=5)
+            prev_dates = [d for d in dates if d < trade_date]
+            if prev_dates:
+                prev_date = prev_dates[-1]
+                prev_df = self.compute_sector_metrics(prev_date)
+                if prev_df is not None and not prev_df.empty:
+                    prev_df = prev_df[prev_df["amount_est"] >= self.rules.sector_amount_min].copy()
+                    prev_df = prev_df.sort_values(sort_col, ascending=False).reset_index(drop=True)
+                    for idx, row in prev_df.iterrows():
+                        prev_rank_map[row["ts_code"]] = idx + 1
+        except Exception as exc:
+            logger.debug(f"昨日排名计算跳过: {exc}")
+
         # 计算板块涨停个数（基于当日涨停股与板块成分交集）
         snap = self.stock_snapshot(trade_date)
         limit_up_codes = set(snap[snap["pct_chg"] >= 9.8]["ts_code"].dropna().tolist()) if snap is not None else set()
@@ -736,9 +752,14 @@ class MarketEngine:
         out: list[dict[str, Any]] = []
         for i, r in top_df.iterrows():
             code = r["ts_code"]
+            today_rank = i + 1
+            prev_rank = prev_rank_map.get(code)
+            rank_change = (prev_rank - today_rank) if prev_rank is not None else None
             out.append(
                 {
-                    "rank": i + 1,
+                    "rank": today_rank,
+                    "rankChange": rank_change,
+                    "prevRank": prev_rank,
                     "sectorCode": code,
                     "sectorName": r["sector_name"],
                     "pctChange5d": round(float(r["ret5"]), 2),
