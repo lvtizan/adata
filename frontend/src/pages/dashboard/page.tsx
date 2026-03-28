@@ -42,8 +42,8 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      <div className="flex-1 grid grid-cols-[minmax(300px,1.2fr)_minmax(340px,1.35fr)_minmax(380px,1.1fr)] min-h-0 border-t border-border-default">
-        <div className="border-r border-border-default flex flex-col min-h-0">
+      <div className="flex-1 grid grid-cols-1 xl:grid-cols-[minmax(300px,1.2fr)_minmax(340px,1.35fr)_minmax(380px,1.1fr)] min-h-0 border-t border-border-default">
+        <div className="xl:border-r border-border-default flex flex-col min-h-0">
           <div className="px-3 py-2 border-b border-border-default">
             <h2 className="text-sm font-medium">板块列表</h2>
             <p className="text-xs text-text-tertiary">{rankings.length} 个候选板块</p>
@@ -51,7 +51,7 @@ export default function DashboardPage() {
           <SectorTable data={rankings} selectedCode={selectedSectorCode} onSelect={setSelectedSectorCode} />
         </div>
 
-        <div className="border-r border-border-default flex flex-col min-h-0">
+        <div className="xl:border-r border-border-default flex flex-col min-h-0">
           <div className="px-3 py-2 border-b border-border-default">
             <h2 className="text-sm font-medium">板块内个股</h2>
             <p className="text-xs text-text-tertiary">

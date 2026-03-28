@@ -92,3 +92,26 @@ body {
   line-height: 1.5;
 }
 button, input, select { font: inherit; }
+
+/* Scrollbar: hidden by default, show on hover */
+.overflow-auto {
+  scrollbar-width: none;
+}
+.overflow-auto:hover {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+.overflow-auto::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.overflow-auto::-webkit-scrollbar-track {
+  background: transparent;
+}
+.overflow-auto::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 999px;
+}
+.overflow-auto:hover::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+}

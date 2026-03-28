@@ -9,7 +9,7 @@ export function RightPanel({ children }: RightPanelProps) {
   if (!open) return null;
 
   return (
-    <aside className="w-[320px] min-w-[280px] max-w-[360px] border-l border-border-default bg-canvas shrink-0 overflow-y-auto">
+    <aside className="w-[320px] min-w-[280px] max-w-[360px] border-l border-border-default bg-canvas shrink-0 overflow-y-auto hidden xl:block">
       {children}
     </aside>
   );
