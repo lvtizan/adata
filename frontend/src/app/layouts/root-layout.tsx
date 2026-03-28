@@ -1,6 +1,6 @@
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import { AppShell, TopBar, RightPanel, BottomBar } from "@/shared/layout";
-import { useMarketOverview } from "@/queries";
+import { useMarketOverview, useBullCamp, useWatchlist } from "@/queries";
 import { BarChart3, Eye, Flame } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/shared/ui/button";
@@ -15,6 +15,10 @@ export function RootLayout() {
   const navigate = useNavigate();
   const location = useLocation();
   const { data: overview } = useMarketOverview();
+
+  // Prefetch: 后台预加载牛股集中营和自选股数据，切页时秒开
+  useBullCamp();
+  useWatchlist();
 
   return (
     <AppShell
