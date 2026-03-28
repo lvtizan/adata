@@ -14,7 +14,7 @@ interface AppState {
 
 export const useAppStore = create<AppState>((set) => ({
   theme: (localStorage.getItem("theme") as Theme) || "light",
-  rightPanelOpen: true,
+  rightPanelOpen: false,
   leftRailCollapsed: false,
   toggleTheme: () =>
     set((s) => {

@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import { useMarketOverview, useSectorRankings, useSectorStocks } from "@/queries";
 import { useDashboardStore } from "@/store";
 import { MarketSummary } from "@/features/market/components/market-summary";
@@ -8,11 +8,51 @@ import { StockTable } from "@/features/stocks/components/stock-table";
 import { CandlestickPanel } from "@/features/chart/components/candlestick-panel";
 import { RsPanel } from "@/features/chart/components/rs-panel";
 
+function useResizable(initial: number, min: number, max: number) {
+  const [width, setWidth] = useState(initial);
+  const dragging = useRef(false);
+
+  const onMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    dragging.current = true;
+    const startX = e.clientX;
+    const startW = width;
+
+    function onMove(ev: MouseEvent) {
+      if (!dragging.current) return;
+      setWidth(Math.min(max, Math.max(min, startW + ev.clientX - startX)));
+    }
+    function onUp() {
+      dragging.current = false;
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    }
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }, [width, min, max]);
+
+  return { width, onMouseDown };
+}
+
+function Resizer({ onMouseDown }: { onMouseDown: (e: React.MouseEvent) => void }) {
+  return (
+    <div
+      className="w-[10px] cursor-col-resize relative shrink-0 group"
+      onMouseDown={onMouseDown}
+    >
+      <div className="absolute top-0 bottom-0 left-[4px] w-[2px] group-hover:bg-border-strong transition-colors" />
+    </div>
+  );
+}
+
 export default function DashboardPage() {
   const { data: overview } = useMarketOverview();
   const { data: rankings = [] } = useSectorRankings();
   const { selectedSectorCode, selectedStockCode, setSelectedSectorCode, setSelectedStockCode } = useDashboardStore();
   const { data: stocks = [], isLoading: stocksLoading } = useSectorStocks(selectedSectorCode);
+
+  const col1 = useResizable(340, 260, 520);
+  const col2 = useResizable(380, 280, 560);
 
   useEffect(() => {
     if (!selectedSectorCode && rankings.length > 0) {
@@ -31,6 +71,7 @@ export default function DashboardPage() {
 
   return (
     <div className="flex flex-col h-full">
+      {/* Summary bar */}
       <div className="flex items-center justify-between gap-4 px-4 py-3 border-b border-border-default">
         <div>
           <h1 className="text-xl font-semibold">板块强度终端</h1>
@@ -42,8 +83,10 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      <div className="flex-1 grid grid-cols-1 xl:grid-cols-[minmax(300px,1.2fr)_minmax(340px,1.35fr)_minmax(380px,1.1fr)] min-h-0 border-t border-border-default">
-        <div className="xl:border-r border-border-default flex flex-col min-h-0">
+      {/* Main 3-column with resizable dividers */}
+      <div className="flex-1 flex min-h-0 border-t border-border-default">
+        {/* Column 1: Sector rankings */}
+        <div className="flex flex-col min-h-0 shrink-0 border-r border-border-default" style={{ width: col1.width }}>
           <div className="px-3 py-2 border-b border-border-default">
             <h2 className="text-sm font-medium">板块列表</h2>
             <p className="text-xs text-text-tertiary">{rankings.length} 个候选板块</p>
@@ -51,7 +94,10 @@ export default function DashboardPage() {
           <SectorTable data={rankings} selectedCode={selectedSectorCode} onSelect={setSelectedSectorCode} />
         </div>
 
-        <div className="xl:border-r border-border-default flex flex-col min-h-0">
+        <Resizer onMouseDown={col1.onMouseDown} />
+
+        {/* Column 2: Sector stocks */}
+        <div className="flex flex-col min-h-0 shrink-0 border-r border-border-default" style={{ width: col2.width }}>
           <div className="px-3 py-2 border-b border-border-default">
             <h2 className="text-sm font-medium">板块内个股</h2>
             <p className="text-xs text-text-tertiary">
@@ -61,7 +107,10 @@ export default function DashboardPage() {
           <StockTable data={stocks} selectedCode={selectedStockCode} onSelect={setSelectedStockCode} loading={stocksLoading} />
         </div>
 
-        <div className="flex flex-col min-h-0 overflow-y-auto">
+        <Resizer onMouseDown={col2.onMouseDown} />
+
+        {/* Column 3: Charts (takes remaining space) */}
+        <div className="flex-1 flex flex-col min-h-0 min-w-[380px] overflow-y-auto">
           <CandlestickPanel kind="sector" code={selectedSector?.sectorCode || ""} label={selectedSector?.sectorName || ""} title="细分板块 K 线" emptyText="选择板块后显示" />
           <CandlestickPanel kind="stock" code={selectedStock?.tsCode || ""} label={selectedStock?.stockName || ""} title="选中个股 K 线" emptyText="选择个股后显示" />
           <RsPanel tsCode={selectedStock?.tsCode || ""} sectorCode={selectedSector?.sectorCode || ""} stockName={selectedStock?.stockName} sectorName={selectedSector?.sectorName} />
