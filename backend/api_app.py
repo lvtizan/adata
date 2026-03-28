@@ -114,6 +114,13 @@ async def get_bull_stocks():
     return {"tradeDate": date, "items": items}
 
 
+@app.get("/api/camp/bull-stocks/history")
+async def get_bull_stocks_history(days: int = 20):
+    date = engine.latest_data_trade_date()
+    history_items = engine.bull_camp_history(date, days=days)
+    return {"tradeDate": date, "days": max(1, min(int(days), 60)), "items": history_items}
+
+
 @app.get("/api/bullcamp")
 async def get_bullcamp():
     date = engine.latest_data_trade_date()

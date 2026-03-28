@@ -953,7 +953,7 @@ class MarketEngine:
             )
         return out
 
-    def bull_camp(self, trade_date: str) -> list[dict[str, Any]]:
+    def _bull_camp_base(self, trade_date: str) -> list[dict[str, Any]]:
         def _load() -> list[dict[str, Any]]:
             try:
                 stocks = self.compute_stock_metrics(trade_date)
@@ -1098,6 +1098,100 @@ class MarketEngine:
                     }
                 )
             return out
+
+        return self._cached(f"bull_camp_base:{trade_date}", 900, _load)
+
+    def _recent_announcement_codes(self, trade_date: str, days: int = 7) -> set[str]:
+        def _load() -> set[str]:
+            start_date = (pd.Timestamp(trade_date) - pd.Timedelta(days=max(days * 3, 10))).strftime("%Y%m%d")
+            threshold = (pd.Timestamp(trade_date) - pd.Timedelta(days=max(days - 1, 0))).strftime("%Y%m%d")
+            endpoints = ["anns_d", "anns"]
+            for endpoint in endpoints:
+                fn = getattr(self.pro, endpoint, None)
+                if fn is None:
+                    continue
+                try:
+                    df = fn(start_date=start_date, end_date=trade_date, fields="ts_code,ann_date")
+                except Exception:
+                    try:
+                        df = fn(start_date=start_date, end_date=trade_date)
+                    except Exception as exc:
+                        logger.debug(f"公告接口调用失败: {endpoint}, 错误: {exc}")
+                        continue
+                if df is None or df.empty or "ts_code" not in df.columns:
+                    continue
+                date_col = None
+                for candidate in ["ann_date", "pub_date", "trade_date"]:
+                    if candidate in df.columns:
+                        date_col = candidate
+                        break
+                if date_col is None:
+                    return set(df["ts_code"].dropna().astype(str).unique().tolist())
+                recent_df = df[df[date_col].astype(str) >= threshold]
+                return set(recent_df["ts_code"].dropna().astype(str).unique().tolist())
+            return set()
+
+        return self._cached(f"recent_ann_codes:{trade_date}:{days}", 3600, _load)
+
+    def bull_camp_history(self, trade_date: str, days: int = 20) -> list[dict[str, Any]]:
+        safe_days = max(1, min(int(days), 60))
+
+        def _load() -> list[dict[str, Any]]:
+            dates = self.trade_dates(trade_date, need=safe_days + 10)
+            history_dates = [d for d in dates if d <= trade_date][-safe_days:]
+            history: list[dict[str, Any]] = []
+            for d in history_dates:
+                items = self._bull_camp_base(d)
+                history.append(
+                    {
+                        "tradeDate": d,
+                        "count": len(items),
+                        "items": items,
+                    }
+                )
+            return history
+
+        return self._cached(f"bull_camp_history:{trade_date}:{safe_days}", 900, _load)
+
+    def _bull_camp_streak_map(self, trade_date: str, lookback_days: int = 20) -> dict[str, int]:
+        safe_days = max(1, min(int(lookback_days), 60))
+        history = self.bull_camp_history(trade_date, days=safe_days)
+        if not history:
+            return {}
+        date_items = [set(str(item.get("tsCode", "")) for item in day.get("items", [])) for day in history]
+        if not date_items:
+            return {}
+        today_codes = date_items[-1]
+        streak_map: dict[str, int] = {}
+        for code in today_codes:
+            streak = 0
+            for codes in reversed(date_items):
+                if code in codes:
+                    streak += 1
+                else:
+                    break
+            streak_map[code] = streak
+        return streak_map
+
+    def bull_camp(self, trade_date: str) -> list[dict[str, Any]]:
+        def _load() -> list[dict[str, Any]]:
+            base_items = self._bull_camp_base(trade_date)
+            if not base_items:
+                return []
+
+            streak_map = self._bull_camp_streak_map(trade_date, lookback_days=20)
+            ann_codes = self._recent_announcement_codes(trade_date, days=7)
+
+            enriched: list[dict[str, Any]] = []
+            for item in base_items:
+                ts_code = str(item.get("tsCode", ""))
+                days_in_camp = max(1, int(streak_map.get(ts_code, 1)))
+                next_item = item.copy()
+                next_item["daysInCamp"] = days_in_camp
+                next_item["isNew"] = days_in_camp <= 1
+                next_item["hasRecentAnnouncement"] = ts_code in ann_codes
+                enriched.append(next_item)
+            return enriched
 
         return self._cached(f"bull_camp:{trade_date}", 900, _load)
 
