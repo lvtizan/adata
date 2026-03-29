@@ -1,5 +1,14 @@
 import { api } from "./api-client";
-import type { WatchlistItem, BullCampItem, FinancialsData, ListResponse, StockNewsItem } from "@/shared/types";
+import type {
+  WatchlistItem,
+  BullCampItem,
+  FinancialsData,
+  ListResponse,
+  StockNewsItem,
+  ChartDrawingsDocument,
+  ChartDrawingOverlay,
+  MarketSearchResult,
+} from "@/shared/types";
 
 export function getWatchlist() {
   return api<ListResponse<WatchlistItem>>("/watchlist");
@@ -27,12 +36,39 @@ export function getBullCamp() {
   return api<ListResponse<BullCampItem>>("/bullcamp");
 }
 
+export function searchMarket(query: string, limit = 12) {
+  return api<MarketSearchResult>(`/search?q=${encodeURIComponent(query)}&limit=${limit}`);
+}
+
 export function getStockFinancials(tsCode: string, periods = 8) {
   return api<FinancialsData>(`/stock/${tsCode}/financials?periods=${periods}`);
 }
 
 export function getStockNews(tsCode: string, limit = 20) {
   return api<{ tsCode: string; items: StockNewsItem[] }>(`/stock/${tsCode}/news?limit=${limit}`);
+}
+
+export function getChartDrawings(symbol: string, scope = "stock", timeframe = "1d") {
+  return api<ChartDrawingsDocument>(`/drawings/${symbol}?scope=${encodeURIComponent(scope)}&timeframe=${encodeURIComponent(timeframe)}`);
+}
+
+export function saveChartDrawings(
+  symbol: string,
+  overlays: ChartDrawingOverlay[],
+  scope = "stock",
+  timeframe = "1d",
+) {
+  return api<ChartDrawingsDocument>(`/drawings/${symbol}?scope=${encodeURIComponent(scope)}&timeframe=${encodeURIComponent(timeframe)}`, {
+    method: "PUT",
+    body: JSON.stringify({ overlays }),
+  });
+}
+
+export function clearChartDrawings(symbol: string, scope = "stock", timeframe = "1d") {
+  return api<{ ok: boolean; deleted: boolean; symbol: string; scope: string; timeframe: string }>(
+    `/drawings/${symbol}?scope=${encodeURIComponent(scope)}&timeframe=${encodeURIComponent(timeframe)}`,
+    { method: "DELETE" },
+  );
 }
 
 export interface PatternSignal {
@@ -140,4 +176,10 @@ export interface StockTagsResult {
 
 export function getStockTags(tsCode: string) {
   return api<StockTagsResult>(`/stock/${tsCode}/tags`);
+}
+
+// ── HH 信号成功率统计 ──
+
+export function getStockHHStats(tsCode: string) {
+  return api<import("@/shared/types").HHStatsResult>(`/stock/${tsCode}/hh-stats`);
 }

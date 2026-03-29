@@ -340,7 +340,11 @@ def detect_hh_signals(df: pd.DataFrame, swing_window: int = 5, lookback: int = 1
             r_info["lastDate"] = str(dates[res["lastIndex"]])
         resistance_output.append(r_info)
 
-    # ── 2. 在每个支撑位数反包(H1/H2) ──
+    # ── 2. 在每个支撑位数 HH (Higher High) ──
+    # 以支撑位触发的上涨结构为基础：
+    #   第一个 swing high 作为基准高点
+    #   后续每一个更高的 swing high 依次记作 H1 / H2 / ...
+    # 这样既能避免把每次小反包都记成 H，也与图上 HH 标记保持一致
     signals: list[dict[str, Any]] = []
     used_bars: set[int] = set()  # 避免同一根 K 线被多个支撑重复标记
 
@@ -361,74 +365,57 @@ def detect_hh_signals(df: pd.DataFrame, swing_window: int = 5, lookback: int = 1
         if not touch_indices:
             continue
 
-        # 从最早触碰开始，逐根 K 线扫描
+        # 从最早触碰开始，寻找在该支撑之上的递增 swing high 序列
         start_bar = touch_indices[0]
-        h_count = 0
-        state = "waiting_decline"  # "waiting_decline" | "in_decline"
-        decline_bar_count = 0
-        skip_until = -1  # 跳过到某个 bar（支撑被破后跳到下一次触碰）
-
+        broken_at = None
         for i in range(start_bar, seg_n):
-            # 跳过逻辑（支撑被破后跳到下一次触碰）
-            if i < skip_until:
+            if low[i] < support_zone_bottom:
+                broken_at = i
+                break
+
+        candidate_highs = [(idx, val) for idx, val in swing_highs if idx > start_bar]
+        if broken_at is not None:
+            candidate_highs = [(idx, val) for idx, val in candidate_highs if idx < broken_at]
+        if len(candidate_highs) < 2:
+            continue
+
+        baseline_idx, baseline_val = candidate_highs[0]
+        h_count = 0
+        prev_high_val = baseline_val
+
+        for idx, val in candidate_highs[1:]:
+            if idx in used_bars:
+                continue
+            if val <= prev_high_val:
                 continue
 
-            # 跌破支撑 → 停止计数
-            if low[i] < support_zone_bottom:
-                future_touches = [idx for idx in touch_indices if idx > i]
-                if future_touches:
-                    skip_until = future_touches[0]
-                    h_count = 0
-                    state = "waiting_decline"
-                    decline_bar_count = 0
-                    continue
-                else:
-                    break
+            h_count += 1
+            used_bars.add(idx)
+            prev_high_val = val
 
-            if state == "waiting_decline":
-                # 等待下跌段: 阴线或 close 比前日低
-                is_bearish = close[i] < open_arr[i]
-                is_lower = i > 0 and close[i] < close[i - 1]
-                if is_bearish or is_lower:
-                    decline_bar_count += 1
-                    if decline_bar_count >= 1:
-                        state = "in_decline"
-                else:
-                    decline_bar_count = 0
+            volume_ratio = None
+            is_gentle_volume = False
+            if vol is not None and vol_ma20 is not None and idx < len(vol):
+                day_vol = vol[idx]
+                avg_vol = vol_ma20[idx] if idx < len(vol_ma20) and not np.isnan(vol_ma20[idx]) else None
+                if avg_vol and avg_vol > 0:
+                    volume_ratio = round(float(day_vol / avg_vol), 2)
+                    is_gentle_volume = 1.2 <= volume_ratio <= 3.0
 
-            elif state == "in_decline":
-                if _is_reversal_bar(i, open_arr, high, low, close):
-                    if i not in used_bars:
-                        h_count += 1
-                        used_bars.add(i)
+            is_buy_signal = h_count >= 2 and is_gentle_volume
 
-                        # 温和放量检查
-                        volume_ratio = None
-                        is_gentle_volume = False
-                        if vol is not None and vol_ma20 is not None and i < len(vol):
-                            day_vol = vol[i]
-                            avg_vol = vol_ma20[i] if i < len(vol_ma20) and not np.isnan(vol_ma20[i]) else None
-                            if avg_vol and avg_vol > 0:
-                                volume_ratio = round(float(day_vol / avg_vol), 2)
-                                is_gentle_volume = 1.2 <= volume_ratio <= 3.0
-
-                        is_buy_signal = h_count >= 2 and is_gentle_volume
-
-                        sig: dict[str, Any] = {
-                            "price": round(float(low[i]), 2),  # 标记在 low 位置（箭头向上）
-                            "type": f"H{h_count}",
-                            "supportPrice": round(sup_price, 2),
-                        }
-                        if dates is not None and i < len(dates):
-                            sig["date"] = str(dates[i])
-                        if volume_ratio is not None:
-                            sig["volumeRatio"] = volume_ratio
-                        if is_buy_signal:
-                            sig["buySignal"] = True
-                        signals.append(sig)
-
-                    state = "waiting_decline"
-                    decline_bar_count = 0
+            sig: dict[str, Any] = {
+                "price": round(float(high[idx]), 2),
+                "type": f"H{h_count}",
+                "supportPrice": round(sup_price, 2),
+            }
+            if dates is not None and idx < len(dates):
+                sig["date"] = str(dates[idx])
+            if volume_ratio is not None:
+                sig["volumeRatio"] = volume_ratio
+            if is_buy_signal:
+                sig["buySignal"] = True
+            signals.append(sig)
 
     # 按日期排序，去重（同一日期只保留一个信号）
     signals.sort(key=lambda s: s.get("date", ""))

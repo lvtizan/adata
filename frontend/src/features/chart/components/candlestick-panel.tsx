@@ -32,6 +32,8 @@ export function CandlestickPanel({ kind, code, label, title, emptyText = "请选
           height={220}
           signals={patternData?.signals}
           drawdowns={patternData?.drawdowns}
+          supports={patternData?.supports}
+          resistances={patternData?.resistances}
         />
       )}
     </ChartShell>

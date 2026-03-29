@@ -1,6 +1,6 @@
-import { useState, useRef, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
-import { useWatchlist, useUpdateWatchlist, useRemoveFromWatchlist, useStockSector } from "@/queries";
+import { useEffect, useRef, useState } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import { useSectorStocks } from "@/queries";
 import { DataTable, NumericCell, type Column } from "@/shared/table";
 import { fmtPct } from "@/shared/utils/format";
 import { WatchlistChart } from "@/features/watchlist/components/watchlist-chart";
@@ -10,45 +10,39 @@ import { HHStatsPanel } from "@/features/chart/components/hh-stats-panel";
 import { DrawingToolbar } from "@/features/chart/components/drawing-toolbar";
 import { DrawingsPanel } from "@/features/chart/components/drawings-panel";
 import { Button } from "@/shared/ui/button";
-import { Input } from "@/shared/ui/input";
-import type { WatchlistItem } from "@/shared/types";
+import type { SectorStock } from "@/shared/types";
 import { cn } from "@/lib/utils";
 import { useDashboardStore } from "@/store";
 
-export default function WatchlistPage() {
+export default function SectorWorkbenchPage() {
   const navigate = useNavigate();
   const { setSelectedSectorCode } = useDashboardStore();
-  const { data: items = [] } = useWatchlist();
-  const updateMutation = useUpdateWatchlist();
-  const removeMutation = useRemoveFromWatchlist();
+  const [searchParams] = useSearchParams();
+  const sectorCode = searchParams.get("sectorCode") || "";
+  const sectorNameFromQuery = searchParams.get("sectorName") || "";
+  const initialStockCode = searchParams.get("stockCode") || "";
+
+  const { data: items = [], isLoading, error } = useSectorStocks(sectorCode);
 
   const [selectedCode, setSelectedCode] = useState("");
-  const [editingSubgroup, setEditingSubgroup] = useState(false);
-  const [subgroupValue, setSubgroupValue] = useState("");
   const [drawingTool, setDrawingTool] = useState<string | null>(null);
   const [selectedOverlay, setSelectedOverlay] = useState<{ id: string | null; locked: boolean; name: string | null }>({ id: null, locked: false, name: null });
   const [drawings, setDrawings] = useState<Array<{ id: string; name: string; lock: boolean; points: number; label?: string }>>([]);
-
-  // 左列宽度拖拽
-  const [leftWidth, setLeftWidth] = useState(260);
+  const [leftWidth, setLeftWidth] = useState(280);
   const draggingLeft = useRef(false);
-  // 右列宽度拖拽
   const [rightWidth, setRightWidth] = useState(300);
   const draggingRight = useRef(false);
 
-  const selected = items.find((i) => i.tsCode === selectedCode) || items[0];
-
-  const needSectorLookup = !!selected && !selected.sectorCode;
-  const { data: sectorLookup } = useStockSector(needSectorLookup ? selected.tsCode : "");
-  const effectiveSectorCode = selected?.sectorCode || sectorLookup?.sectorCode || "";
+  const selected = items.find((i) => i.tsCode === selectedCode) || items.find((i) => i.tsCode === initialStockCode) || items[0];
+  const sectorName = items[0]?.sectorName || sectorNameFromQuery || "细分板块";
 
   useEffect(() => {
-    if (!selectedCode && items.length > 0 && items[0]) {
-      setSelectedCode(items[0].tsCode);
+    if (!selectedCode && items.length > 0) {
+      setSelectedCode(initialStockCode && items.some((item) => item.tsCode === initialStockCode) ? initialStockCode : items[0].tsCode);
     }
-  }, [selectedCode, items]);
+  }, [selectedCode, items, initialStockCode]);
 
-  const columns: Column<WatchlistItem>[] = [
+  const columns: Column<SectorStock>[] = [
     {
       key: "stockName",
       label: "名称",
@@ -66,6 +60,13 @@ export default function WatchlistPage() {
       align: "right",
       render: (item) => <NumericCell value={item.pctChange5d} format={fmtPct} />,
     },
+    {
+      key: "pctChange10d",
+      label: "10日",
+      width: "56px",
+      align: "right",
+      render: (item) => <NumericCell value={item.pctChange10d} format={fmtPct} />,
+    },
   ];
 
   function startResizeLeft(e: React.MouseEvent) {
@@ -75,7 +76,7 @@ export default function WatchlistPage() {
     const startW = leftWidth;
     function onMove(ev: MouseEvent) {
       if (!draggingLeft.current) return;
-      setLeftWidth(Math.min(400, Math.max(200, startW + ev.clientX - startX)));
+      setLeftWidth(Math.min(420, Math.max(220, startW + ev.clientX - startX)));
     }
     function onUp() {
       draggingLeft.current = false;
@@ -93,7 +94,6 @@ export default function WatchlistPage() {
     const startW = rightWidth;
     function onMove(ev: MouseEvent) {
       if (!draggingRight.current) return;
-      // 注意：右侧拖拽方向相反，往左拖 = 宽度变大
       setRightWidth(Math.min(460, Math.max(240, startW - (ev.clientX - startX))));
     }
     function onUp() {
@@ -105,18 +105,6 @@ export default function WatchlistPage() {
     document.addEventListener("mouseup", onUp);
   }
 
-  async function handleSaveSubgroup() {
-    if (!selected) return;
-    await updateMutation.mutateAsync({ tsCode: selected.tsCode, data: { subgroup: subgroupValue } });
-    setEditingSubgroup(false);
-  }
-
-  async function handleRemove() {
-    if (!selected) return;
-    await removeMutation.mutateAsync(selected.tsCode);
-    setSelectedCode("");
-  }
-
   function emitDrawingAction(
     action: "deleteSelected" | "clearAll" | "toggleLock" | "addSupportAtClose" | "addResistanceAtClose" | "addTagAtLatest" | "deleteById" | "toggleLockById",
     detail: Record<string, unknown> = {},
@@ -125,12 +113,23 @@ export default function WatchlistPage() {
     window.dispatchEvent(new CustomEvent(`chart-drawing:${selected.tsCode}`, { detail: { action, ...detail } }));
   }
 
+  if (!sectorCode) {
+    return <div className="flex items-center justify-center h-full text-text-tertiary">缺少板块参数</div>;
+  }
+
+  if (isLoading) {
+    return <div className="flex items-center justify-center h-full text-text-tertiary">板块成分股加载中...</div>;
+  }
+
+  if (error) {
+    return <div className="flex items-center justify-center h-full text-state-up">{error.message}</div>;
+  }
+
   return (
     <div className="flex h-full">
-      {/* ══ 左列：自选股列表 ══ */}
       <div className="flex flex-col min-h-0 border-r border-border-default" style={{ width: leftWidth }}>
         <div className="px-3 py-2 border-b border-border-default">
-          <h2 className="text-sm font-medium">自选股</h2>
+          <h2 className="text-sm font-medium">{sectorName}</h2>
           <p className="text-[10px] text-text-tertiary">{items.length} 只</p>
         </div>
         <DataTable
@@ -144,24 +143,19 @@ export default function WatchlistPage() {
         />
       </div>
 
-      {/* 左 resize handle */}
       <div className="w-[6px] cursor-col-resize relative shrink-0 group" onMouseDown={startResizeLeft}>
         <div className="absolute top-0 bottom-0 left-[2px] w-[2px] group-hover:bg-border-strong transition-colors" />
       </div>
 
-      {/* ══ 中列：K 线图 ══ */}
       <div className="flex-1 flex flex-col min-w-0 min-h-0">
         {selected ? (
           <>
-            {/* Header: 股票名 + 标签 + 指标 + 操作 */}
             <div className="px-4 py-2 border-b border-border-default space-y-1.5">
-              {/* 第一行：名称 + 指标卡片 + 操作 */}
               <div className="flex items-center gap-3">
                 <div className="shrink-0">
                   <h2 className="text-base font-semibold leading-tight">{selected.stockName}</h2>
-                  <span className="text-[10px] text-text-tertiary font-mono">{selected.tsCode}</span>
+                  <span className="text-[10px] text-text-tertiary font-mono">{selected.tsCode} · {sectorName}</span>
                 </div>
-                {/* 指标卡片 */}
                 <div className="flex items-stretch border border-border-default rounded text-xs">
                   {[
                     { label: "RPS20", value: selected.rps20 },
@@ -179,39 +173,31 @@ export default function WatchlistPage() {
                     </div>
                   ))}
                 </div>
-                {/* 分组 + 移出 */}
                 <div className="ml-auto flex items-center gap-1 shrink-0">
-                  {editingSubgroup ? (
-                    <>
-                      <Input className="h-6 w-28 text-[10px]" value={subgroupValue} onChange={(e) => setSubgroupValue(e.target.value)} />
-                      <Button size="sm" variant="ghost" className="h-6 text-[10px] px-1.5" onClick={handleSaveSubgroup}>保存</Button>
-                      <Button size="sm" variant="ghost" className="h-6 text-[10px] px-1.5" onClick={() => setEditingSubgroup(false)}>取消</Button>
-                    </>
-                  ) : (
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="h-6 text-[10px] px-1.5"
-                      onClick={() => { setSubgroupValue(selected.subgroup || ""); setEditingSubgroup(true); }}
-                    >
-                      {selected.subgroup || "未分组"} ✎
-                    </Button>
-                  )}
-                  <Button size="sm" variant="ghost" className="h-6 text-[10px] px-1.5 text-state-down hover:bg-state-down/10" onClick={handleRemove}>
-                    移出
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-6 text-[10px] px-1.5"
+                    onClick={() => {
+                      setSelectedSectorCode(sectorCode);
+                      navigate("/dashboard");
+                    }}
+                  >
+                    回板块总览
                   </Button>
                 </div>
               </div>
-              {/* 第二行：概念标签 + 资金徽章 */}
               <StockTagsPanel
-                key={`tags-${selected.tsCode}`}
+                key={`sector-tags-${selected.tsCode}`}
                 tsCode={selected.tsCode}
                 compact
-                onConceptClick={(code) => { setSelectedSectorCode(code); navigate("/dashboard"); }}
+                onConceptClick={(code) => {
+                  setSelectedSectorCode(code);
+                  navigate("/dashboard");
+                }}
               />
             </div>
 
-            {/* 画线工具栏 */}
             <div className="border-b border-border-default py-1">
               <DrawingToolbar
                 activeTool={drawingTool}
@@ -231,12 +217,11 @@ export default function WatchlistPage() {
               />
             </div>
 
-            {/* K 线图 */}
             <div className="flex-1 min-h-0 overflow-auto">
               <WatchlistChart
                 key={selected.tsCode}
                 tsCode={selected.tsCode}
-                sectorCode={effectiveSectorCode}
+                sectorCode={sectorCode}
                 stockName={selected.stockName}
                 activeTool={drawingTool}
                 onSelectionChange={setSelectedOverlay}
@@ -245,16 +230,14 @@ export default function WatchlistPage() {
             </div>
           </>
         ) : (
-          <div className="flex-1 flex items-center justify-center text-text-tertiary">暂无自选股</div>
+          <div className="flex-1 flex items-center justify-center text-text-tertiary">暂无成分股</div>
         )}
       </div>
 
-      {/* 右 resize handle */}
       <div className="w-[6px] cursor-col-resize relative shrink-0 group" onMouseDown={startResizeRight}>
         <div className="absolute top-0 bottom-0 left-[2px] w-[2px] group-hover:bg-border-strong transition-colors" />
       </div>
 
-      {/* ══ 右列：上涨归因 + 详细标签 ══ */}
       <div className="flex flex-col min-h-0 border-l border-border-default overflow-auto" style={{ width: rightWidth }}>
         {selected ? (
           <div className="space-y-4 p-3">
@@ -265,26 +248,20 @@ export default function WatchlistPage() {
               onDelete={(id) => emitDrawingAction("deleteById", { overlayId: id })}
               onToggleLock={(id, nextLocked) => emitDrawingAction("toggleLockById", { overlayId: id, nextLocked })}
             />
-            <AttributionPanel
-              key={`attr-${selected.tsCode}`}
+            <AttributionPanel key={`sector-attr-${selected.tsCode}`} tsCode={selected.tsCode} />
+            <StockTagsPanel
+              key={`sector-panel-tags-${selected.tsCode}`}
               tsCode={selected.tsCode}
+              onConceptClick={(code) => {
+                setSelectedSectorCode(code);
+                navigate("/dashboard");
+              }}
             />
-            <div className="border-t border-border-default pt-3">
-              <HHStatsPanel
-                key={`hh-${selected.tsCode}`}
-                tsCode={selected.tsCode}
-              />
-            </div>
-            <div className="border-t border-border-default pt-3">
-              <StockTagsPanel
-                key={`tags-full-${selected.tsCode}`}
-                tsCode={selected.tsCode}
-                onSelectStock={(code) => setSelectedCode(code)}
-                onConceptClick={(code) => { setSelectedSectorCode(code); navigate("/dashboard"); }}
-              />
-            </div>
+            <HHStatsPanel key={`sector-hh-${selected.tsCode}`} tsCode={selected.tsCode} />
           </div>
-        ) : null}
+        ) : (
+          <div className="flex-1 flex items-center justify-center text-text-tertiary">选择股票后显示详情</div>
+        )}
       </div>
     </div>
   );

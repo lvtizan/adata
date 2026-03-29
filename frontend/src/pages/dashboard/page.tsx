@@ -1,14 +1,14 @@
-import { useEffect, useState, useRef, useCallback } from "react";
+import { useEffect, useRef, useCallback, useState } from "react";
 import { useMarketOverview, useSectorRankings, useSectorStocks, useWatchlist } from "@/queries";
 import { useDashboardStore } from "@/store";
 import { MarketSummary } from "@/features/market/components/market-summary";
 import { RiskGauge } from "@/features/market/components/risk-gauge";
-import { IndexRiskPanel } from "@/features/market/components/index-risk-panel";
 import { SectorTable } from "@/features/sectors/components/sector-table";
 import { StockTable } from "@/features/stocks/components/stock-table";
 import { CandlestickPanel } from "@/features/chart/components/candlestick-panel";
-import { RsPanel } from "@/features/chart/components/rs-panel";
-import { Activity } from "lucide-react";
+import { WatchlistChart } from "@/features/watchlist/components/watchlist-chart";
+import { ChartShell } from "@/shared/charts";
+import { useNavigate } from "react-router-dom";
 
 /**
  * 基于百分比的弹性列宽 hook。
@@ -60,12 +60,12 @@ const COL1_PCT = 0.33;
 const COL2_PCT = 0.30;
 
 export default function DashboardPage() {
+  const navigate = useNavigate();
   const { data: overview } = useMarketOverview();
   const { data: rankings = [] } = useSectorRankings();
   const { selectedSectorCode, selectedStockCode, setSelectedSectorCode, setSelectedStockCode } = useDashboardStore();
   const { data: stocks = [], isLoading: stocksLoading } = useSectorStocks(selectedSectorCode);
   const { data: watchlistItems = [] } = useWatchlist();
-  const [showIndexRisk, setShowIndexRisk] = useState(false);
 
   const watchlistCodes = new Set(watchlistItems.map((w) => w.tsCode));
 
@@ -91,37 +91,15 @@ export default function DashboardPage() {
   return (
     <div className="flex flex-col h-full">
       {/* Summary bar */}
-      <div className="flex items-center justify-between gap-4 px-4 py-3 border-b border-border-default">
-        <div>
-          <h1 className="text-xl font-semibold">板块强度终端</h1>
-          <p className="text-xs text-text-secondary mt-0.5">板块结构、个股联动和图表确认放在同一工作台里。</p>
-        </div>
-        <div className="flex items-stretch">
-          <button
-            onClick={() => setShowIndexRisk(!showIndexRisk)}
-            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border transition-colors mr-2 self-center ${
-              showIndexRisk
-                ? "bg-accent text-white border-accent"
-                : "bg-surface text-text-secondary border-border-default hover:bg-surface-hover"
-            }`}
-          >
-            <Activity className="w-3.5 h-3.5" />
-            指数雷达
-          </button>
+      <div className="px-3 py-2 border-b border-border-default">
+        <div className="flex items-stretch min-w-0 w-full">
           <MarketSummary overview={overview} />
           <RiskGauge risk={overview?.marketRisk} />
         </div>
       </div>
 
-      {/* Main layout: optional index risk sidebar + 3-column */}
+      {/* Main layout: 3-column */}
       <div ref={containerRef} className="flex-1 flex min-h-0 border-t border-border-default overflow-hidden">
-        {/* Index Risk Panel (collapsible) */}
-        {showIndexRisk && (
-          <div className="w-[280px] shrink-0 border-r border-border-default overflow-hidden">
-            <IndexRiskPanel />
-          </div>
-        )}
-
         {/* Column 1: Sector rankings */}
         <div
           className="flex flex-col min-h-0 border-r border-border-default overflow-hidden"
@@ -150,7 +128,11 @@ export default function DashboardPage() {
           <StockTable
             data={stocks}
             selectedCode={selectedStockCode}
-            onSelect={setSelectedStockCode}
+            onSelect={(code) => {
+              setSelectedStockCode(code);
+              const sector = selectedSector;
+              navigate(`/sector-workbench?sectorCode=${encodeURIComponent(sector?.sectorCode || "")}&sectorName=${encodeURIComponent(sector?.sectorName || "")}&stockCode=${encodeURIComponent(code)}`);
+            }}
             loading={stocksLoading}
             watchlistCodes={watchlistCodes}
             sectorCode={selectedSector?.sectorCode}
@@ -161,10 +143,29 @@ export default function DashboardPage() {
         <Resizer onMouseDown={col2.onMouseDown} />
 
         {/* Column 3: Charts (takes remaining space) */}
-        <div className="flex-1 flex flex-col min-h-0 min-w-[260px] overflow-y-auto">
-          <CandlestickPanel kind="sector" code={selectedSector?.sectorCode || ""} label={selectedSector?.sectorName || ""} title="细分板块 K 线" emptyText="选择板块后显示" />
-          <CandlestickPanel kind="stock" code={selectedStock?.tsCode || ""} label={selectedStock?.stockName || ""} title="选中个股 K 线" emptyText="选择个股后显示" />
-          <RsPanel tsCode={selectedStock?.tsCode || ""} sectorCode={selectedSector?.sectorCode || ""} stockName={selectedStock?.stockName} sectorName={selectedSector?.sectorName} />
+        <div className="flex-1 flex flex-col min-h-0 min-w-[260px]">
+          <div className="flex-1 min-h-0">
+            <CandlestickPanel kind="sector" code={selectedSector?.sectorCode || ""} label={selectedSector?.sectorName || ""} title="细分板块 K 线" emptyText="选择板块后显示" />
+          </div>
+          <div className="flex-1 min-h-0">
+            <ChartShell
+              title="选中个股 K 线"
+              subtitle={selectedStock?.stockName || ""}
+              empty={!selectedStock?.tsCode ? "选择个股后显示" : undefined}
+              className="h-full"
+            >
+              {selectedStock?.tsCode ? (
+                <WatchlistChart
+                  key={selectedStock.tsCode}
+                  tsCode={selectedStock.tsCode}
+                  sectorCode={selectedSector?.sectorCode || ""}
+                  stockName={selectedStock.stockName}
+                />
+              ) : (
+                <div />
+              )}
+            </ChartShell>
+          </div>
         </div>
       </div>
     </div>

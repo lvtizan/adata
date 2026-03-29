@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -13,6 +14,9 @@ from urllib.parse import parse_qs, urlparse
 from config import get_config, init_logging
 from market_engine import MarketEngine
 from watchlist_store import WatchlistStore
+from daily_briefs_store import DailyBriefsStore
+from drawings_store import DrawingsStore
+from index_risk_analyzer import analyze_all_indices
 
 # 初始化日志和配置
 init_logging()
@@ -20,7 +24,9 @@ logger = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parent.parent
 WEB_DIR = ROOT / "web"
+BACKEND = ROOT / "backend"
 WATCHLIST_DB = ROOT / "backend" / "data" / "watchlist.db"
+DRAWINGS_DB = ROOT / "backend" / "data" / "drawings.db"
 
 # 加载配置
 config = get_config()
@@ -29,6 +35,8 @@ config = get_config()
 logger.info("初始化MarketEngine...")
 engine = MarketEngine(config)
 watchlist_store = WatchlistStore(WATCHLIST_DB)
+briefs_store = DailyBriefsStore()
+drawings_store = DrawingsStore(DRAWINGS_DB)
 
 # 预热缓存（后台线程）
 logger.info("启动缓存预热...")
@@ -127,6 +135,30 @@ class Handler(BaseHTTPRequestHandler):
                 return json_response(self, {"ok": True})
             return json_response(self, {"error": "method not allowed"}, 405)
 
+        if path.startswith("/api/drawings/"):
+            symbol = path.split("/")[3]
+            if not symbol:
+                return json_response(self, {"error": "missing symbol"}, 400)
+            scope = q.get("scope", ["stock"])[0]
+            timeframe = q.get("timeframe", ["1d"])[0]
+            if method == "GET":
+                return json_response(self, drawings_store.get_drawings(symbol, scope=scope, timeframe=timeframe))
+            if method == "PUT":
+                overlays = (body or {}).get("overlays", [])
+                if not isinstance(overlays, list):
+                    return json_response(self, {"error": "overlays must be a list"}, 400)
+                return json_response(
+                    self,
+                    drawings_store.save_drawings(symbol, overlays=overlays, scope=scope, timeframe=timeframe),
+                )
+            if method == "DELETE":
+                deleted = drawings_store.delete_drawings(symbol, scope=scope, timeframe=timeframe)
+                return json_response(
+                    self,
+                    {"ok": True, "deleted": deleted, "symbol": symbol, "scope": scope, "timeframe": timeframe},
+                )
+            return json_response(self, {"error": "method not allowed"}, 405)
+
         # 服务器状态（不需要预热即可返回）
         if path == "/api/status":
             return json_response(self, {
@@ -165,6 +197,11 @@ class Handler(BaseHTTPRequestHandler):
             logger.debug(f"获取板块排行: {trade_date}, sort={sort_by}, keyword={keyword}")
             return json_response(self, {"items": engine.sector_rankings(trade_date, sort_by=sort_by, keyword=keyword)})
 
+        if path == "/api/search":
+            query = q.get("q", [""])[0]
+            limit = int(q.get("limit", ["12"])[0])
+            return json_response(self, engine.search_market(query, trade_date, limit=limit))
+
         # 板块成分股API
         if path.startswith("/api/sectors/") and path.endswith("/stocks"):
             sector_code = path.split("/")[3]
@@ -197,6 +234,11 @@ class Handler(BaseHTTPRequestHandler):
                 return json_response(self, {"error": "missing tsCode or sectorCode"}, 400)
             logger.debug(f"获取相对强弱: {ts_code} vs {sector_code}")
             return json_response(self, engine.relative_strength(ts_code, sector_code, trade_date))
+
+        # 指数风险雷达API
+        if path == "/api/index-risk":
+            logger.debug(f"获取指数风险雷达: {trade_date}")
+            return json_response(self, analyze_all_indices(engine.pro, trade_date))
 
         # 牛股集中营API
         if path == "/api/bullcamp" or path == "/api/camp/bull-stocks":
@@ -258,7 +300,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 return json_response(self, engine.stock_rise_attribution(ts_code, trade_date))
             except Exception as exc:
-                logger.warning(f"归因分析失败: {ts_code}, {exc}")
+                logger.error(f"归因分析失败: {ts_code}, {exc}", exc_info=True)
                 return json_response(self, {"tsCode": ts_code, "stockName": "", "attribution": []})
 
         # 个股所属板块查询API
@@ -286,12 +328,76 @@ class Handler(BaseHTTPRequestHandler):
                     "capitalDetail": "", "relatedStocks": [],
                 })
 
+        # 个股HH信号成功率统计API
+        if path.startswith("/api/stock/") and path.endswith("/hh-stats"):
+            ts_code = path.split("/")[3]
+            logger.debug(f"获取HH成功率: {ts_code}")
+            try:
+                return json_response(self, engine.stock_hh_stats(ts_code, trade_date))
+            except Exception as exc:
+                logger.warning(f"HH统计失败: {ts_code}, {exc}")
+                return json_response(self, {"tsCode": ts_code, "totalSignals": 0, "signals": [], "statsByType": {}, "overall": {}})
+
         # 个股新闻/公告API
         if path.startswith("/api/stock/") and path.endswith("/news"):
             ts_code = path.split("/")[3]
             limit = int(q.get("limit", ["20"])[0])
             logger.debug(f"获取个股新闻: {ts_code}, limit={limit}")
             return json_response(self, {"tsCode": ts_code, "items": engine.stock_news(ts_code, trade_date, limit=limit)})
+
+        # ── 每日简报 API ──────────────────────────────
+
+        # 获取每日简报列表
+        if path == "/api/daily-briefs":
+            date = q.get("date", [None])[0]
+            brief_type = q.get("type", [None])[0]
+            limit = int(q.get("limit", ["10"])[0])
+            logger.debug(f"获取每日简报: date={date}, type={brief_type}, limit={limit}")
+            items = briefs_store.list_briefs(date=date, brief_type=brief_type, limit=limit)
+            return json_response(self, {"items": items})
+
+        # 获取最新简报
+        if path == "/api/daily-briefs/latest":
+            brief_type = q.get("type", [None])[0]
+            logger.debug(f"获取最新简报: type={brief_type}")
+            brief = briefs_store.get_latest(brief_type=brief_type)
+            if brief:
+                return json_response(self, brief)
+            return json_response(self, {"error": "暂无简报"}, 404)
+
+        # 调度器状态
+        if path == "/api/scheduler/status":
+            import os as _os
+            pid_file = ROOT / ".pids" / "scheduler.pid"
+            running = False
+            pid = None
+            if pid_file.exists():
+                pid = int(pid_file.read_text().strip())
+                try:
+                    _os.kill(pid, 0)
+                    running = True
+                except OSError:
+                    running = False
+            return json_response(self, {
+                "running": running,
+                "pid": pid,
+                "briefCount": briefs_store.count(),
+            })
+
+        # 手动触发更新（POST）
+        if path == "/api/scheduler/trigger" and method == "POST":
+            import subprocess as _sp
+            logger.info("手动触发调度器更新...")
+            try:
+                _sp.Popen(
+                    [sys.executable, str(BACKEND / "daily_scheduler.py"), "--run-now"],
+                    cwd=str(BACKEND),
+                    stdout=_sp.DEVNULL,
+                    stderr=_sp.DEVNULL,
+                )
+                return json_response(self, {"ok": True, "message": "更新已触发，请稍后刷新查看"})
+            except Exception as exc:
+                return json_response(self, {"error": str(exc)}, 500)
 
         # 未找到API
         logger.warning(f"未找到API: {path}")

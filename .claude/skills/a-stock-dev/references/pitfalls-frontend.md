@@ -151,3 +151,165 @@ return () => {
 **修复**：`loading = stockLoading`，RS 小窗内部已经有 "RS 数据加载中..." 的 fallback UI，不需要阻塞整个图表。
 
 **教训**：组件 loading 状态要区分"核心数据"和"辅助数据"。K 线是核心，RS 是辅助。辅助数据应该异步填充，不能阻塞核心数据的渲染。每个独立区域应该有自己的 loading 状态。
+
+### 18. RS 数据加载失败后不会重试，永远卡在"加载中"（2026-03-29）
+
+**现象**：RS 画中画永远显示"RS 数据加载中..."，不会自动恢复。
+
+**原因**：React Query 默认只重试 3 次，且 RS 依赖 `sectorCode`。如果 sectorCode 获取慢或后端超时，3 次重试用完后 query 进入 error 状态，但 RsPip 组件只检查了 `rsData` 有无数据来显示"加载中"文案，没有区分"正在加载"和"已失败"两种状态。
+
+**修复**：
+1. `useRelativeStrength` 设 `retry: true`（无限重试）+ 指数退避（2s→4s→8s→...→最长30s）
+2. RsPip 组件在无数据时始终显示"RS 数据加载中..."，后台静默持续重试直到成功
+3. 不显示"重试"按钮 — 用户体验不好，应该对用户透明
+
+**教训**：辅助数据（如 RS）的加载策略应该是**无限静默重试**，不要让用户操心。用 `retry: true` + 合理的 `retryDelay` 指数退避。核心数据（K线）可以有限重试后报错，但辅助数据应该持续尝试直到成功。
+
+### 19. 浅色模式下 Tailwind 颜色过亮看不清（2026-03-29）
+
+**现象**：概念标签用 `text-yellow-400` + `bg-yellow-500/10`，在白色背景下几乎看不见。
+
+**修复**：使用深浅模式分别的颜色：
+```
+bg-amber-100 border-amber-300 text-amber-700
+dark:bg-amber-500/10 dark:border-amber-500/25 dark:text-amber-400
+```
+
+**教训**：Tailwind 的 400 色阶在浅色背景下对比度不足。浅色模式用 600-700 色阶，深色模式用 400 色阶。始终检查两种模式下的可读性。
+
+### 20. 切换主题后K线数据消失（2026-03-29）
+
+**现象**：从亮色切暗色（或反过来），K线图变空白，再切回去仍然空白。
+
+**原因**：`watchlist-chart.tsx` 中两个 useEffect 的依赖不完整：
+1. `useLayoutEffect([isDark])` — 主题变化时销毁旧 chart、创建新 chart ✓
+2. `useEffect([tsCode, stockData, patternData])` — 填充数据到 chart ✗ 缺少 `isDark`
+3. 圆圈重绘 `useEffect([drawResistanceCircles, stockData])` — 也缺少 `isDark`
+
+主题切换时，chart 重建了，但数据填充 effect 不会重跑（因为 tsCode/stockData/patternData 都没变），新 chart 就是空的。
+
+**修复**：在数据填充 effect 和圆圈重绘 effect 的依赖中加上 `isDark`。
+
+**教训（重要模式）**：当 effect A 创建了资源（chart 实例），effect B 使用该资源（往 chart 填数据），**两个 effect 的依赖必须对齐**。如果 A 在 `isDark` 变化时重建了 chart，B 也必须在 `isDark` 变化时重填数据。漏掉依赖 = 数据丢失。
+
+### 21. package.json 写了不存在的第三方库版本，Vite 直接爆 import 解析错误（2026-03-29）
+
+**现象**：浏览器报错：
+`[plugin:vite:import-analysis] Failed to resolve import "klinecharts"`
+
+明明 `frontend/package.json` 里已经写了 `klinecharts`。
+
+**原因**：
+1. `package.json` 写的是不存在的版本号，例如 `klinecharts@^10.0.0`
+2. `npm install` 实际没有把包装进 `node_modules`
+3. TypeScript 类型检查不一定能暴露这个问题，但 Vite 在运行时解析 import 会直接失败
+
+**修复**：
+1. 先查 npm 上真实存在的版本，不要凭感觉写“稳定版号”
+2. 确认 `package-lock.json` 和 `node_modules` 里都真的有这个包
+3. 本次修复把 `klinecharts` 改成实际可安装的版本，再重新 `npm install`
+
+**教训**：
+1. 切换图表库前，先确认 npm 实际发布版本
+2. `tsc` 通过 != 依赖已正确安装
+3. 修改依赖后，至少检查三处：
+   - `package.json`
+   - `package-lock.json`
+   - `frontend/node_modules/<pkg>`
+
+### 22. 改完依赖后出现 `504 Outdated Optimize Dep`（2026-03-29）
+
+### 23. `klinecharts` v10 beta 没有 `applyNewData`（2026-03-29）
+
+**现象**：页面直接报错：
+`TypeError: chart.applyNewData is not a function`
+
+**原因**：
+1. 当前项目安装的是 `klinecharts 10.0.0-beta1`
+2. 旧版本示例里常见的 `applyNewData` 在这个版本里并不存在
+3. 这个版本的数据装载走的是 `setSymbol()` + `setPeriod()` + `setDataLoader()`
+
+**修复**：
+```ts
+chart.setSymbol({ ticker: tsCode, pricePrecision: 2, volumePrecision: 0 })
+chart.setPeriod({ type: "day", span: 1 })
+chart.setDataLoader({
+  getBars: ({ callback }) => callback(klineData, false),
+})
+```
+
+**教训**：
+1. `klinecharts` 不能照着旧文章直接写，先看当前安装包的 `index.d.ts`
+2. 看到 `... is not a function`，先核对实际 npm 版本和类型定义，不要凭记忆补 API
+
+### 24. `klinecharts` 不会自动跟随容器尺寸变化（2026-03-29）
+
+**现象**：自选股页拖动左右栏宽度后，K 线图宽高不跟着变化，像是“不会自适应”。
+
+**原因**：
+1. 从 `lightweight-charts` 切到 `klinecharts` 后，容器尺寸变化不会自动重排
+2. 如果不主动监听容器尺寸变化并调用 `chart.resize()`，图表会维持初始化时的尺寸
+
+**修复**：
+```ts
+const observer = new ResizeObserver(() => {
+  chart.resize()
+})
+observer.observe(containerEl)
+```
+
+并在 cleanup 里 `observer.disconnect()`。
+
+**教训**：
+1. 图表库迁移时，除了数据 API，还要核对尺寸、自适应、销毁这些生命周期行为
+2. 任何放在可拖拽分栏里的图表，都应该默认接 `ResizeObserver`
+
+### 25. 新增页面时，`route / nav / page file` 必须同一轮落地（2026-03-29）
+
+**现象**：Vite 直接报：
+`Failed to resolve import "@/pages/index-radar/page"`
+
+**原因**：先改了路由和导航，但页面文件还没创建，导致 import 指向不存在的模块。
+
+**教训**：
+1. 新增页面必须把 `page file`、`routes.tsx`、导航入口当成一个原子改动
+2. 这类改动做完后必须立刻跑一次前端编译检查
+
+### 26. 改 import 时不要把 React hooks 漏掉（2026-03-29）
+
+**现象**：运行时报：
+`ReferenceError: useState is not defined`
+
+**原因**：修改 `dashboard/page.tsx` 的 import 时，只保留了 `useEffect / useRef / useCallback`，把 `useState` 漏掉了，但文件里的 `useResizablePct` 还在使用它。
+
+**教训**：
+1. 改 import 语句时，先扫一遍文件里实际用到的 hooks
+2. 新增路由/页面改动后，不只看新增文件，还要检查被顺手改到的旧页面有没有漏依赖
+
+### 27. 图表迁移时不能只迁线，必须保留“算法标签语义”（2026-03-29）
+
+**现象**：支撑/压力线还在，但像 `支撑 x2` 这种“被测试次数”的标签没了，用户会以为算法被删了。
+
+**原因**：后端 `pattern_detector.py` 仍然返回了 `supports[].count / resistances[].count`，但前端迁移到 `KLineCharts` 时只把横线画出来，没有把原来一起展示的语义标签补回。
+
+**教训**：
+1. 迁移图表时，不能只看“图形像不像”，还要检查“交易语义有没有保留”
+2. 凡是后端已经返回的关键信号字段，例如 `count / touches / buySignal`，迁移后都要对照原 UI 一项项复原
+
+**现象**：浏览器控制台或页面里报：
+`Failed to load resource: the server responded with a status of 504 (Outdated Optimize Dep)`
+
+**原因**：
+1. 刚改了依赖版本或重新安装依赖
+2. Vite 还在使用旧的预构建缓存（optimize deps）
+3. 运行态缓存和当前 `node_modules` 不一致
+
+**修复**：
+1. 重启前端 dev server
+2. 用 `vite --force` 强制重建依赖预构建
+3. 确认 `frontend/node_modules/.vite` 对应的是当前安装状态
+
+**教训**：
+1. 依赖改动后，不要只看 `npm install` 成功，还要考虑 Vite 的 optimize 缓存
+2. 遇到 `Outdated Optimize Dep`，优先想到缓存重建，不要先怀疑业务代码
+3. 服务启动前，应该执行“依赖存在 + 端口监听 + Vite 缓存状态”检查

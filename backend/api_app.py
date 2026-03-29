@@ -8,6 +8,7 @@ from threading import Thread
 from config import get_config
 from market_engine import MarketEngine
 from watchlist_store import WatchlistStore
+from drawings_store import DrawingsStore
 from index_risk_analyzer import analyze_all_indices
 from pathlib import Path
 
@@ -16,6 +17,7 @@ config = get_config()
 engine = MarketEngine(config)
 data_dir = Path(__file__).parent / "data"
 watchlist = WatchlistStore(data_dir / "watchlist.db")
+drawings = DrawingsStore(data_dir / "drawings.db")
 
 # 创建 FastAPI 应用
 app = FastAPI(title="板块强度选股系统 API")
@@ -64,6 +66,12 @@ async def get_sector_rankings(sortBy: str = "rps10", keyword: str = ""):
     date = engine.latest_data_trade_date()
     items = engine.sector_rankings(date, sort_by=sortBy, keyword=keyword)
     return {"items": items}
+
+
+@app.get("/api/search")
+async def search_market(q: str, limit: int = 12):
+    date = engine.latest_data_trade_date()
+    return engine.search_market(q, date, limit=limit)
 
 
 # ===== 板块成分股 =====
@@ -145,6 +153,25 @@ async def update_watchlist(ts_code: str, item: dict):
 async def remove_watchlist(ts_code: str):
     deleted = watchlist.delete_item(ts_code)
     return {"success": deleted}
+
+
+@app.get("/api/drawings/{symbol}")
+async def get_drawings(symbol: str, scope: str = "stock", timeframe: str = "1d"):
+    return drawings.get_drawings(symbol, scope=scope, timeframe=timeframe)
+
+
+@app.put("/api/drawings/{symbol}")
+async def put_drawings(symbol: str, payload: dict, scope: str = "stock", timeframe: str = "1d"):
+    overlays = payload.get("overlays", [])
+    if not isinstance(overlays, list):
+        return {"error": "overlays must be a list"}
+    return drawings.save_drawings(symbol, overlays=overlays, scope=scope, timeframe=timeframe)
+
+
+@app.delete("/api/drawings/{symbol}")
+async def delete_drawings(symbol: str, scope: str = "stock", timeframe: str = "1d"):
+    deleted = drawings.delete_drawings(symbol, scope=scope, timeframe=timeframe)
+    return {"ok": True, "deleted": deleted, "symbol": symbol, "scope": scope, "timeframe": timeframe}
 
 
 # ===== 指数风险分析 (YTC 六步法) =====

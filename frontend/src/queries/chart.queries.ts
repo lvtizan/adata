@@ -25,5 +25,7 @@ export function useRelativeStrength(tsCode: string, sectorCode: string) {
     queryFn: () => getRelativeStrength(tsCode, sectorCode),
     enabled: !!tsCode && !!sectorCode,
     staleTime: 60_000,
+    retry: true,                  // 无限重试，直到成功
+    retryDelay: (attempt) => Math.min(2000 * 2 ** attempt, 30000), // 指数退避，2s→4s→8s→...→最长30s
   });
 }

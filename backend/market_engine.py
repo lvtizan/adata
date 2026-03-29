@@ -1089,6 +1089,63 @@ class MarketEngine:
             )
         return out
 
+    def search_market(self, query: str, trade_date: str, limit: int = 12) -> dict[str, list[dict[str, Any]]]:
+        keyword = str(query or "").strip()
+        if not keyword:
+            return {"stocks": [], "sectors": []}
+
+        safe_limit = max(1, min(int(limit), 50))
+        lower = keyword.lower()
+
+        sectors_raw = self.sector_rankings(trade_date, sort_by="rps10", keyword=keyword)
+        sectors = [
+            {
+                "type": "sector",
+                "sectorCode": item.get("sectorCode", ""),
+                "sectorName": item.get("sectorName", ""),
+                "rps10": item.get("rps10"),
+                "pctChange5d": item.get("pctChange5d"),
+            }
+            for item in sectors_raw[:safe_limit]
+        ]
+
+        stocks: list[dict[str, Any]] = []
+        try:
+            snapshot = self.compute_stock_metrics(trade_date)
+        except Exception as exc:
+            logger.warning(f"搜索股票时计算快照失败: {exc}")
+            snapshot = pd.DataFrame()
+
+        if snapshot is not None and not snapshot.empty:
+            df = snapshot.copy()
+            df["name"] = df["name"].fillna(df["ts_code"]).astype(str)
+            df["ts_code"] = df["ts_code"].astype(str)
+            mask = df["name"].str.lower().str.contains(lower, na=False) | df["ts_code"].str.lower().str.contains(lower, na=False)
+            matches = df.loc[mask].copy()
+
+            if not matches.empty:
+                matches["_starts"] = matches["name"].str.lower().str.startswith(lower) | matches["ts_code"].str.lower().str.startswith(lower)
+                matches = matches.sort_values(by=["_starts", "rps20", "amount_yuan"], ascending=[False, False, False]).head(safe_limit)
+
+                for _, row in matches.iterrows():
+                    ts_code = str(row.get("ts_code", ""))
+                    sector = self.stock_sector(ts_code, trade_date)
+                    stocks.append({
+                        "type": "stock",
+                        "tsCode": ts_code,
+                        "stockName": str(row.get("name", ts_code)),
+                        "sectorCode": sector.get("sectorCode", ""),
+                        "sectorName": sector.get("sectorName", ""),
+                        "close": round(float(row.get("close", 0) or 0), 2),
+                        "pctChange1d": round(float(row.get("pct_chg", 0) or 0), 2),
+                        "pctChange5d": round(float(row.get("ret5", 0) or 0), 2),
+                        "pctChange10d": round(float(row.get("ret10", 0) or 0), 2),
+                        "rps20": round(float(row.get("rps20", 0) or 0), 1),
+                        "amount": round(float(row.get("amount_yuan", 0) or 0), 2),
+                    })
+
+        return {"stocks": stocks[:safe_limit], "sectors": sectors[:safe_limit]}
+
     def _bull_camp_base(self, trade_date: str) -> list[dict[str, Any]]:
         def _load() -> list[dict[str, Any]]:
             """
@@ -1693,7 +1750,7 @@ class MarketEngine:
                         "sentiment": "neutral",
                     })
             except Exception as exc:
-                logger.debug(f"板块归因失败: {ts_code}, {exc}")
+                logger.warning(f"板块归因失败: {ts_code}, {exc}", exc_info=self.config.server.debug)
 
             # ── 2. 业绩驱动 ──
             try:
@@ -1764,7 +1821,7 @@ class MarketEngine:
                             "sentiment": "positive" if gm > 40 else ("neutral" if gm > 20 else "negative"),
                         })
             except Exception as exc:
-                logger.debug(f"财务归因失败: {ts_code}, {exc}")
+                logger.warning(f"财务归因失败: {ts_code}, {exc}", exc_info=self.config.server.debug)
 
             # ── 5. 资金关注 ──
             try:
@@ -1797,7 +1854,7 @@ class MarketEngine:
                                 "sentiment": "positive" if amount >= 1e9 else "neutral",
                             })
             except Exception as exc:
-                logger.debug(f"资金归因失败: {ts_code}, {exc}")
+                logger.warning(f"资金归因失败: {ts_code}, {exc}", exc_info=self.config.server.debug)
 
             # ── 6. 近期催化 ──
             try:
@@ -1812,7 +1869,7 @@ class MarketEngine:
                             "sentiment": "neutral",
                         })
             except Exception as exc:
-                logger.debug(f"新闻归因失败: {ts_code}, {exc}")
+                logger.warning(f"新闻归因失败: {ts_code}, {exc}", exc_info=self.config.server.debug)
 
             return {
                 "tsCode": ts_code,
@@ -2123,3 +2180,186 @@ class MarketEngine:
             return result
 
         return self._cached(f"stock_tags:{ts_code}:{trade_date}", 1800, _load)
+
+    # ══════════════════════════════════════════════════════════════
+    #  HH 信号成功率统计
+    # ══════════════════════════════════════════════════════════════
+
+    def stock_hh_stats(self, ts_code: str, trade_date: str) -> dict[str, Any]:
+        """
+        统计个股 HH 信号的历史成功率。
+
+        方法：
+        1. 取约 500 根 K 线的历史数据
+        2. 用 detect_hh_signals 找到所有历史 HH 信号
+        3. 对每个信号计算 5日/10日/20日 后的涨幅
+        4. 统计成功率（成功 = 后续 N 日最高价相对信号价有正收益）
+
+        返回:
+        {
+            "tsCode": str,
+            "totalSignals": int,
+            "signals": [ {date, type, price, ret5d, ret10d, ret20d, maxGain20d, success} ],
+            "statsByType": { "H1": {count, winRate5d, winRate10d, winRate20d, avgRet10d}, "H2": ... },
+            "overall": { winRate5d, winRate10d, winRate20d, avgMaxGain20d }
+        }
+        """
+        def _load():
+            import tushare as ts
+            from pattern_detector import detect_hh_signals
+
+            # 取 500 根 K 线
+            bars = 500
+            dates = self.trade_dates(trade_date, need=bars + 30)
+            start = dates[-bars] if len(dates) >= bars else dates[0]
+
+            try:
+                df = ts.pro_bar(
+                    pro_api=self.pro,
+                    ts_code=ts_code,
+                    adj="qfq",
+                    start_date=start,
+                    end_date=trade_date,
+                    asset="E",
+                )
+            except Exception:
+                df = self.pro.daily(ts_code=ts_code, start_date=start, end_date=trade_date)
+
+            if df is None or df.empty:
+                return {"tsCode": ts_code, "totalSignals": 0, "signals": [], "statsByType": {}, "overall": {}}
+
+            df = df.sort_values("trade_date").reset_index(drop=True)
+
+            # 运行 HH 检测（用全量数据）
+            hh_result = detect_hh_signals(df, lookback=len(df))
+            raw_signals = hh_result.get("signals", [])
+
+            if not raw_signals:
+                return {"tsCode": ts_code, "totalSignals": 0, "signals": [], "statsByType": {}, "overall": {}}
+
+            # 构建日期→索引映射
+            date_to_idx = {str(d): i for i, d in enumerate(df["trade_date"].values)}
+            close_arr = df["close"].values.astype(float)
+            high_arr = df["high"].values.astype(float)
+            n = len(close_arr)
+
+            signal_details = []
+            for sig in raw_signals:
+                sig_date = sig.get("date", "")
+                sig_type = sig.get("type", "")
+                sig_price = sig.get("price", 0)
+
+                if not sig_date or sig_date not in date_to_idx:
+                    continue
+
+                idx = date_to_idx[sig_date]
+                # 用收盘价作为基准（比 low 更准确反映入场价）
+                entry_price = float(close_arr[idx])
+                if entry_price <= 0:
+                    continue
+
+                # 计算 5/10/20 日后的收益率
+                def _forward_return(days):
+                    end_idx = min(idx + days, n - 1)
+                    if end_idx <= idx:
+                        return None
+                    future_close = float(close_arr[end_idx])
+                    return round((future_close - entry_price) / entry_price * 100, 2)
+
+                def _max_gain(days):
+                    end_idx = min(idx + days, n - 1)
+                    if end_idx <= idx:
+                        return None
+                    future_highs = high_arr[idx + 1 : end_idx + 1]
+                    if len(future_highs) == 0:
+                        return None
+                    max_high = float(future_highs.max())
+                    return round((max_high - entry_price) / entry_price * 100, 2)
+
+                ret5 = _forward_return(5)
+                ret10 = _forward_return(10)
+                ret20 = _forward_return(20)
+                mg20 = _max_gain(20)
+
+                detail = {
+                    "date": sig_date,
+                    "type": sig_type,
+                    "price": round(entry_price, 2),
+                    "supportPrice": sig.get("supportPrice"),
+                    "volumeRatio": sig.get("volumeRatio"),
+                    "buySignal": sig.get("buySignal", False),
+                    "ret5d": ret5,
+                    "ret10d": ret10,
+                    "ret20d": ret20,
+                    "maxGain20d": mg20,
+                    "success": (mg20 is not None and mg20 > 3),  # 20日内最大涨幅 > 3%
+                }
+                signal_details.append(detail)
+
+            # 按类型统计
+            from collections import defaultdict
+            type_groups = defaultdict(list)
+            for d in signal_details:
+                type_groups[d["type"]].append(d)
+
+            stats_by_type = {}
+            for t, items in sorted(type_groups.items()):
+                cnt = len(items)
+                def _win_rate(key):
+                    valid = [x for x in items if x[key] is not None]
+                    if not valid:
+                        return None
+                    wins = sum(1 for x in valid if x[key] > 0)
+                    return round(wins / len(valid) * 100, 1)
+
+                def _avg(key):
+                    valid = [x[key] for x in items if x[key] is not None]
+                    if not valid:
+                        return None
+                    return round(sum(valid) / len(valid), 2)
+
+                stats_by_type[t] = {
+                    "count": cnt,
+                    "winRate5d": _win_rate("ret5d"),
+                    "winRate10d": _win_rate("ret10d"),
+                    "winRate20d": _win_rate("ret20d"),
+                    "avgRet5d": _avg("ret5d"),
+                    "avgRet10d": _avg("ret10d"),
+                    "avgRet20d": _avg("ret20d"),
+                    "avgMaxGain20d": _avg("maxGain20d"),
+                }
+
+            # 总体统计
+            total = len(signal_details)
+            def _overall_wr(key):
+                valid = [x for x in signal_details if x[key] is not None]
+                if not valid:
+                    return None
+                wins = sum(1 for x in valid if x[key] > 0)
+                return round(wins / len(valid) * 100, 1)
+
+            def _overall_avg(key):
+                valid = [x[key] for x in signal_details if x[key] is not None]
+                if not valid:
+                    return None
+                return round(sum(valid) / len(valid), 2)
+
+            overall = {
+                "winRate5d": _overall_wr("ret5d"),
+                "winRate10d": _overall_wr("ret10d"),
+                "winRate20d": _overall_wr("ret20d"),
+                "avgRet5d": _overall_avg("ret5d"),
+                "avgRet10d": _overall_avg("ret10d"),
+                "avgRet20d": _overall_avg("ret20d"),
+                "avgMaxGain20d": _overall_avg("maxGain20d"),
+            }
+
+            return {
+                "tsCode": ts_code,
+                "totalSignals": total,
+                "signals": signal_details,
+                "statsByType": stats_by_type,
+                "overall": overall,
+            }
+
+        return self._cached(f"hh_stats:{ts_code}:{trade_date}", 600, _load)

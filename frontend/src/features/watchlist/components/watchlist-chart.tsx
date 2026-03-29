@@ -1,26 +1,215 @@
-import { useEffect, useLayoutEffect, useRef, useCallback } from "react";
-import {
-  CandlestickSeries,
-  HistogramSeries,
-  createChart,
-  createSeriesMarkers,
-  type IChartApi,
-  type ISeriesApi,
-  type SeriesType,
-} from "lightweight-charts";
-import { useStockChart, useRelativeStrength, useStockPatterns } from "@/queries";
-import { getChartTheme, getCandleColors } from "@/app/theme/chart-theme";
+import { useEffect, useRef, useCallback, useState } from "react";
+import { init, dispose, registerOverlay, type Chart } from "klinecharts";
+import { useStockChart, useRelativeStrength, useStockPatterns, useChartDrawings } from "@/queries";
+import { getKLineStyles, dateToTimestamp } from "@/app/theme/chart-theme";
 import { useAppStore } from "@/store";
+import { clearLocalDrawings, readLocalDrawings, sanitizeOverlay, writeLocalDrawings } from "@/lib/chart-drawings";
+import { clearChartDrawings, saveChartDrawings } from "@/services";
+import type { ChartDrawingOverlay } from "@/shared/types";
 
 interface WatchlistChartProps {
   tsCode: string;
   sectorCode: string;
   stockName?: string;
+  activeTool?: string | null;
+  onSelectionChange?: (selection: { id: string | null; locked: boolean; name: string | null }) => void;
+  onDrawingsChange?: (overlays: Array<{ id: string; name: string; lock: boolean; points: number; label?: string }>) => void;
 }
 
-function toChartDate(value: string): string {
-  if (!value) return "";
-  return `${value.slice(0, 4)}-${value.slice(4, 6)}-${value.slice(6, 8)}`;
+function toTs(v: string): number {
+  return dateToTimestamp(v);
+}
+
+function loadChartData(chart: Chart, symbol: string, data: Array<{
+  timestamp: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume?: number;
+  turnover?: number;
+}>) {
+  chart.setSymbol({
+    ticker: symbol,
+    pricePrecision: 2,
+    volumePrecision: 0,
+  });
+  chart.setPeriod({ type: "day", span: 1 });
+  chart.setDataLoader({
+    getBars: ({ callback }) => {
+      callback(data, false);
+    },
+  });
+  chart.setOffsetRightDistance(0);
+  chart.setRightMinVisibleBarCount(0);
+  chart.scrollToRealTime();
+}
+
+const SYSTEM_OVERLAY_GROUP = "__system__";
+const USER_OVERLAY_GROUP = "__user__";
+
+// ── 注册自定义 overlay：压力位红色圆圈 ──
+let _circleRegistered = false;
+function ensureOverlaysRegistered() {
+  if (_circleRegistered) return;
+  _circleRegistered = true;
+  registerOverlay<{
+    text: string;
+    color: string;
+    backgroundColor: string;
+    borderColor: string;
+  }>({
+    name: "levelTag",
+    needDefaultPointFigure: false,
+    needDefaultXAxisFigure: false,
+    needDefaultYAxisFigure: false,
+    totalStep: 1,
+    createYAxisFigures: ({ overlay, coordinates, bounding }) => {
+      const point = coordinates[0];
+      const data = overlay.extendData;
+      if (!point || !data || typeof data !== "object") return [];
+      return {
+        type: "text" as const,
+        attrs: {
+          x: bounding.width,
+          y: point.y,
+          text: data.text,
+          align: "right" as const,
+          baseline: "middle" as const,
+        },
+        styles: {
+          backgroundColor: data.backgroundColor,
+          borderColor: data.borderColor,
+          borderSize: 1,
+          borderRadius: 4,
+          color: data.color,
+          size: 10,
+          weight: 600,
+          paddingLeft: 6,
+          paddingRight: 6,
+          paddingTop: 2,
+          paddingBottom: 2,
+        },
+        ignoreEvent: true,
+      };
+    },
+  });
+  registerOverlay({
+    name: "resistanceCircle",
+    needDefaultPointFigure: false,
+    needDefaultXAxisMark: false,
+    needDefaultYAxisMark: false,
+    totalStep: 2,
+    createPointFigures: ({ overlay }) => {
+      const points = overlay.points;
+      if (!points || points.length === 0) return [];
+      const p = points[0];
+      if (p.x == null || p.y == null) return [];
+      return [
+        {
+          type: "circle" as const,
+          attrs: { x: p.x, y: p.y, r: 18 },
+          styles: {
+            style: "stroke_fill" as const,
+            color: "rgba(239, 68, 68, 0.25)",
+            borderColor: "rgba(239, 68, 68, 0.5)",
+            borderSize: 1.5,
+          },
+        },
+      ];
+    },
+  });
+  registerOverlay({
+    name: "hhMarker",
+    needDefaultPointFigure: false,
+    needDefaultXAxisFigure: false,
+    needDefaultYAxisFigure: false,
+    totalStep: 1,
+    createPointFigures: ({ overlay, coordinates }) => {
+      const point = coordinates[0];
+      if (!point) return [];
+      const text = typeof overlay.extendData === "string" ? overlay.extendData : "";
+      const arrowTipY = point.y - 18;
+      const arrowBaseY = point.y - 8;
+      const labelY = point.y - 24;
+      return [
+        {
+          type: "polygon" as const,
+          attrs: {
+            coordinates: [
+              { x: point.x, y: arrowTipY },
+              { x: point.x - 5, y: arrowBaseY },
+              { x: point.x + 5, y: arrowBaseY },
+            ],
+          },
+          styles: {
+            style: "stroke_fill" as const,
+            color: "#f59e0b",
+            borderColor: "#f59e0b",
+            borderSize: 1,
+          },
+          ignoreEvent: true,
+        },
+        {
+          type: "text" as const,
+          attrs: {
+            x: point.x,
+            y: labelY,
+            text,
+            align: "center" as const,
+            baseline: "bottom" as const,
+          },
+          styles: {
+            color: "#f59e0b",
+            size: 10,
+            weight: 700,
+          },
+          ignoreEvent: true,
+        },
+      ];
+    },
+  });
+  registerOverlay({
+    name: "drawdownMarker",
+    needDefaultPointFigure: false,
+    needDefaultXAxisFigure: false,
+    needDefaultYAxisFigure: false,
+    totalStep: 1,
+    createPointFigures: ({ overlay, coordinates }) => {
+      const point = coordinates[0];
+      if (!point) return [];
+      const text = typeof overlay.extendData === "string" ? overlay.extendData : "";
+      return [
+        {
+          type: "circle" as const,
+          attrs: { x: point.x, y: point.y + 10, r: 4 },
+          styles: {
+            style: "stroke_fill" as const,
+            color: "#ef4444",
+            borderColor: "#ef4444",
+            borderSize: 1,
+          },
+          ignoreEvent: true,
+        },
+        {
+          type: "text" as const,
+          attrs: {
+            x: point.x,
+            y: point.y + 20,
+            text,
+            align: "center" as const,
+            baseline: "top" as const,
+          },
+          styles: {
+            color: "#ef4444",
+            size: 10,
+            weight: 600,
+          },
+          ignoreEvent: true,
+        },
+      ];
+    },
+  });
 }
 
 // ═══════════════════════════════════════
@@ -31,9 +220,10 @@ interface RsPipProps {
   rsData: any;
   stockName?: string;
   isDark: boolean;
+  emptyReason?: string;
 }
 
-function RsPip({ rsData, stockName, isDark }: RsPipProps) {
+function RsPip({ rsData, stockName, isDark, emptyReason }: RsPipProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   const draw = useCallback(() => {
@@ -58,15 +248,13 @@ function RsPip({ rsData, stockName, isDark }: RsPipProps) {
     const maxLen = Math.max(stockPts.length, sectorPts.length);
 
     if (maxLen < 2) {
-      // 无数据
       ctx.fillStyle = isDark ? "#4b5563" : "#9ca3af";
       ctx.font = "10px -apple-system, sans-serif";
       ctx.textAlign = "center";
-      ctx.fillText("RS 数据加载中...", w / 2, h / 2);
+      ctx.fillText(emptyReason || "RS 数据加载中...", w / 2, h / 2);
       return;
     }
 
-    // 计算范围
     const allVals = [...stockPts, ...sectorPts].filter((v) => Number.isFinite(v));
     let minVal = Math.min(...allVals);
     let maxVal = Math.max(...allVals);
@@ -107,7 +295,6 @@ function RsPip({ rsData, stockName, isDark }: RsPipProps) {
       ctx.fillText(val.toFixed(0), w - 4, y + 3);
     }
 
-    // 画线函数
     const drawLine = (pts: number[], color: string, lineWidth: number) => {
       if (pts.length < 2) return;
       ctx.strokeStyle = color;
@@ -132,7 +319,6 @@ function RsPip({ rsData, stockName, isDark }: RsPipProps) {
       ctx.fill();
     };
 
-    // 先画板块（蓝），再画个股（红）— 个股在上层
     drawLine(sectorPts, "#2962ff", 1.2);
     drawLine(stockPts, "#f23645", 1.5);
 
@@ -154,7 +340,6 @@ function RsPip({ rsData, stockName, isDark }: RsPipProps) {
       ctx.fillText(val.toFixed(1), Math.min(x, plotRight - 28), y + yOffset);
     };
 
-    // 调整标签位置避免重叠
     if (stockPts.length > 0 && sectorPts.length > 0) {
       const stockLast = stockPts[stockPts.length - 1];
       const sectorLast = sectorPts[sectorPts.length - 1];
@@ -163,7 +348,6 @@ function RsPip({ rsData, stockName, isDark }: RsPipProps) {
         ((maxVal - sectorLast) / (maxVal - minVal)) * plotH
       );
       if (diff < 14) {
-        // 太近，上下错开
         drawLabel(stockPts, "#f23645", stockLast > sectorLast ? -4 : 12);
         drawLabel(sectorPts, "#2962ff", sectorLast > stockLast ? -4 : 12);
       } else {
@@ -178,8 +362,6 @@ function RsPip({ rsData, stockName, isDark }: RsPipProps) {
     // 底部图例
     const legendY = h - 6;
     ctx.font = "9px -apple-system, sans-serif";
-
-    // 个股
     ctx.fillStyle = "#f23645";
     ctx.beginPath();
     ctx.arc(plotLeft + 4, legendY - 3, 3, 0, Math.PI * 2);
@@ -188,7 +370,6 @@ function RsPip({ rsData, stockName, isDark }: RsPipProps) {
     ctx.textAlign = "left";
     ctx.fillText(stockName || "个股", plotLeft + 10, legendY);
 
-    // 板块
     const sectorLabelX = plotLeft + 10 + ctx.measureText(stockName || "个股").width + 12;
     ctx.fillStyle = "#2962ff";
     ctx.beginPath();
@@ -196,14 +377,10 @@ function RsPip({ rsData, stockName, isDark }: RsPipProps) {
     ctx.fill();
     ctx.fillStyle = isDark ? "#787b86" : "#9aa1ad";
     ctx.fillText("板块", sectorLabelX + 6, legendY);
-
   }, [rsData, stockName, isDark]);
 
-  useEffect(() => {
-    draw();
-  }, [draw]);
+  useEffect(() => { draw(); }, [draw]);
 
-  // 响应尺寸变化
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -225,291 +402,401 @@ function RsPip({ rsData, stockName, isDark }: RsPipProps) {
 //  主图组件
 // ═══════════════════════════════════════
 
-export function WatchlistChart({ tsCode, sectorCode, stockName }: WatchlistChartProps) {
+export function WatchlistChart({ tsCode, sectorCode, stockName, activeTool, onSelectionChange, onDrawingsChange }: WatchlistChartProps) {
   const theme = useAppStore((s) => s.theme);
   const isDark = theme === "dark";
 
-  const priceRef = useRef<HTMLDivElement>(null);
-  const lowerRef = useRef<HTMLDivElement>(null);
-  const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
-
-  const priceChartRef = useRef<IChartApi | null>(null);
-  const lowerChartRef = useRef<IChartApi | null>(null);
-
-  const candleSeriesRef = useRef<ISeriesApi<SeriesType> | null>(null);
-  const volumeSeriesRef = useRef<ISeriesApi<SeriesType> | null>(null);
-  const priceLinesRef = useRef<any[]>([]);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const chartRef = useRef<Chart | null>(null);
+  const saveTimerRef = useRef<number | null>(null);
+  const restoringRef = useRef(false);
+  const restoredSymbolRef = useRef<string | null>(null);
+  const currentSymbolRef = useRef(tsCode);
+  const selectedOverlayIdRef = useRef<string | null>(null);
+  const selectedOverlayLockedRef = useRef(false);
+  const [saveTick, setSaveTick] = useState(0);
 
   const { data: stockData, isLoading: stockLoading, error: stockError } = useStockChart(tsCode);
-  const { data: rsData, isFetching: rsFetching } = useRelativeStrength(tsCode, sectorCode);
+  const { data: rsData } = useRelativeStrength(tsCode, sectorCode);
   const { data: patternData } = useStockPatterns(tsCode);
+  const { data: drawingsDoc } = useChartDrawings(tsCode, "stock", "1d");
 
-  // RS 不阻塞图表渲染 — K 线先显示，RS 小窗异步加载
   const loading = stockLoading;
   const error = stockError ? (stockError as Error).message : "";
+  const rsReady = ((rsData?.stock?.rpsSeries?.length ?? 0) > 1) && ((rsData?.sector?.rpsSeries?.length ?? 0) > 1);
+  const rsEmptyReason = !sectorCode ? "缺少板块映射" : rsReady ? "" : "RS 暂无数据";
 
-  // Create charts — only price + volume
-  useLayoutEffect(() => {
-    if (!priceRef.current || !lowerRef.current) return;
-
-    const borderColor = isDark ? "#2a2e3a" : "#e8eaee";
-    const baseOpts = {
-      autoSize: true,
-      ...getChartTheme(isDark),
-      rightPriceScale: { borderColor, scaleMargins: { top: 0.08, bottom: 0.12 } },
-      timeScale: { borderColor, timeVisible: false },
-    };
-
-    const priceChart = createChart(priceRef.current, baseOpts);
-    const lowerChart = createChart(lowerRef.current, baseOpts);
-
-    const cc = getCandleColors(isDark);
-    candleSeriesRef.current = priceChart.addSeries(CandlestickSeries, {
-      upColor: cc.up,
-      downColor: cc.down,
-      wickUpColor: cc.upWick,
-      wickDownColor: cc.downWick,
-      borderUpColor: cc.upBorder,
-      borderDownColor: cc.downBorder,
-    });
-
-    volumeSeriesRef.current = lowerChart.addSeries(HistogramSeries, {
-      priceFormat: { type: "volume" },
-      priceLineVisible: false,
-      lastValueVisible: false,
-    });
-
-    // Sync time ranges
-    let lock = false;
-    const syncCharts = (source: IChartApi, targets: IChartApi[]) => {
-      source.timeScale().subscribeVisibleLogicalRangeChange((range) => {
-        if (lock || !range) return;
-        lock = true;
-        targets.forEach((t) => t.timeScale().setVisibleLogicalRange(range));
-        lock = false;
-      });
-    };
-    syncCharts(priceChart, [lowerChart]);
-    syncCharts(lowerChart, [priceChart]);
-
-    priceChartRef.current = priceChart;
-    lowerChartRef.current = lowerChart;
-
-    return () => {
-      priceChart.remove();
-      lowerChart.remove();
-      priceChartRef.current = null;
-      lowerChartRef.current = null;
-      candleSeriesRef.current = null;
-      volumeSeriesRef.current = null;
-    };
-  }, [isDark]);
-
-  const prevTsCodeRef = useRef(tsCode);
-
-  // Update data
   useEffect(() => {
-    if (!candleSeriesRef.current || !stockData) return;
+    currentSymbolRef.current = tsCode;
+    restoredSymbolRef.current = null;
+    selectedOverlayIdRef.current = null;
+    selectedOverlayLockedRef.current = false;
+    onSelectionChange?.({ id: null, locked: false, name: null });
+    onDrawingsChange?.([]);
+  }, [tsCode, onSelectionChange, onDrawingsChange]);
 
-    if (prevTsCodeRef.current !== tsCode) {
-      prevTsCodeRef.current = tsCode;
-      createSeriesMarkers(candleSeriesRef.current, []);
-    }
+  useEffect(() => { ensureOverlaysRegistered(); }, []);
 
-    const points = (stockData.points || []).filter(
-      (p) => [p.open, p.high, p.low, p.close].every((v) => Number.isFinite(v) && v > 0)
+  const updateSelection = useCallback((id: string | null, locked = false, name: string | null = null) => {
+    selectedOverlayIdRef.current = id;
+    selectedOverlayLockedRef.current = locked;
+    onSelectionChange?.({ id, locked, name });
+  }, [onSelectionChange]);
+
+  const emitDrawingsChange = useCallback((overlays: ChartDrawingOverlay[]) => {
+    onDrawingsChange?.(
+      overlays.map((overlay) => ({
+        id: overlay.id ?? `${overlay.name}-${Math.random()}`,
+        name: overlay.name,
+        lock: overlay.lock === true,
+        points: Array.isArray(overlay.points) ? overlay.points.length : 0,
+        label: typeof overlay.extendData === "string" && overlay.extendData ? overlay.extendData : undefined,
+      }))
     );
+  }, [onDrawingsChange]);
 
-    const candles = points.map((p) => ({
-      time: toChartDate(p.time),
-      open: p.open,
-      high: p.high,
-      low: p.low,
-      close: p.close,
-    }));
+  const buildOverlayCallbacks = useCallback((overlay: Partial<ChartDrawingOverlay> = {}) => ({
+    ...overlay,
+    groupId: overlay.groupId ?? USER_OVERLAY_GROUP,
+    onDrawEnd: () => {
+      setSaveTick((n) => n + 1);
+      return true;
+    },
+    onPressedMoveEnd: () => {
+      setSaveTick((n) => n + 1);
+      return true;
+    },
+    onRemoved: () => {
+      if (selectedOverlayIdRef.current === overlay.id) updateSelection(null, false, null);
+      setSaveTick((n) => n + 1);
+      return true;
+    },
+    onSelected: () => {
+      updateSelection(overlay.id ?? null, overlay.lock === true, overlay.name ?? null);
+      return true;
+    },
+    onDeselected: () => {
+      if (selectedOverlayIdRef.current === overlay.id) updateSelection(null, false, null);
+      return true;
+    },
+  }), [updateSelection]);
 
-    const volumes = points.map((p) => ({
-      time: toChartDate(p.time),
-      value: p.amount != null && Number.isFinite(p.amount) ? p.amount : p.volume,
-      color: p.close >= p.open
-        ? (isDark ? "rgba(209,212,220,0.35)" : "rgba(26,26,26,0.18)")
-        : (isDark ? "rgba(209,212,220,0.55)" : "rgba(26,26,26,0.45)"),
-    }));
+  const snapshotOverlays = useCallback((): ChartDrawingOverlay[] => {
+    const chart = chartRef.current as any;
+    if (!chart?.getOverlays) return [];
+    const raw = chart.getOverlays();
+    if (!Array.isArray(raw)) return [];
+    return raw
+      .map((item: unknown) => sanitizeOverlay(item))
+      .filter((item: ChartDrawingOverlay | null): item is ChartDrawingOverlay => item != null)
+      .filter((item) => item.groupId !== SYSTEM_OVERLAY_GROUP);
+  }, []);
 
-    const candleTimes = new Set(candles.map((c) => c.time));
-
-    candleSeriesRef.current?.setData(candles);
-
-    // ── 标记 ──
-    if (candleSeriesRef.current) {
-      const allMarkers: Array<{
-        time: string;
-        position: "aboveBar" | "belowBar";
-        color: string;
-        shape: "arrowUp" | "arrowDown" | "circle";
-        text: string;
-        size?: number;
-      }> = [];
-
-      if (patternData?.signals) {
-        for (const s of patternData.signals) {
-          if (!s.date || !candleTimes.has(toChartDate(s.date))) continue;
-          const isH1 = s.type === "H1";
-          const isBuy = !!s.buySignal;
-          allMarkers.push({
-            time: toChartDate(s.date),
-            position: "aboveBar",
-            color: isBuy ? "#22c55e" : isH1 ? "#6b7280" : "#f59e0b",
-            shape: "arrowUp",
-            text: isBuy ? `${s.type}★` : s.type,
-          });
-        }
+  const persistOverlaysNow = useCallback(async (overlays: ChartDrawingOverlay[]) => {
+    const symbol = currentSymbolRef.current;
+    if (!symbol) return;
+    emitDrawingsChange(overlays);
+    writeLocalDrawings(symbol, "stock", "1d", overlays);
+    try {
+      if (overlays.length === 0) {
+        await clearChartDrawings(symbol, "stock", "1d");
+      } else {
+        await saveChartDrawings(symbol, overlays, "stock", "1d");
       }
-
-      if (patternData?.drawdowns) {
-        for (const dd of patternData.drawdowns) {
-          if (!dd.date || !candleTimes.has(toChartDate(dd.date))) continue;
-          allMarkers.push({
-            time: toChartDate(dd.date),
-            position: "belowBar",
-            color: "#ef4444",
-            shape: "circle",
-            size: 0.5,
-            text: `${dd.pct > 0 ? "+" : ""}${dd.pct}%`,
-          });
-        }
-      }
-
-      allMarkers.sort((a, b) => (a.time < b.time ? -1 : 1));
-      createSeriesMarkers(candleSeriesRef.current, allMarkers);
+    } catch {
+      // Keep local snapshot even if remote save fails.
     }
+  }, [emitDrawingsChange]);
 
-    volumeSeriesRef.current?.setData(volumes);
+  const schedulePersist = useCallback(() => {
+    if (restoringRef.current) return;
+    if (saveTimerRef.current != null) window.clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = window.setTimeout(() => {
+      const overlays = snapshotOverlays();
+      void persistOverlaysNow(overlays);
+    }, 250);
+  }, [persistOverlaysNow, snapshotOverlays]);
 
-    // ── 支撑/压力线 ──
-    if (candleSeriesRef.current) {
-      const series = candleSeriesRef.current;
+  useEffect(() => {
+    if (!saveTick) return;
+    schedulePersist();
+  }, [saveTick, schedulePersist]);
 
-      // 清除旧的 price lines
-      for (const line of priceLinesRef.current) {
-        try { series.removePriceLine(line); } catch { /* ignore */ }
-      }
-      priceLinesRef.current = [];
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
 
-      // 压力位 — 红色实线 + "压力" 标签
-      if (patternData?.resistances) {
-        for (const res of patternData.resistances) {
-          priceLinesRef.current.push(series.createPriceLine({
-            price: res.price,
-            color: "#ef4444",
-            lineWidth: 1,
-            lineStyle: 0, // Solid
-            axisLabelVisible: true,
-            title: res.count >= 2 ? `压力 ×${res.count}` : "压力",
-            axisLabelColor: "#ef4444",
-            axisLabelTextColor: "#ffffff",
-          }));
-        }
-      }
+    const chart = init(el, {
+      styles: getKLineStyles(isDark),
+      locale: "zh-CN",
+    });
+    if (!chart) return;
+    chartRef.current = chart;
 
-      // 支撑位 — 绿色虚线 + "支撑" 标签
+    const observer = new ResizeObserver(() => {
+      chart.resize();
+    });
+    observer.observe(el);
+
+    // 添加成交量子图
+    chart.createIndicator("VOL", false, { id: "pane_vol" });
+
+    // ── 填充 K 线数据 ──
+    if (stockData) {
+      const points = (stockData.points || []).filter(
+        (p) => [p.open, p.high, p.low, p.close].every((v) => Number.isFinite(v) && v > 0)
+      );
+
+      const klineData = points.map((p) => ({
+        timestamp: toTs(p.time),
+        open: p.open,
+        high: p.high,
+        low: p.low,
+        close: p.close,
+        volume: p.amount != null && Number.isFinite(p.amount) ? p.amount : p.volume,
+        turnover: p.amount ?? 0,
+      }));
+
+      loadChartData(chart, tsCode, klineData);
+
+      // ── 支撑位 — 绿色虚线 ──
       if (patternData?.supports) {
         for (const sup of patternData.supports) {
-          priceLinesRef.current.push(series.createPriceLine({
-            price: sup.price,
-            color: "#22c55e",
-            lineWidth: 1,
-            lineStyle: 2, // Dashed
-            axisLabelVisible: true,
-            title: sup.count >= 2 ? `支撑 ×${sup.count}` : "支撑",
-            axisLabelColor: "#22c55e",
-            axisLabelTextColor: "#ffffff",
-          }));
+          chart.createOverlay({
+            name: "horizontalStraightLine",
+            groupId: SYSTEM_OVERLAY_GROUP,
+            points: [{ value: sup.price }],
+            styles: {
+              line: { color: "#22c55e", size: 1, style: "dashed" as const },
+            },
+            lock: true,
+          });
+          chart.createOverlay({
+            name: "levelTag",
+            groupId: SYSTEM_OVERLAY_GROUP,
+            points: [{ value: sup.price }],
+            extendData: {
+              text: `支撑 x${sup.count}`,
+              color: "#16a34a",
+              backgroundColor: "rgba(34, 197, 94, 0.12)",
+              borderColor: "rgba(34, 197, 94, 0.35)",
+            },
+            lock: true,
+          });
+        }
+      }
+
+      // ── 压力位 — 红色实线 ──
+      if (patternData?.resistances) {
+        for (const res of patternData.resistances) {
+          chart.createOverlay({
+            name: "horizontalStraightLine",
+            groupId: SYSTEM_OVERLAY_GROUP,
+            points: [{ value: res.price }],
+            styles: {
+              line: { color: "#ef4444", size: 1, style: "solid" as const },
+            },
+            lock: true,
+          });
+          chart.createOverlay({
+            name: "levelTag",
+            groupId: SYSTEM_OVERLAY_GROUP,
+            points: [{ value: res.price }],
+            extendData: {
+              text: `压力 x${res.count}`,
+              color: "#dc2626",
+              backgroundColor: "rgba(239, 68, 68, 0.12)",
+              borderColor: "rgba(239, 68, 68, 0.35)",
+            },
+            lock: true,
+          });
+
+          // 压力顶红圈
+          if (res.touches) {
+            for (const touch of res.touches) {
+              if (!touch.date) continue;
+              chart.createOverlay({
+                name: "resistanceCircle",
+                groupId: SYSTEM_OVERLAY_GROUP,
+                points: [{ timestamp: toTs(touch.date), value: touch.price }],
+                lock: true,
+              });
+            }
+          }
+        }
+      }
+
+      // ── HH 信号标注 ──
+      if (patternData?.signals) {
+        for (const s of patternData.signals) {
+          if (!s.date) continue;
+          const isBuy = !!s.buySignal;
+          const text = isBuy ? `${s.type}★` : s.type;
+
+          chart.createOverlay({
+            name: "hhMarker",
+            groupId: SYSTEM_OVERLAY_GROUP,
+            points: [{ timestamp: toTs(s.date), value: s.price }],
+            extendData: text,
+            lock: true,
+          });
+        }
+      }
+
+      // ── 回撤标注 ──
+      if (patternData?.drawdowns) {
+        for (const dd of patternData.drawdowns) {
+          if (!dd.date) continue;
+          chart.createOverlay({
+            name: "drawdownMarker",
+            groupId: SYSTEM_OVERLAY_GROUP,
+            points: [{ timestamp: toTs(dd.date), value: dd.price }],
+            extendData: `${dd.pct > 0 ? "+" : ""}${dd.pct.toFixed(1)}%`,
+            lock: true,
+          });
         }
       }
     }
-
-    priceChartRef.current?.timeScale().fitContent();
-    lowerChartRef.current?.timeScale().fitContent();
-  }, [tsCode, stockData, patternData]);
-
-  // ── 画压力顶圆圈 (Canvas overlay) ──
-  const drawResistanceCircles = useCallback(() => {
-    const canvas = overlayCanvasRef.current;
-    const chart = priceChartRef.current;
-    const series = candleSeriesRef.current;
-    if (!canvas || !chart || !series) return;
-
-    const dpr = window.devicePixelRatio || 1;
-    const w = canvas.clientWidth;
-    const h = canvas.clientHeight;
-    canvas.width = w * dpr;
-    canvas.height = h * dpr;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-    ctx.scale(dpr, dpr);
-    ctx.clearRect(0, 0, w, h);
-
-    if (!patternData?.resistances) return;
-
-    const radius = 18; // 圆圈半径
-
-    for (const res of patternData.resistances) {
-      if (!res.touches) continue;
-      for (const touch of res.touches) {
-        try {
-          const timeStr = toChartDate(touch.date);
-          // @ts-ignore — lightweight-charts v5 coordinate API
-          const x = chart.timeScale().timeToCoordinate(timeStr);
-          const y = series.priceToCoordinate(touch.price);
-          if (x == null || y == null || x < 0 || y < 0) continue;
-
-          // 半透明红色圆圈
-          ctx.beginPath();
-          ctx.arc(x, y, radius, 0, Math.PI * 2);
-          ctx.fillStyle = "rgba(239, 68, 68, 0.25)";
-          ctx.fill();
-          ctx.strokeStyle = "rgba(239, 68, 68, 0.5)";
-          ctx.lineWidth = 1.5;
-          ctx.stroke();
-        } catch {
-          // coordinate conversion may fail for out-of-view points
-        }
-      }
-    }
-  }, [patternData]);
-
-  // 重绘圆圈：数据变化时 + 图表滚动/缩放时
-  useEffect(() => {
-    drawResistanceCircles();
-
-    const chart = priceChartRef.current;
-    if (!chart) return;
-
-    // 滚动/缩放时重绘
-    const handler = () => { drawResistanceCircles(); };
-    chart.timeScale().subscribeVisibleLogicalRangeChange(handler);
 
     return () => {
-      try {
-        chart.timeScale().unsubscribeVisibleLogicalRangeChange(handler);
-      } catch { /* chart may be disposed */ }
+      observer.disconnect();
+      if (saveTimerRef.current != null) {
+        window.clearTimeout(saveTimerRef.current);
+        saveTimerRef.current = null;
+      }
+      dispose(el);
+      chartRef.current = null;
     };
-  }, [drawResistanceCircles, stockData]);
+  }, [tsCode, stockData, patternData, isDark]);
 
-  // 容器大小变化时重绘
   useEffect(() => {
-    const canvas = overlayCanvasRef.current;
-    if (!canvas) return;
-    const observer = new ResizeObserver(() => drawResistanceCircles());
-    observer.observe(canvas);
-    return () => observer.disconnect();
-  }, [drawResistanceCircles]);
+    const chart = chartRef.current as any;
+    if (!chart?.createOverlay || !stockData) return;
+    if (restoredSymbolRef.current === tsCode) return;
+
+    const restore = async () => {
+      restoringRef.current = true;
+      try {
+        const local = readLocalDrawings(tsCode, "stock", "1d");
+        const remote = drawingsDoc?.overlays ?? [];
+        const source = local.length > 0 ? local : remote;
+        emitDrawingsChange(source);
+        for (const raw of source) {
+          const overlay = sanitizeOverlay(raw);
+          if (!overlay) continue;
+          chart.createOverlay(buildOverlayCallbacks(overlay));
+        }
+        restoredSymbolRef.current = tsCode;
+      } finally {
+        restoringRef.current = false;
+      }
+    };
+
+    void restore();
+  }, [tsCode, stockData, drawingsDoc, buildOverlayCallbacks, emitDrawingsChange]);
+
+  useEffect(() => {
+    const chart = chartRef.current as any;
+    if (!chart?.createOverlay) return;
+
+    if (activeTool) {
+      chart.createOverlay(buildOverlayCallbacks({
+        id: `${activeTool}-${Date.now()}`,
+        name: activeTool,
+      }));
+    }
+  }, [activeTool, buildOverlayCallbacks]);
+
+  useEffect(() => {
+    return () => {
+      if (saveTimerRef.current != null) {
+        window.clearTimeout(saveTimerRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent<{ action: string; overlayId?: string; nextLocked?: boolean }>).detail;
+      if (!detail || !chartRef.current || detail.action === "") return;
+      const chart = chartRef.current as any;
+      if (detail.action === "deleteSelected" && selectedOverlayIdRef.current && chart.removeOverlay) {
+        chart.removeOverlay({ id: selectedOverlayIdRef.current });
+        updateSelection(null, false, null);
+        setSaveTick((n) => n + 1);
+      }
+      if (detail.action === "deleteById" && detail.overlayId && chart.removeOverlay) {
+        chart.removeOverlay({ id: detail.overlayId });
+        if (selectedOverlayIdRef.current === detail.overlayId) {
+          updateSelection(null, false, null);
+        }
+        setSaveTick((n) => n + 1);
+      }
+      if (detail.action === "clearAll") {
+        const overlays = snapshotOverlays();
+        for (const overlay of overlays) {
+          if (overlay.id && chart.removeOverlay) {
+            chart.removeOverlay({ id: overlay.id });
+          }
+        }
+        updateSelection(null, false, null);
+        clearLocalDrawings(tsCode, "stock", "1d");
+        void clearChartDrawings(tsCode, "stock", "1d");
+        emitDrawingsChange([]);
+        setSaveTick((n) => n + 1);
+      }
+      if (detail.action === "toggleLock" && selectedOverlayIdRef.current && chart.overrideOverlay) {
+        const nextLocked = !selectedOverlayLockedRef.current;
+        chart.overrideOverlay({ id: selectedOverlayIdRef.current, lock: nextLocked });
+        updateSelection(selectedOverlayIdRef.current, nextLocked, snapshotOverlays().find((o) => o.id === selectedOverlayIdRef.current)?.name ?? null);
+        setSaveTick((n) => n + 1);
+      }
+      if (detail.action === "toggleLockById" && detail.overlayId && chart.overrideOverlay) {
+        chart.overrideOverlay({ id: detail.overlayId, lock: detail.nextLocked === true });
+        if (selectedOverlayIdRef.current === detail.overlayId) {
+          updateSelection(detail.overlayId, detail.nextLocked === true, snapshotOverlays().find((o) => o.id === detail.overlayId)?.name ?? null);
+        }
+        setSaveTick((n) => n + 1);
+      }
+      if (detail.action === "addSupportAtClose" || detail.action === "addResistanceAtClose" || detail.action === "addTagAtLatest") {
+        const latest = stockData?.points?.[stockData.points.length - 1];
+        if (!latest) return;
+        if (detail.action === "addSupportAtClose") {
+          chart.createOverlay(buildOverlayCallbacks({
+            id: `support-${Date.now()}`,
+            name: "horizontalStraightLine",
+            styles: { line: { color: "#22c55e", size: 1, style: "dashed" as const } },
+            points: [{ timestamp: toTs(latest.time), value: latest.close }],
+            extendData: `支撑 ${latest.close.toFixed(2)}`,
+          }));
+        }
+        if (detail.action === "addResistanceAtClose") {
+          chart.createOverlay(buildOverlayCallbacks({
+            id: `resistance-${Date.now()}`,
+            name: "horizontalStraightLine",
+            styles: { line: { color: "#ef4444", size: 1, style: "solid" as const } },
+            points: [{ timestamp: toTs(latest.time), value: latest.close }],
+            extendData: `阻力 ${latest.close.toFixed(2)}`,
+          }));
+        }
+        if (detail.action === "addTagAtLatest") {
+          chart.createOverlay(buildOverlayCallbacks({
+            id: `tag-${Date.now()}`,
+            name: "simpleTag",
+            points: [{ timestamp: toTs(latest.time), value: latest.close }],
+            extendData: `${latest.close.toFixed(2)}`,
+          }));
+        }
+        setSaveTick((n) => n + 1);
+      }
+    };
+    window.addEventListener(`chart-drawing:${tsCode}`, handler as EventListener);
+    return () => window.removeEventListener(`chart-drawing:${tsCode}`, handler as EventListener);
+  }, [snapshotOverlays, tsCode, updateSelection, emitDrawingsChange, stockData, buildOverlayCallbacks]);
 
   return (
     <div className="flex flex-col h-full">
-      {/* 主图区 — K 线 + Canvas 画中画，占 80% 高度 */}
-      <div className="relative flex-[4] min-h-0">
+      <div className="relative flex-1 min-h-0">
         {loading && (
           <div className="absolute inset-0 flex items-center justify-center text-text-tertiary text-sm z-10 bg-canvas/80">
             加载中...
@@ -520,16 +807,8 @@ export function WatchlistChart({ tsCode, sectorCode, stockName }: WatchlistChart
             {error}
           </div>
         )}
-        <div ref={priceRef} className="w-full h-full" />
+        <div ref={containerRef} className="w-full h-full" />
 
-        {/* 压力顶圆圈叠加层 — 覆盖在K线图上 */}
-        <canvas
-          ref={overlayCanvasRef}
-          className="absolute inset-0 w-full h-full pointer-events-none"
-          style={{ zIndex: 5 }}
-        />
-
-        {/* ── Canvas 画中画 RS 曲线 ── */}
         <div
           className="absolute z-20 rounded-md overflow-hidden shadow-sm"
           style={{
@@ -540,13 +819,8 @@ export function WatchlistChart({ tsCode, sectorCode, stockName }: WatchlistChart
             border: `1px solid ${isDark ? "#2a2e3a" : "#d7dce4"}`,
           }}
         >
-          <RsPip rsData={rsData} stockName={stockName} isDark={isDark} />
+          <RsPip rsData={rsData} stockName={stockName} isDark={isDark} emptyReason={rsEmptyReason} />
         </div>
-      </div>
-
-      {/* 成交额 — 占 20% 高度 */}
-      <div className="relative flex-1 min-h-0">
-        <div ref={lowerRef} className="w-full h-full" />
       </div>
     </div>
   );
