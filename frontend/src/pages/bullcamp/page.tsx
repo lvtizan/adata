@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
 import { useBullCamp, useStockSector } from "@/queries";
 import { DataTable, NumericCell, type Column } from "@/shared/table";
 import { fmtPct, fmtAmount } from "@/shared/utils/format";
@@ -9,9 +10,13 @@ import { NewsPanel } from "@/features/bullcamp/components/news-panel";
 import { WatchlistChart } from "@/features/watchlist/components/watchlist-chart";
 import { AttributionPanel } from "@/features/chart/components/attribution-panel";
 import { StockTagsPanel } from "@/features/chart/components/stock-tags-panel";
+import { HHStatsPanel } from "@/features/chart/components/hh-stats-panel";
+import { DrawingToolbar } from "@/features/chart/components/drawing-toolbar";
+import { DrawingsPanel } from "@/features/chart/components/drawings-panel";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/shared/ui/tabs";
 import type { BullCampItem } from "@/shared/types";
 import { cn } from "@/lib/utils";
+import { useDashboardStore } from "@/store";
 
 function compareValues(a: any, b: any, key: string, dir: "asc" | "desc"): number {
   let va = a[key], vb = b[key];
@@ -23,8 +28,13 @@ function compareValues(a: any, b: any, key: string, dir: "asc" | "desc"): number
 }
 
 export default function BullcampPage() {
+  const navigate = useNavigate();
+  const { setSelectedSectorCode } = useDashboardStore();
   const { data: items = [], isLoading, error } = useBullCamp();
   const [selectedCode, setSelectedCode] = useState("");
+  const [drawingTool, setDrawingTool] = useState<string | null>(null);
+  const [selectedOverlay, setSelectedOverlay] = useState<{ id: string | null; locked: boolean; name: string | null }>({ id: null, locked: false, name: null });
+  const [drawings, setDrawings] = useState<Array<{ id: string; name: string; lock: boolean; points: number; label?: string }>>([]);
   // 左列宽度
   const [leftWidth, setLeftWidth] = useState(520);
   const draggingLeft = useRef(false);
@@ -103,6 +113,14 @@ export default function BullcampPage() {
     document.addEventListener("mouseup", onUp);
   }
 
+  function emitDrawingAction(
+    action: "deleteSelected" | "clearAll" | "toggleLock" | "addSupportAtClose" | "addResistanceAtClose" | "addTagAtLatest" | "deleteById" | "toggleLockById",
+    detail: Record<string, unknown> = {},
+  ) {
+    if (!selected) return;
+    window.dispatchEvent(new CustomEvent(`chart-drawing:${selected.tsCode}`, { detail: { action, ...detail } }));
+  }
+
   if (isLoading) return <div className="flex items-center justify-center h-full text-text-tertiary">牛股集中营加载中...</div>;
   if (error) return <div className="flex items-center justify-center h-full text-state-up">{error.message}</div>;
 
@@ -167,6 +185,7 @@ export default function BullcampPage() {
                 key={`tags-compact-${selected.tsCode}`}
                 tsCode={selected.tsCode}
                 compact
+                onConceptClick={(code) => { setSelectedSectorCode(code); navigate("/dashboard"); }}
               />
             </div>
 
@@ -176,13 +195,36 @@ export default function BullcampPage() {
                 <TabsTrigger value="financials" className="rounded-none border-b-2 border-transparent data-[state=active]:border-accent data-[state=active]:shadow-none px-4 py-2 text-sm">财务</TabsTrigger>
                 <TabsTrigger value="news" className="rounded-none border-b-2 border-transparent data-[state=active]:border-accent data-[state=active]:shadow-none px-4 py-2 text-sm">新闻</TabsTrigger>
               </TabsList>
-              <TabsContent value="chart" className="flex-1 min-h-0 overflow-auto mt-0">
-                <WatchlistChart
-                  key={selected.tsCode}
-                  tsCode={selected.tsCode}
-                  sectorCode={effectiveSectorCode}
-                  stockName={selected.stockName}
-                />
+              <TabsContent value="chart" className="flex-1 flex flex-col min-h-0 overflow-auto mt-0">
+                <div className="border-b border-border-default py-1">
+                  <DrawingToolbar
+                    activeTool={drawingTool}
+                    selectedOverlayId={selectedOverlay.id}
+                    selectedOverlayName={selectedOverlay.name}
+                    selectedOverlayLocked={selectedOverlay.locked}
+                    overlays={drawings}
+                    onToolSelect={setDrawingTool}
+                    onDeleteSelected={() => emitDrawingAction("deleteSelected")}
+                    onClearAll={() => emitDrawingAction("clearAll")}
+                    onToggleLock={() => emitDrawingAction("toggleLock")}
+                    onDeleteOverlay={(id) => emitDrawingAction("deleteById", { overlayId: id })}
+                    onToggleOverlayLock={(id, nextLocked) => emitDrawingAction("toggleLockById", { overlayId: id, nextLocked })}
+                    onAddSupportTemplate={() => emitDrawingAction("addSupportAtClose")}
+                    onAddResistanceTemplate={() => emitDrawingAction("addResistanceAtClose")}
+                    onAddTagTemplate={() => emitDrawingAction("addTagAtLatest")}
+                  />
+                </div>
+                <div className="flex-1 min-h-0">
+                  <WatchlistChart
+                    key={selected.tsCode}
+                    tsCode={selected.tsCode}
+                    sectorCode={effectiveSectorCode}
+                    stockName={selected.stockName}
+                    activeTool={drawingTool}
+                    onSelectionChange={setSelectedOverlay}
+                    onDrawingsChange={setDrawings}
+                  />
+                </div>
               </TabsContent>
               <TabsContent value="financials" className="flex-1 min-h-0 overflow-auto mt-0">
                 <FinancialsPanel tsCode={selected.tsCode} />
@@ -206,17 +248,29 @@ export default function BullcampPage() {
       <div className="flex flex-col min-h-0 border-l border-border-default overflow-auto" style={{ width: rightWidth }}>
         {selected ? (
           <div className="space-y-4 p-3">
+            <DrawingsPanel
+              items={drawings}
+              selectedId={selectedOverlay.id}
+              selectedName={selectedOverlay.name}
+              onDelete={(id) => emitDrawingAction("deleteById", { overlayId: id })}
+              onToggleLock={(id, nextLocked) => emitDrawingAction("toggleLockById", { overlayId: id, nextLocked })}
+            />
             <AttributionPanel
               key={`attr-${selected.tsCode}`}
               tsCode={selected.tsCode}
-              stockName={selected.stockName}
             />
+            <div className="border-t border-border-default pt-3">
+              <HHStatsPanel
+                key={`hh-${selected.tsCode}`}
+                tsCode={selected.tsCode}
+              />
+            </div>
             <div className="border-t border-border-default pt-3">
               <StockTagsPanel
                 key={`tags-full-${selected.tsCode}`}
                 tsCode={selected.tsCode}
-                stockName={selected.stockName}
                 onSelectStock={(code) => setSelectedCode(code)}
+                onConceptClick={(code) => { setSelectedSectorCode(code); navigate("/dashboard"); }}
               />
             </div>
           </div>

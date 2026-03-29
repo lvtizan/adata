@@ -8,6 +8,8 @@ interface StockTagsPanelProps {
   /** compact: 嵌入 header 的行内模式，只显示概念标签+资金徽章 */
   compact?: boolean;
   onSelectStock?: (tsCode: string) => void;
+  /** 点击概念标签时回调，传入概念code和name */
+  onConceptClick?: (conceptCode: string, conceptName: string) => void;
 }
 
 const capitalTypeStyle: Record<string, { bg: string; text: string; icon: string }> = {
@@ -17,28 +19,31 @@ const capitalTypeStyle: Record<string, { bg: string; text: string; icon: string 
   "未知":     { bg: "bg-surface-secondary border-border-default", text: "text-text-tertiary", icon: "❓" },
 };
 
-function ConceptTags({ data, small }: { data: StockTagsResult; small?: boolean }) {
+function ConceptTags({ data, small, onConceptClick }: { data: StockTagsResult; small?: boolean; onConceptClick?: (code: string, name: string) => void }) {
   if (!data.concepts.length) return <span className="text-xs text-text-tertiary">暂无题材</span>;
   const list = small ? data.concepts.slice(0, 5) : data.concepts;
+  const Tag = onConceptClick ? "button" : "span";
   return (
     <div className="flex flex-wrap gap-1">
       {list.map((c) => (
-        <span
+        <Tag
           key={c.code}
+          onClick={onConceptClick ? () => onConceptClick(c.code, c.name) : undefined}
           className={cn(
             "inline-flex items-center gap-0.5 rounded border",
             small ? "px-1.5 py-0 text-[10px]" : "px-2 py-0.5 text-xs",
+            onConceptClick && "cursor-pointer hover:ring-1 hover:ring-accent/40 transition-shadow",
             c.rps10 >= 80
               ? "bg-state-up/10 border-state-up/20 text-state-up"
               : c.rps10 >= 50
-              ? "bg-yellow-500/10 border-yellow-500/20 text-yellow-400"
+              ? "bg-amber-100 border-amber-300 text-amber-700 dark:bg-amber-500/10 dark:border-amber-500/25 dark:text-amber-400"
               : "bg-surface-secondary border-border-default text-text-secondary"
           )}
           title={`RPS10: ${c.rps10}`}
         >
           {c.name}
           {!small && <span className="text-[10px] opacity-70">{c.rps10.toFixed(0)}</span>}
-        </span>
+        </Tag>
       ))}
       {small && data.concepts.length > 5 && (
         <span className="text-[10px] text-text-tertiary">+{data.concepts.length - 5}</span>
@@ -99,16 +104,16 @@ function RelatedStocks({ data, onSelect }: { data: StockTagsResult; onSelect?: (
 }
 
 /** compact 模式：行内展示概念标签 + 资金徽章，适合嵌入 header */
-function CompactView({ data }: { data: StockTagsResult }) {
+function CompactView({ data, onConceptClick }: { data: StockTagsResult; onConceptClick?: (code: string, name: string) => void }) {
   return (
     <div className="flex flex-wrap items-center gap-1.5">
       <CapitalBadge data={data} small />
-      <ConceptTags data={data} small />
+      <ConceptTags data={data} small onConceptClick={onConceptClick} />
     </div>
   );
 }
 
-export function StockTagsPanel({ tsCode, stockName, compact, onSelectStock }: StockTagsPanelProps) {
+export function StockTagsPanel({ tsCode, stockName, compact, onSelectStock, onConceptClick }: StockTagsPanelProps) {
   const { data, isLoading } = useStockTags(tsCode);
 
   if (!tsCode) return null;
@@ -117,7 +122,7 @@ export function StockTagsPanel({ tsCode, stockName, compact, onSelectStock }: St
   if (compact) {
     if (isLoading) return <span className="text-[10px] text-text-tertiary">标签加载中...</span>;
     if (!data) return null;
-    return <CompactView data={data} />;
+    return <CompactView data={data} onConceptClick={onConceptClick} />;
   }
 
   // ── 完整模式 ──
@@ -125,7 +130,6 @@ export function StockTagsPanel({ tsCode, stockName, compact, onSelectStock }: St
     <div className="space-y-3">
       <div className="flex items-center gap-2">
         <h3 className="text-sm font-medium text-text-primary">个股标签</h3>
-        {stockName && <span className="text-xs text-text-quaternary">{stockName}</span>}
       </div>
 
       {isLoading ? (
@@ -136,7 +140,7 @@ export function StockTagsPanel({ tsCode, stockName, compact, onSelectStock }: St
         <div className="space-y-3">
           <div className="space-y-1.5">
             <div className="text-xs text-text-quaternary">炒什么题材</div>
-            <ConceptTags data={data} />
+            <ConceptTags data={data} onConceptClick={onConceptClick} />
           </div>
           <div className="space-y-1.5">
             <div className="text-xs text-text-quaternary">资金属性</div>

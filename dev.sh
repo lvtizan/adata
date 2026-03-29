@@ -12,6 +12,10 @@ sleep 1
 cd "$DIR/backend"
 nohup python3 server.py > /tmp/a-data-backend.log 2>&1 &
 
+# 启动定时调度器（每日自动更新）
+cd "$DIR/backend"
+nohup python3 daily_scheduler.py --daemon > /tmp/a-data-scheduler.log 2>&1 &
+
 # 启动前端
 cd "$DIR/frontend"
 nohup ./node_modules/.bin/vite --host 127.0.0.1 --port 5173 > /tmp/a-data-frontend.log 2>&1 &
@@ -22,5 +26,7 @@ nohup ./node_modules/.bin/vite --host 127.0.0.1 --port 5173 > /tmp/a-data-fronte
 echo "✅ 已启动"
 echo "   前端: http://127.0.0.1:5173"
 echo "   后端: http://127.0.0.1:8080"
+echo "   调度器: 自动运行（09:00/11:35/15:10）"
 echo "   日志: tail -f /tmp/a-data-backend.log"
+echo "   调度日志: tail -f /tmp/a-data-scheduler.log"
 echo "   停止: bash stop.sh"

@@ -63,9 +63,6 @@ export function AttributionPanel({ tsCode, stockName }: AttributionPanelProps) {
     <div className="space-y-2">
       <div className="flex items-center gap-2 px-1">
         <h3 className="text-sm font-medium text-text-primary">上涨归因</h3>
-        {stockName && (
-          <span className="text-xs text-text-quaternary">{stockName}</span>
-        )}
       </div>
       {isLoading ? (
         <div className="text-xs text-text-tertiary px-1">分析中...</div>

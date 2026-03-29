@@ -1,10 +1,8 @@
-import { useEffect, useRef } from "react";
-import { createChart, LineSeries } from "lightweight-charts";
+import { useEffect, useRef, useCallback } from "react";
 import { ChartShell } from "@/shared/charts";
 import { useRelativeStrength } from "@/queries";
 import { useAppStore } from "@/store";
-import { getChartTheme } from "@/app/theme/chart-theme";
-import { formatDate } from "@/shared/utils/format";
+import { getChartColors } from "@/app/theme/chart-theme";
 import { cn } from "@/lib/utils";
 
 interface RsPanelProps {
@@ -14,30 +12,107 @@ interface RsPanelProps {
   sectorName?: string;
 }
 
+/**
+ * 纯 Canvas 实现的 RS 双线对比图。
+ * 不依赖 lightweight-charts / klinecharts —— 两条折线用不着上大炮。
+ */
 export function RsPanel({ tsCode, sectorCode, stockName, sectorName }: RsPanelProps) {
   const { data, isLoading, error } = useRelativeStrength(tsCode, sectorCode);
-  const containerRef = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
   const theme = useAppStore((s) => s.theme);
+  const isDark = theme === "dark";
+
+  const draw = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !data) return;
+
+    const dpr = window.devicePixelRatio || 1;
+    const w = canvas.clientWidth;
+    const h = canvas.clientHeight;
+    canvas.width = w * dpr;
+    canvas.height = h * dpr;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.scale(dpr, dpr);
+
+    const colors = getChartColors(isDark);
+
+    // 清除背景
+    ctx.fillStyle = colors.bg;
+    ctx.fillRect(0, 0, w, h);
+
+    const stockPts: number[] = (data.stock?.rpsSeries || []).map((p: any) => p.value);
+    const sectorPts: number[] = (data.sector?.rpsSeries || []).map((p: any) => p.value);
+    const maxLen = Math.max(stockPts.length, sectorPts.length);
+    if (maxLen < 2) return;
+
+    // 计算值域
+    const allVals = [...stockPts, ...sectorPts];
+    let minV = Math.min(...allVals);
+    let maxV = Math.max(...allVals);
+    if (maxV - minV < 5) {
+      const mid = (maxV + minV) / 2;
+      minV = mid - 5;
+      maxV = mid + 5;
+    }
+
+    const pad = { top: 16, bottom: 24, left: 36, right: 12 };
+    const chartW = w - pad.left - pad.right;
+    const chartH = h - pad.top - pad.bottom;
+
+    // 网格线
+    ctx.strokeStyle = colors.grid;
+    ctx.lineWidth = 1;
+    const gridLines = 4;
+    for (let i = 0; i <= gridLines; i++) {
+      const y = pad.top + (chartH / gridLines) * i;
+      ctx.beginPath();
+      ctx.setLineDash([3, 3]);
+      ctx.moveTo(pad.left, y);
+      ctx.lineTo(w - pad.right, y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Y 轴标签
+      const val = maxV - ((maxV - minV) / gridLines) * i;
+      ctx.fillStyle = colors.text;
+      ctx.font = "10px sans-serif";
+      ctx.textAlign = "right";
+      ctx.fillText(val.toFixed(0), pad.left - 4, y + 4);
+    }
+
+    function drawLine(pts: number[], color: string, lineW: number) {
+      if (pts.length < 2) return;
+      ctx!.beginPath();
+      ctx!.strokeStyle = color;
+      ctx!.lineWidth = lineW;
+      for (let i = 0; i < pts.length; i++) {
+        const x = pad.left + (i / (maxLen - 1)) * chartW;
+        const y = pad.top + ((maxV - pts[i]) / (maxV - minV)) * chartH;
+        if (i === 0) ctx!.moveTo(x, y);
+        else ctx!.lineTo(x, y);
+      }
+      ctx!.stroke();
+    }
+
+    // 板块线（蓝，较粗但在底层）
+    drawLine(sectorPts, "#2962ff", 1.5);
+    // 个股线（红，在上层）
+    drawLine(stockPts, "#f23645", 2);
+  }, [data, isDark]);
 
   useEffect(() => {
-    if (!containerRef.current || !data) return;
+    draw();
+  }, [draw]);
 
-    const chart = createChart(containerRef.current, {
-      ...getChartTheme(theme === "dark"),
-      width: containerRef.current.clientWidth,
-      height: 200,
-      autoSize: true,
-    });
-
-    const stockLine = chart.addSeries(LineSeries, { color: "#f23645", lineWidth: 2 });
-    const sectorLine = chart.addSeries(LineSeries, { color: "#2962ff", lineWidth: 2 });
-
-    stockLine.setData(data.stock.rpsSeries.map((p) => ({ time: formatDate(p.time), value: p.value })));
-    sectorLine.setData(data.sector.rpsSeries.map((p) => ({ time: formatDate(p.time), value: p.value })));
-    chart.timeScale().fitContent();
-
-    return () => chart.remove();
-  }, [data, theme]);
+  // 容器大小变化时重绘
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const observer = new ResizeObserver(() => draw());
+    observer.observe(canvas);
+    return () => observer.disconnect();
+  }, [draw]);
 
   const summary = data?.summary;
 
@@ -70,7 +145,7 @@ export function RsPanel({ tsCode, sectorCode, stockName, sectorName }: RsPanelPr
         ) : undefined
       }
     >
-      <div ref={containerRef} className="w-full" style={{ height: 200 }} />
+      <canvas ref={canvasRef} className="w-full" style={{ height: 200 }} />
       {data && (
         <div className="flex gap-3 px-3 pb-2 text-xs text-text-secondary">
           <span><span className="inline-block w-2 h-2 rounded-full bg-state-up mr-1" />{stockName || "个股"} RPS</span>

@@ -308,9 +308,12 @@ def compute_attribution_batch(
         try:
             # 复用 engine 现有方法（已有内存缓存，批量跑时不会重复查同一板块/指标）
             result = engine.stock_rise_attribution(ts_code, trade_date)
-            results[ts_code] = result
+            if result.get("attribution"):
+                results[ts_code] = result
+            else:
+                logger.warning(f"归因数据为空: {ts_code}, 可能所有子模块均失败")
         except Exception as exc:
-            logger.debug(f"归因计算失败: {ts_code}, {exc}")
+            logger.warning(f"归因计算异常: {ts_code}, {exc}", exc_info=True)
 
     logger.info(f"上涨归因计算完成: {len(results)} 只")
     return results
