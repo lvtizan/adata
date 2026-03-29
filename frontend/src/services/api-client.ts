@@ -11,3 +11,16 @@ export async function api<T>(path: string, options?: RequestInit): Promise<T> {
   }
   return res.json();
 }
+
+export interface ServerStatus {
+  ready: boolean;
+  message: string;
+}
+
+export async function getServerStatus(): Promise<ServerStatus> {
+  try {
+    return await api<ServerStatus>("/status");
+  } catch {
+    return { ready: false, message: "等待服务器启动..." };
+  }
+}

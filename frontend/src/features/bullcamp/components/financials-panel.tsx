@@ -8,6 +8,62 @@ function fmtPp(a: number | null | undefined, b: number | null | undefined): stri
   return `${diff > 0 ? "+" : ""}${diff.toFixed(1)}pp`;
 }
 
+/** 营收/净利趋势迷你柱状图 (SVG, 8 季度) */
+function RevenueTrendChart({ quarters }: { quarters: Array<{ endDate: string; revenue: number | null; netIncome: number | null }> }) {
+  // 倒序显示（从旧到新）
+  const sorted = [...quarters].reverse();
+  if (sorted.length === 0) return null;
+
+  const W = 320;
+  const H = 100;
+  const pad = { top: 8, right: 4, bottom: 20, left: 4 };
+  const plotW = W - pad.left - pad.right;
+  const plotH = H - pad.top - pad.bottom;
+
+  const revenues = sorted.map((q) => q.revenue ?? 0);
+  const netIncomes = sorted.map((q) => q.netIncome ?? 0);
+  const allVals = [...revenues, ...netIncomes];
+  const maxVal = Math.max(...allVals, 1);
+  const minVal = Math.min(...allVals, 0);
+  const range = maxVal - minVal || 1;
+
+  const barGroupW = plotW / sorted.length;
+  const barW = barGroupW * 0.35;
+  const gap = barGroupW * 0.06;
+
+  const yScale = (v: number) => pad.top + plotH - ((v - minVal) / range) * plotH;
+  const zeroY = yScale(0);
+
+  return (
+    <div className="mb-4">
+      <div className="text-xs text-text-tertiary mb-1.5 flex items-center gap-3">
+        <span>营收 / 净利趋势</span>
+        <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: "var(--color-accent, #3b82f6)" }} /> 营收</span>
+        <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: "var(--color-state-up, #22c55e)" }} /> 净利</span>
+      </div>
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ maxWidth: W }}>
+        {/* zero line */}
+        <line x1={pad.left} x2={W - pad.right} y1={zeroY} y2={zeroY} stroke="var(--color-border-default, #333)" strokeWidth={0.5} />
+        {sorted.map((q, i) => {
+          const x = pad.left + i * barGroupW;
+          const revH = Math.abs(((q.revenue ?? 0) - 0) / range) * plotH;
+          const revY = (q.revenue ?? 0) >= 0 ? zeroY - revH : zeroY;
+          const niH = Math.abs(((q.netIncome ?? 0) - 0) / range) * plotH;
+          const niY = (q.netIncome ?? 0) >= 0 ? zeroY - niH : zeroY;
+
+          return (
+            <g key={q.endDate}>
+              <rect x={x + gap} y={revY} width={barW} height={Math.max(revH, 0.5)} rx={1} fill="var(--color-accent, #3b82f6)" opacity={0.85} />
+              <rect x={x + barW + gap * 2} y={niY} width={barW} height={Math.max(niH, 0.5)} rx={1} fill="var(--color-state-up, #22c55e)" opacity={0.85} />
+              <text x={x + barGroupW / 2} y={H - 4} textAnchor="middle" className="text-[8px] fill-text-tertiary">{fmtQuarter(q.endDate)}</text>
+            </g>
+          );
+        })}
+      </svg>
+    </div>
+  );
+}
+
 export function FinancialsPanel({ tsCode }: { tsCode: string }) {
   const { data, isLoading, error } = useStockFinancials(tsCode);
 
@@ -39,6 +95,8 @@ export function FinancialsPanel({ tsCode }: { tsCode: string }) {
           </div>
         ))}
       </div>
+
+      <RevenueTrendChart quarters={quarters} />
 
       <div className="overflow-auto max-h-[400px]">
         <table className="w-full border-collapse text-sm">

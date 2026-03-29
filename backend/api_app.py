@@ -8,6 +8,7 @@ from threading import Thread
 from config import get_config
 from market_engine import MarketEngine
 from watchlist_store import WatchlistStore
+from index_risk_analyzer import analyze_all_indices
 from pathlib import Path
 
 # 初始化业务层
@@ -144,6 +145,13 @@ async def update_watchlist(ts_code: str, item: dict):
 async def remove_watchlist(ts_code: str):
     deleted = watchlist.delete_item(ts_code)
     return {"success": deleted}
+
+
+# ===== 指数风险分析 (YTC 六步法) =====
+@app.get("/api/index-risk")
+async def get_index_risk():
+    date = engine.latest_data_trade_date()
+    return analyze_all_indices(engine.pro, date)
 
 
 # ===== 健康检查 =====

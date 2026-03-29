@@ -39,4 +39,12 @@ export interface BullCampItem {
   daysInCamp: number;
   isNew: boolean;
   hasRecentAnnouncement: boolean;
+  patternTags?: string[];
+  campScoreHistory?: (number | null)[];
+}
+
+export interface StockNewsItem {
+  date: string;
+  title: string;
+  url?: string;
 }

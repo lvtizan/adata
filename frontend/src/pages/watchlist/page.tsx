@@ -1,8 +1,10 @@
-import { useState, useRef } from "react";
-import { useWatchlist, useUpdateWatchlist, useRemoveFromWatchlist } from "@/queries";
+import { useState, useRef, useEffect } from "react";
+import { useWatchlist, useUpdateWatchlist, useRemoveFromWatchlist, useStockSector } from "@/queries";
 import { DataTable, NumericCell, type Column } from "@/shared/table";
 import { fmtPct } from "@/shared/utils/format";
 import { WatchlistChart } from "@/features/watchlist/components/watchlist-chart";
+import { AttributionPanel } from "@/features/chart/components/attribution-panel";
+import { StockTagsPanel } from "@/features/chart/components/stock-tags-panel";
 import { Button } from "@/shared/ui/button";
 import { Input } from "@/shared/ui/input";
 import type { WatchlistItem } from "@/shared/types";
@@ -14,62 +16,78 @@ export default function WatchlistPage() {
   const removeMutation = useRemoveFromWatchlist();
 
   const [selectedCode, setSelectedCode] = useState("");
-  const [sidebarWidth, setSidebarWidth] = useState(320);
   const [editingSubgroup, setEditingSubgroup] = useState(false);
   const [subgroupValue, setSubgroupValue] = useState("");
-  const dragging = useRef(false);
+
+  // 左列宽度拖拽
+  const [leftWidth, setLeftWidth] = useState(260);
+  const draggingLeft = useRef(false);
+  // 右列宽度拖拽
+  const [rightWidth, setRightWidth] = useState(300);
+  const draggingRight = useRef(false);
 
   const selected = items.find((i) => i.tsCode === selectedCode) || items[0];
 
-  // Auto-select first if nothing selected
-  if (!selectedCode && items.length > 0 && items[0]) {
-    setTimeout(() => setSelectedCode(items[0].tsCode), 0);
-  }
+  const needSectorLookup = !!selected && !selected.sectorCode;
+  const { data: sectorLookup } = useStockSector(needSectorLookup ? selected.tsCode : "");
+  const effectiveSectorCode = selected?.sectorCode || sectorLookup?.sectorCode || "";
+
+  useEffect(() => {
+    if (!selectedCode && items.length > 0 && items[0]) {
+      setSelectedCode(items[0].tsCode);
+    }
+  }, [selectedCode, items]);
 
   const columns: Column<WatchlistItem>[] = [
     {
-      key: "tsCode",
-      label: "代码",
-      width: "72px",
-      render: (item) => (
-        <span className="font-mono text-xs text-text-secondary">{item.tsCode}</span>
-      ),
-    },
-    {
       key: "stockName",
       label: "名称",
-      render: (item) => <span className="text-sm">{item.stockName}</span>,
-    },
-    {
-      key: "rps20",
-      label: "RPS20",
-      width: "56px",
-      align: "right",
       render: (item) => (
-        <span className="text-sm font-mono">{item.rps20 ?? "-"}</span>
+        <div className="leading-tight">
+          <span className="text-sm">{item.stockName}</span>
+          <span className="block text-[10px] text-text-tertiary font-mono">{item.tsCode.replace(/\.\w+$/, "")}</span>
+        </div>
       ),
     },
     {
       key: "pctChange5d",
       label: "5日",
-      width: "60px",
+      width: "56px",
       align: "right",
       render: (item) => <NumericCell value={item.pctChange5d} format={fmtPct} />,
     },
   ];
 
-  function startResize(e: React.MouseEvent) {
+  function startResizeLeft(e: React.MouseEvent) {
     e.preventDefault();
-    dragging.current = true;
+    draggingLeft.current = true;
     const startX = e.clientX;
-    const startW = sidebarWidth;
+    const startW = leftWidth;
     function onMove(ev: MouseEvent) {
-      if (!dragging.current) return;
-      const w = Math.min(520, Math.max(280, startW + ev.clientX - startX));
-      setSidebarWidth(w);
+      if (!draggingLeft.current) return;
+      setLeftWidth(Math.min(400, Math.max(200, startW + ev.clientX - startX)));
     }
     function onUp() {
-      dragging.current = false;
+      draggingLeft.current = false;
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    }
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }
+
+  function startResizeRight(e: React.MouseEvent) {
+    e.preventDefault();
+    draggingRight.current = true;
+    const startX = e.clientX;
+    const startW = rightWidth;
+    function onMove(ev: MouseEvent) {
+      if (!draggingRight.current) return;
+      // 注意：右侧拖拽方向相反，往左拖 = 宽度变大
+      setRightWidth(Math.min(460, Math.max(240, startW - (ev.clientX - startX))));
+    }
+    function onUp() {
+      draggingRight.current = false;
       document.removeEventListener("mousemove", onMove);
       document.removeEventListener("mouseup", onUp);
     }
@@ -79,10 +97,7 @@ export default function WatchlistPage() {
 
   async function handleSaveSubgroup() {
     if (!selected) return;
-    await updateMutation.mutateAsync({
-      tsCode: selected.tsCode,
-      data: { subgroup: subgroupValue },
-    });
+    await updateMutation.mutateAsync({ tsCode: selected.tsCode, data: { subgroup: subgroupValue } });
     setEditingSubgroup(false);
   }
 
@@ -94,14 +109,11 @@ export default function WatchlistPage() {
 
   return (
     <div className="flex h-full">
-      {/* Sidebar */}
-      <div
-        className="flex flex-col min-h-0 border-r border-border-default"
-        style={{ width: sidebarWidth }}
-      >
+      {/* ══ 左列：自选股列表 ══ */}
+      <div className="flex flex-col min-h-0 border-r border-border-default" style={{ width: leftWidth }}>
         <div className="px-3 py-2 border-b border-border-default">
           <h2 className="text-sm font-medium">自选股</h2>
-          <p className="text-xs text-text-tertiary">{items.length} 只</p>
+          <p className="text-[10px] text-text-tertiary">{items.length} 只</p>
         </div>
         <DataTable
           columns={columns}
@@ -114,120 +126,111 @@ export default function WatchlistPage() {
         />
       </div>
 
-      {/* Resize handle */}
-      <div
-        className="w-[10px] cursor-col-resize relative shrink-0 group"
-        onMouseDown={startResize}
-      >
-        <div className="absolute top-0 bottom-0 left-[4px] w-[2px] group-hover:bg-border-strong transition-colors" />
+      {/* 左 resize handle */}
+      <div className="w-[6px] cursor-col-resize relative shrink-0 group" onMouseDown={startResizeLeft}>
+        <div className="absolute top-0 bottom-0 left-[2px] w-[2px] group-hover:bg-border-strong transition-colors" />
       </div>
 
-      {/* Main */}
+      {/* ══ 中列：K 线图 ══ */}
       <div className="flex-1 flex flex-col min-w-0 min-h-0">
         {selected ? (
           <>
-            {/* Header */}
-            <div className="flex items-start justify-between px-4 py-3 border-b border-border-default">
-              <div>
-                <h2 className="text-lg font-semibold">{selected.stockName}</h2>
-                <p className="text-xs text-text-tertiary mt-0.5">
-                  {selected.tsCode} · {selected.sectorName}
-                </p>
-              </div>
-              <div className="flex items-stretch border border-border-default">
-                {[
-                  { label: "RPS20", value: selected.rps20 },
-                  { label: "5日", value: selected.pctChange5d, pct: true },
-                  { label: "10日", value: selected.pctChange10d, pct: true },
-                ].map((m) => (
-                  <div
-                    key={m.label}
-                    className="px-3 py-2 border-r border-border-default last:border-r-0 min-w-[80px]"
-                  >
-                    <span className="block text-xs text-text-tertiary mb-1">
-                      {m.label}
-                    </span>
-                    <strong
-                      className={cn(
-                        "text-sm font-semibold font-mono",
-                        m.pct &&
-                          m.value != null &&
-                          (m.value >= 0 ? "text-state-up" : "text-state-down")
-                      )}
+            {/* Header: 股票名 + 标签 + 指标 + 操作 */}
+            <div className="px-4 py-2 border-b border-border-default space-y-1.5">
+              {/* 第一行：名称 + 指标卡片 + 操作 */}
+              <div className="flex items-center gap-3">
+                <div className="shrink-0">
+                  <h2 className="text-base font-semibold leading-tight">{selected.stockName}</h2>
+                  <span className="text-[10px] text-text-tertiary font-mono">{selected.tsCode}</span>
+                </div>
+                {/* 指标卡片 */}
+                <div className="flex items-stretch border border-border-default rounded text-xs">
+                  {[
+                    { label: "RPS20", value: selected.rps20 },
+                    { label: "5日", value: selected.pctChange5d, pct: true },
+                    { label: "10日", value: selected.pctChange10d, pct: true },
+                  ].map((m) => (
+                    <div key={m.label} className="px-2 py-1 border-r border-border-default last:border-r-0 min-w-[60px]">
+                      <span className="block text-[10px] text-text-tertiary">{m.label}</span>
+                      <strong className={cn(
+                        "text-xs font-semibold font-mono",
+                        m.pct && m.value != null && (m.value >= 0 ? "text-state-up" : "text-state-down")
+                      )}>
+                        {m.pct ? fmtPct(m.value) : (m.value ?? "-")}
+                      </strong>
+                    </div>
+                  ))}
+                </div>
+                {/* 分组 + 移出 */}
+                <div className="ml-auto flex items-center gap-1 shrink-0">
+                  {editingSubgroup ? (
+                    <>
+                      <Input className="h-6 w-28 text-[10px]" value={subgroupValue} onChange={(e) => setSubgroupValue(e.target.value)} />
+                      <Button size="sm" variant="ghost" className="h-6 text-[10px] px-1.5" onClick={handleSaveSubgroup}>保存</Button>
+                      <Button size="sm" variant="ghost" className="h-6 text-[10px] px-1.5" onClick={() => setEditingSubgroup(false)}>取消</Button>
+                    </>
+                  ) : (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-6 text-[10px] px-1.5"
+                      onClick={() => { setSubgroupValue(selected.subgroup || ""); setEditingSubgroup(true); }}
                     >
-                      {m.pct ? fmtPct(m.value) : (m.value ?? "-")}
-                    </strong>
-                  </div>
-                ))}
+                      {selected.subgroup || "未分组"} ✎
+                    </Button>
+                  )}
+                  <Button size="sm" variant="ghost" className="h-6 text-[10px] px-1.5 text-state-down hover:bg-state-down/10" onClick={handleRemove}>
+                    移出
+                  </Button>
+                </div>
               </div>
+              {/* 第二行：概念标签 + 资金徽章 */}
+              <StockTagsPanel
+                key={`tags-${selected.tsCode}`}
+                tsCode={selected.tsCode}
+                compact
+              />
             </div>
 
-            {/* Toolbar */}
-            <div className="flex items-center gap-2 px-4 py-2 border-b border-border-default bg-surface text-sm">
-              <span className="text-text-tertiary text-xs">分组</span>
-              {editingSubgroup ? (
-                <>
-                  <Input
-                    className="h-7 w-40 text-xs"
-                    value={subgroupValue}
-                    onChange={(e) => setSubgroupValue(e.target.value)}
-                  />
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    className="h-7 text-xs"
-                    onClick={handleSaveSubgroup}
-                  >
-                    保存
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    className="h-7 text-xs"
-                    onClick={() => setEditingSubgroup(false)}
-                  >
-                    取消
-                  </Button>
-                </>
-              ) : (
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className="h-7 text-xs"
-                  onClick={() => {
-                    setSubgroupValue(selected.subgroup || "");
-                    setEditingSubgroup(true);
-                  }}
-                >
-                  {selected.subgroup || "未分组"} ✎
-                </Button>
-              )}
-              <div className="ml-auto">
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className="h-7 text-xs text-state-up hover:bg-state-up/10"
-                  onClick={handleRemove}
-                >
-                  移出自选
-                </Button>
-              </div>
-            </div>
-
-            {/* Chart */}
+            {/* K 线图 */}
             <div className="flex-1 min-h-0 overflow-auto">
               <WatchlistChart
+                key={selected.tsCode}
                 tsCode={selected.tsCode}
-                sectorCode={selected.sectorCode}
+                sectorCode={effectiveSectorCode}
                 stockName={selected.stockName}
               />
             </div>
           </>
         ) : (
-          <div className="flex-1 flex items-center justify-center text-text-tertiary">
-            暂无自选股
-          </div>
+          <div className="flex-1 flex items-center justify-center text-text-tertiary">暂无自选股</div>
         )}
+      </div>
+
+      {/* 右 resize handle */}
+      <div className="w-[6px] cursor-col-resize relative shrink-0 group" onMouseDown={startResizeRight}>
+        <div className="absolute top-0 bottom-0 left-[2px] w-[2px] group-hover:bg-border-strong transition-colors" />
+      </div>
+
+      {/* ══ 右列：上涨归因 + 详细标签 ══ */}
+      <div className="flex flex-col min-h-0 border-l border-border-default overflow-auto" style={{ width: rightWidth }}>
+        {selected ? (
+          <div className="space-y-4 p-3">
+            <AttributionPanel
+              key={`attr-${selected.tsCode}`}
+              tsCode={selected.tsCode}
+              stockName={selected.stockName}
+            />
+            <div className="border-t border-border-default pt-3">
+              <StockTagsPanel
+                key={`tags-full-${selected.tsCode}`}
+                tsCode={selected.tsCode}
+                stockName={selected.stockName}
+                onSelectStock={(code) => setSelectedCode(code)}
+              />
+            </div>
+          </div>
+        ) : null}
       </div>
     </div>
   );

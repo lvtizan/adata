@@ -3,6 +3,7 @@ import { RootLayout } from "@/app/layouts/root-layout";
 import DashboardPage from "@/pages/dashboard/page";
 import WatchlistPage from "@/pages/watchlist/page";
 import BullcampPage from "@/pages/bullcamp/page";
+import SettingsPage from "@/pages/settings/page";
 
 export const router = createBrowserRouter([
   {
@@ -13,6 +14,7 @@ export const router = createBrowserRouter([
       { path: "dashboard", element: <DashboardPage /> },
       { path: "watchlist", element: <WatchlistPage /> },
       { path: "bullcamp", element: <BullcampPage /> },
+      { path: "settings", element: <SettingsPage /> },
     ],
   },
 ]);

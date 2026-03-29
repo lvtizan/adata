@@ -175,19 +175,19 @@ requirements:
 
 ```python
 import tushare as ts
-
+#Token
 token = "66b2ba23f55903574b1b0b6cb415d08d6c668291ffda199d4504b85a61f5"
+# 2. 初始化 API
 pro = ts.pro_api(token)
-
-# 关键：必须设置这两项，否则无法获取数据
-pro._DataApi__token = token
-pro._DataApi__http_url = 'http://lianghua.nanyangqiankun.top'
+# 3. 配置代理服务器（必须保留，否则连不上）
+# pro._DataApi__token = token
+pro._DataApi__http_url = 'http://139.196.25.182'
 ```
 
 **重要提醒**：
-- 每次创建 `pro_api` 实例后，都要设置 `_DataApi__token` 和 `_DataApi__http_url`
-- 这两项配置是全局生效的，设置后所有接口调用都会使用该代理
-- 如果不设置 `_DataApi__http_url`，将无法通过代理获取数据
+- 以上代码片段整体使用，不要修改任何一行
+- 每次创建 `pro_api` 实例后，必须设置 `pro._DataApi__http_url`
+- 不设置代理 URL 将无法获取数据
 
 若缺失 token，直接提示最短修复路径，例如：
 

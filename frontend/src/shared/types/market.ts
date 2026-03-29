@@ -32,6 +32,18 @@ export interface Mainline {
   reason: string;
 }
 
+export interface MainlineSector {
+  sectorCode: string;
+  sectorName: string;
+  stars: number;
+  status: string;
+  limitUpCount: number;
+  compositeScore: number;
+  amount: number;
+  pctChange5d: number;
+  pctChange10d: number;
+}
+
 export interface RiskFactor {
   key: string;
   label: string;
@@ -55,6 +67,7 @@ export interface MarketOverview {
   emotionState: EmotionState;
   breadth: MarketBreadth;
   mainline: Mainline;
+  mainlines?: MainlineSector[];
   marketRisk: MarketRisk;
   topSectors: SectorRanking[];
 }

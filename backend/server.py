@@ -127,6 +127,13 @@ class Handler(BaseHTTPRequestHandler):
                 return json_response(self, {"ok": True})
             return json_response(self, {"error": "method not allowed"}, 405)
 
+        # 服务器状态（不需要预热即可返回）
+        if path == "/api/status":
+            return json_response(self, {
+                "ready": engine._warmed,
+                "message": "数据加载中..." if not engine._warmed else "就绪",
+            })
+
         if method != "GET":
             return json_response(self, {"error": "method not allowed"}, 405)
 
@@ -190,6 +197,101 @@ class Handler(BaseHTTPRequestHandler):
                 return json_response(self, {"error": "missing tsCode or sectorCode"}, 400)
             logger.debug(f"获取相对强弱: {ts_code} vs {sector_code}")
             return json_response(self, engine.relative_strength(ts_code, sector_code, trade_date))
+
+        # 牛股集中营API
+        if path == "/api/bullcamp" or path == "/api/camp/bull-stocks":
+            logger.debug(f"获取牛股集中营: {trade_date}")
+            return json_response(self, {"tradeDate": trade_date, "items": engine.bull_camp(trade_date)})
+
+        # 牛股历史API (连营天数计算用)
+        if path == "/api/camp/bull-stocks/history":
+            days = int(q.get("days", ["20"])[0])
+            days = max(1, min(days, 60))
+            logger.debug(f"获取牛股历史: {trade_date}, days={days}")
+            return json_response(self, {"tradeDate": trade_date, "days": days, "items": engine.bull_camp_history(trade_date, days=days)})
+
+        # 个股财务数据API
+        if path.startswith("/api/stock/") and path.endswith("/financials"):
+            ts_code = path.split("/")[3]
+            periods = int(q.get("periods", ["8"])[0])
+            logger.debug(f"获取个股财务: {ts_code}, periods={periods}")
+            return json_response(self, engine.stock_financials(ts_code, periods))
+
+        # 个股形态检测API (含 HH 信号点坐标)
+        if path.startswith("/api/stock/") and path.endswith("/patterns"):
+            ts_code = path.split("/")[3]
+            logger.debug(f"检测个股形态: {ts_code}")
+            from pattern_detector import detect_all_patterns_detail, detect_all_patterns_with_signals
+            try:
+                kline = engine.stock_kline(ts_code, trade_date, bars=270)
+                points = kline.get("points", [])
+                if points:
+                    import pandas as _pd
+                    df = _pd.DataFrame(points)
+                    col_map = {"time": "trade_date", "o": "open", "h": "high", "l": "low", "c": "close", "v": "vol"}
+                    df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
+                    detail_results = detect_all_patterns_detail(df)
+                    signal_results = detect_all_patterns_with_signals(df)
+                else:
+                    detail_results = []
+                    signal_results = {"tags": [], "signals": [], "maAlignment": None}
+            except Exception as exc:
+                logger.warning(f"形态检测失败: {ts_code}, {exc}")
+                detail_results = []
+                signal_results = {"tags": [], "signals": [], "maAlignment": None}
+            return json_response(self, {
+                "tsCode": ts_code,
+                "patterns": detail_results,
+                "signals": signal_results.get("signals", []),
+                "drawdowns": signal_results.get("drawdowns", []),
+                "supports": signal_results.get("supports", []),
+                "resistances": signal_results.get("resistances", []),
+                "maAlignment": signal_results.get("maAlignment"),
+                "latestHH": signal_results.get("latestHH"),
+                "hasBuySignal": signal_results.get("hasBuySignal", False),
+            })
+
+        # 个股上涨归因API
+        if path.startswith("/api/stock/") and path.endswith("/attribution"):
+            ts_code = path.split("/")[3]
+            logger.debug(f"获取个股上涨归因: {ts_code}")
+            try:
+                return json_response(self, engine.stock_rise_attribution(ts_code, trade_date))
+            except Exception as exc:
+                logger.warning(f"归因分析失败: {ts_code}, {exc}")
+                return json_response(self, {"tsCode": ts_code, "stockName": "", "attribution": []})
+
+        # 个股所属板块查询API
+        if path.startswith("/api/stock/") and path.endswith("/sector"):
+            ts_code = path.split("/")[3]
+            logger.debug(f"查询个股所属板块: {ts_code}")
+            try:
+                sector_info = engine.stock_sector_lookup(ts_code, trade_date)
+                return json_response(self, sector_info)
+            except Exception as exc:
+                logger.warning(f"板块查询失败: {ts_code}, {exc}")
+                return json_response(self, {"sectorCode": "", "sectorName": ""})
+
+        # 个股标签API（概念题材 + 游资/基金 + 关联股）
+        if path.startswith("/api/stock/") and path.endswith("/tags"):
+            ts_code = path.split("/")[3]
+            logger.debug(f"获取个股标签: {ts_code}")
+            try:
+                return json_response(self, engine.stock_tags(ts_code, trade_date))
+            except Exception as exc:
+                logger.warning(f"标签查询失败: {ts_code}, {exc}")
+                return json_response(self, {
+                    "tsCode": ts_code, "stockName": "",
+                    "concepts": [], "capitalType": "未知",
+                    "capitalDetail": "", "relatedStocks": [],
+                })
+
+        # 个股新闻/公告API
+        if path.startswith("/api/stock/") and path.endswith("/news"):
+            ts_code = path.split("/")[3]
+            limit = int(q.get("limit", ["20"])[0])
+            logger.debug(f"获取个股新闻: {ts_code}, limit={limit}")
+            return json_response(self, {"tsCode": ts_code, "items": engine.stock_news(ts_code, trade_date, limit=limit)})
 
         # 未找到API
         logger.warning(f"未找到API: {path}")

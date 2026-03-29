@@ -5,7 +5,29 @@
       "Bash(open:*)",
       "Bash(lsof:*)",
       "Bash(osascript -e 'tell application \"\"Google Chrome\"\" to reload')",
-      "Bash(osascript -e 'tell application \"\"Safari\"\" to URL \"\"http://127.0.0.1:5173\"\"')"
+      "Bash(osascript -e 'tell application \"\"Safari\"\" to URL \"\"http://127.0.0.1:5173\"\"')",
+      "Bash(ls *.py)",
+      "Bash(chmod:*)",
+      "Bash(./start.sh)",
+      "Bash(curl -s http://127.0.0.1:8080)",
+      "Bash(curl -s http://127.0.0.1:5173)",
+      "Bash(rustc --version)",
+      "Bash(cargo --version)",
+      "Bash(pip3 show:*)",
+      "Bash(pip3 install:*)",
+      "Bash(cd:*)",
+      "Bash(curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs)",
+      "Bash(sh -s -- -y)",
+      "Bash(. \"$HOME/.cargo/env\")",
+      "Bash(curl -s http://127.0.0.1:8080/api/market/overview)",
+      "Bash(./start.sh stop:*)",
+      "Bash(curl -s http://127.0.0.1:5173/api/market/overview)",
+      "Bash(grep -r \"石大胜华\\\\|SDSQ\\\\|SH603697\" '/Users/yiming/Library/Mobile Documents/com~apple~CloudDocs/AI项目 2/A数据' --include=*.py --include=*.ts --include=*.tsx)",
+      "Bash(curl -s http://127.0.0.1:8080/api/bullcamp)",
+      "Bash(curl -s http://127.0.0.1:5173/)",
+      "Bash(curl -s http://127.0.0.1:5173/api/bullcamp)",
+      "Bash(curl -v http://127.0.0.1:5173/api/bullcamp)",
+      "Bash(npx vite:*)"
     ]
   }
 }

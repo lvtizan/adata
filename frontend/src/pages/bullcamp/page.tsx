@@ -1,10 +1,14 @@
-import { useState, useRef } from "react";
-import { useBullCamp } from "@/queries";
+import { useState, useRef, useEffect } from "react";
+import { useBullCamp, useStockSector } from "@/queries";
 import { DataTable, NumericCell, type Column } from "@/shared/table";
 import { fmtPct, fmtAmount } from "@/shared/utils/format";
 import { CampTag } from "@/features/bullcamp/components/camp-tag";
+import { ScoreSparkline } from "@/features/bullcamp/components/score-sparkline";
 import { FinancialsPanel } from "@/features/bullcamp/components/financials-panel";
+import { NewsPanel } from "@/features/bullcamp/components/news-panel";
 import { WatchlistChart } from "@/features/watchlist/components/watchlist-chart";
+import { AttributionPanel } from "@/features/chart/components/attribution-panel";
+import { StockTagsPanel } from "@/features/chart/components/stock-tags-panel";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/shared/ui/tabs";
 import type { BullCampItem } from "@/shared/types";
 import { cn } from "@/lib/utils";
@@ -21,14 +25,25 @@ function compareValues(a: any, b: any, key: string, dir: "asc" | "desc"): number
 export default function BullcampPage() {
   const { data: items = [], isLoading, error } = useBullCamp();
   const [selectedCode, setSelectedCode] = useState("");
-  const [sidebarWidth, setSidebarWidth] = useState(520);
-  const dragging = useRef(false);
+  // 左列宽度
+  const [leftWidth, setLeftWidth] = useState(520);
+  const draggingLeft = useRef(false);
+  // 右列宽度
+  const [rightWidth, setRightWidth] = useState(300);
+  const draggingRight = useRef(false);
 
   const selected = items.find((i) => i.tsCode === selectedCode) || items[0];
 
-  if (!selectedCode && items.length > 0) {
-    setTimeout(() => setSelectedCode(items[0].tsCode), 0);
-  }
+  // 如果选中的牛股没有 sectorCode，查一下
+  const needSectorLookup = !!selected && !selected.sectorCode;
+  const { data: sectorLookup } = useStockSector(needSectorLookup ? selected.tsCode : "");
+  const effectiveSectorCode = selected?.sectorCode || sectorLookup?.sectorCode || "";
+
+  useEffect(() => {
+    if (!selectedCode && items.length > 0 && items[0]) {
+      setSelectedCode(items[0].tsCode);
+    }
+  }, [selectedCode, items]);
 
   const columns: Column<BullCampItem>[] = [
     {
@@ -36,7 +51,7 @@ export default function BullcampPage() {
       render: (item) => (
         <span className="text-sm">
           {item.stockName}
-          <CampTag isNew={item.isNew} daysInCamp={item.daysInCamp} hasAnnouncement={item.hasRecentAnnouncement} />
+          <CampTag isNew={item.isNew} daysInCamp={item.daysInCamp} hasAnnouncement={item.hasRecentAnnouncement} patternTags={item.patternTags} />
         </span>
       ),
     },
@@ -49,19 +64,38 @@ export default function BullcampPage() {
     { key: "relativeStrengthLatest", label: "相对强弱", width: "64px", align: "right", sortable: true, render: (item) => <span className="text-sm font-mono">{item.relativeStrengthLatest?.toFixed(1) ?? "-"}</span> },
     { key: "amount", label: "成交额", width: "68px", align: "right", sortable: true, render: (item) => <span className="text-sm text-text-secondary">{fmtAmount(item.amount)}</span> },
     { key: "campScore", label: "综合分", width: "56px", align: "right", sortable: true, render: (item) => <span className="text-sm font-semibold">{item.campScore?.toFixed(0) ?? "-"}</span> },
+    { key: "campScoreHistory" as any, label: "趋势", width: "56px", align: "center", sortable: false, render: (item) => <ScoreSparkline data={item.campScoreHistory ?? []} /> },
   ];
 
-  function startResize(e: React.MouseEvent) {
+  function startResizeLeft(e: React.MouseEvent) {
     e.preventDefault();
-    dragging.current = true;
+    draggingLeft.current = true;
     const startX = e.clientX;
-    const startW = sidebarWidth;
+    const startW = leftWidth;
     function onMove(ev: MouseEvent) {
-      if (!dragging.current) return;
-      setSidebarWidth(Math.min(760, Math.max(420, startW + ev.clientX - startX)));
+      if (!draggingLeft.current) return;
+      setLeftWidth(Math.min(760, Math.max(420, startW + ev.clientX - startX)));
     }
     function onUp() {
-      dragging.current = false;
+      draggingLeft.current = false;
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    }
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }
+
+  function startResizeRight(e: React.MouseEvent) {
+    e.preventDefault();
+    draggingRight.current = true;
+    const startX = e.clientX;
+    const startW = rightWidth;
+    function onMove(ev: MouseEvent) {
+      if (!draggingRight.current) return;
+      setRightWidth(Math.min(460, Math.max(240, startW - (ev.clientX - startX))));
+    }
+    function onUp() {
+      draggingRight.current = false;
       document.removeEventListener("mousemove", onMove);
       document.removeEventListener("mouseup", onUp);
     }
@@ -74,8 +108,8 @@ export default function BullcampPage() {
 
   return (
     <div className="flex h-full">
-      {/* Sidebar */}
-      <div className="flex flex-col min-h-0 border-r border-border-default" style={{ width: sidebarWidth }}>
+      {/* ══ 左列：牛股列表 ══ */}
+      <div className="flex flex-col min-h-0 border-r border-border-default" style={{ width: leftWidth }}>
         <div className="px-3 py-2 border-b border-border-default">
           <h2 className="text-sm font-medium">牛股集中营</h2>
           <p className="text-xs text-text-tertiary">{items.length} 只</p>
@@ -93,32 +127,47 @@ export default function BullcampPage() {
         />
       </div>
 
-      {/* Resize handle */}
-      <div className="w-[10px] cursor-col-resize relative shrink-0 group" onMouseDown={startResize}>
-        <div className="absolute top-0 bottom-0 left-[4px] w-[2px] group-hover:bg-border-strong transition-colors" />
+      {/* 左 resize handle */}
+      <div className="w-[6px] cursor-col-resize relative shrink-0 group" onMouseDown={startResizeLeft}>
+        <div className="absolute top-0 bottom-0 left-[2px] w-[2px] group-hover:bg-border-strong transition-colors" />
       </div>
 
-      {/* Main */}
+      {/* ══ 中列：K 线图 + 财务/新闻 ══ */}
       <div className="flex-1 flex flex-col min-w-0 min-h-0">
         {selected ? (
           <>
-            <div className="flex items-start justify-between px-4 py-3 border-b border-border-default">
-              <div>
-                <h2 className="text-lg font-semibold">{selected.stockName}</h2>
-                <p className="text-xs text-text-tertiary mt-0.5">{selected.tsCode} · {selected.sectorName}</p>
+            {/* Header */}
+            <div className="px-4 py-2 border-b border-border-default space-y-1.5">
+              <div className="flex items-center gap-3">
+                <div className="shrink-0">
+                  <h2 className="text-base font-semibold leading-tight">{selected.stockName}</h2>
+                  <span className="text-[10px] text-text-tertiary font-mono">{selected.tsCode} · {selected.sectorName}</span>
+                </div>
+                <div className="flex items-stretch border border-border-default rounded text-xs">
+                  {[
+                    { label: "RPS20", value: selected.rps20 },
+                    { label: "5日", value: selected.pctChange5d, pct: true },
+                    { label: "相对强弱", value: selected.relativeStrengthLatest?.toFixed(1) },
+                    { label: "综合分", value: selected.campScore?.toFixed(0) },
+                  ].map((m) => (
+                    <div key={m.label} className="px-2 py-1 border-r border-border-default last:border-r-0 min-w-[60px]">
+                      <span className="block text-[10px] text-text-tertiary">{m.label}</span>
+                      <strong className={cn(
+                        "text-xs font-semibold font-mono",
+                        m.pct && m.value != null && (Number(m.value) >= 0 ? "text-state-up" : "text-state-down")
+                      )}>
+                        {m.pct ? fmtPct(m.value as number) : (m.value ?? "-")}
+                      </strong>
+                    </div>
+                  ))}
+                </div>
               </div>
-              <div className="flex items-stretch border border-border-default">
-                {[
-                  { label: "RPS20", value: selected.rps20 },
-                  { label: "相对强弱", value: selected.relativeStrengthLatest?.toFixed(1) },
-                  { label: "综合分", value: selected.campScore?.toFixed(0) },
-                ].map((m) => (
-                  <div key={m.label} className="px-3 py-2 border-r border-border-default last:border-r-0 min-w-[80px]">
-                    <span className="block text-xs text-text-tertiary mb-1">{m.label}</span>
-                    <strong className="text-sm font-semibold font-mono">{m.value ?? "-"}</strong>
-                  </div>
-                ))}
-              </div>
+              {/* 概念标签行 */}
+              <StockTagsPanel
+                key={`tags-compact-${selected.tsCode}`}
+                tsCode={selected.tsCode}
+                compact
+              />
             </div>
 
             <Tabs defaultValue="chart" className="flex-1 flex flex-col min-h-0">
@@ -128,24 +177,50 @@ export default function BullcampPage() {
                 <TabsTrigger value="news" className="rounded-none border-b-2 border-transparent data-[state=active]:border-accent data-[state=active]:shadow-none px-4 py-2 text-sm">新闻</TabsTrigger>
               </TabsList>
               <TabsContent value="chart" className="flex-1 min-h-0 overflow-auto mt-0">
-                <WatchlistChart tsCode={selected.tsCode} sectorCode={selected.sectorCode} stockName={selected.stockName} />
+                <WatchlistChart
+                  key={selected.tsCode}
+                  tsCode={selected.tsCode}
+                  sectorCode={effectiveSectorCode}
+                  stockName={selected.stockName}
+                />
               </TabsContent>
               <TabsContent value="financials" className="flex-1 min-h-0 overflow-auto mt-0">
                 <FinancialsPanel tsCode={selected.tsCode} />
               </TabsContent>
-              <TabsContent value="news" className="flex-1 mt-0">
-                <div className="flex items-center justify-center h-full text-text-tertiary">
-                  <div className="text-center">
-                    <h3 className="text-sm font-medium text-text-primary mb-2">新闻与公告</h3>
-                    <p className="text-xs">此功能即将上线，敬请期待。</p>
-                  </div>
-                </div>
+              <TabsContent value="news" className="flex-1 min-h-0 overflow-auto mt-0">
+                <NewsPanel tsCode={selected.tsCode} />
               </TabsContent>
             </Tabs>
           </>
         ) : (
           <div className="flex-1 flex items-center justify-center text-text-tertiary">暂无数据</div>
         )}
+      </div>
+
+      {/* 右 resize handle */}
+      <div className="w-[6px] cursor-col-resize relative shrink-0 group" onMouseDown={startResizeRight}>
+        <div className="absolute top-0 bottom-0 left-[2px] w-[2px] group-hover:bg-border-strong transition-colors" />
+      </div>
+
+      {/* ══ 右列：上涨归因 + 个股标签 ══ */}
+      <div className="flex flex-col min-h-0 border-l border-border-default overflow-auto" style={{ width: rightWidth }}>
+        {selected ? (
+          <div className="space-y-4 p-3">
+            <AttributionPanel
+              key={`attr-${selected.tsCode}`}
+              tsCode={selected.tsCode}
+              stockName={selected.stockName}
+            />
+            <div className="border-t border-border-default pt-3">
+              <StockTagsPanel
+                key={`tags-full-${selected.tsCode}`}
+                tsCode={selected.tsCode}
+                stockName={selected.stockName}
+                onSelectStock={(code) => setSelectedCode(code)}
+              />
+            </div>
+          </div>
+        ) : null}
       </div>
     </div>
   );

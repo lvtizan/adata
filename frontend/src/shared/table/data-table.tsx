@@ -52,7 +52,7 @@ export function DataTable<T>({
 
   return (
     <div className={cn("overflow-auto", className)}>
-      <table className="w-full border-collapse text-base">
+      <table className="w-full border-collapse text-base" style={{ tableLayout: "auto" }}>
         <thead>
           <tr>
             {columns.map((col) => (
@@ -64,7 +64,7 @@ export function DataTable<T>({
                   col.align === "right" ? "text-right" : "text-left",
                   col.sortable && "cursor-pointer select-none hover:text-text-primary"
                 )}
-                style={col.width ? { width: col.width } : undefined}
+                style={col.width ? { width: col.width, minWidth: col.width } : undefined}
                 onClick={col.sortable ? () => toggleSort(col.key) : undefined}
               >
                 {col.label}

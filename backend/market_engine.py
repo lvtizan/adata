@@ -15,6 +15,8 @@ import tushare as ts
 
 from config import get_config, Config
 from market_data_store import MarketDataStore
+from pattern_detector import detect_all_patterns
+from precompute import PrecomputedStore
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +43,7 @@ class MarketEngine:
         self._sw_l3_map: dict[str, str] = {}
         self._snapshot_batch_cache: dict[str, dict[str, pd.DataFrame]] = {}
         self._data_store = MarketDataStore(Path(__file__).parent / "data" / "market_cache.db")
+        self._precomputed = PrecomputedStore()
         self._warmed = False
 
         logger.info("MarketEngine初始化完成")
@@ -82,6 +85,21 @@ class MarketEngine:
                     context=f"最近{warmup_days}天快照预热",
                 )
             self._warmed = True
+
+            # 检查预计算库是否已有当天数据，没有则后台触发预计算
+            if not self._precomputed.has_data(trade_date):
+                import threading
+                def _run_precompute():
+                    try:
+                        from precompute import run as precompute_run
+                        logger.info(f"后台预计算启动: {trade_date}")
+                        precompute_run(trade_date)
+                        logger.info(f"后台预计算完成: {trade_date}")
+                    except Exception as exc:
+                        logger.warning(f"后台预计算失败: {exc}")
+                threading.Thread(target=_run_precompute, daemon=True, name="PrecomputeThread").start()
+            else:
+                logger.info(f"预计算库已有 {trade_date} 数据，跳过")
         except Exception as e:
             logger.warning(f"Warmup warning: {e}")
 
@@ -300,13 +318,15 @@ class MarketEngine:
         return self._sw_l3_map
 
     def compute_stock_metrics(self, trade_date: str) -> pd.DataFrame:
-        dates = self.trade_dates(trade_date, need=80)
+        dates = self.trade_dates(trade_date, need=260)
         pos = dates.index(trade_date)
         d5, d10, d20 = dates[pos - 5], dates[pos - 10], dates[pos - 20]
         d60 = dates[pos - 60] if pos >= 60 else dates[0]
+        d120 = dates[pos - 120] if pos >= 120 else dates[0]
+        d250 = dates[pos - 250] if pos >= 250 else dates[0]
 
         # 批量加载所有需要的日期数据
-        needed_dates = [trade_date, d5, d10, d20, d60] + dates[pos - 19 : pos + 1]
+        needed_dates = list(set([trade_date, d5, d10, d20, d60, d120, d250] + dates[pos - 19 : pos + 1]))
         snapshots = self.stock_snapshot_batch(needed_dates)
         required_dates = [trade_date, d5, d10, d20, d60]
         for d in required_dates:
@@ -327,8 +347,33 @@ class MarketEngine:
             .merge(p60, on="ts_code", how="inner")
         )
 
+        # 120日/250日收盘价 (可选，不影响基础指标)
+        p120 = snapshots.get(d120)
+        if p120 is not None and not p120.empty:
+            p120 = p120[["ts_code", "close"]].rename(columns={"close": "close_120"})
+            base = base.merge(p120, on="ts_code", how="left")
+        else:
+            base["close_120"] = np.nan
+
+        p250 = snapshots.get(d250)
+        if p250 is not None and not p250.empty:
+            p250 = p250[["ts_code", "close"]].rename(columns={"close": "close_250"})
+            base = base.merge(p250, on="ts_code", how="left")
+        else:
+            base["close_250"] = np.nan
+
         for n in [5, 10, 20]:
             base[f"ret{n}"] = (base["close"] / base[f"close_{n}"] - 1) * 100
+
+        # 120日/250日涨幅
+        base["ret120"] = np.where(
+            base["close_120"].notna() & (base["close_120"] > 0),
+            (base["close"] / base["close_120"] - 1) * 100, np.nan
+        )
+        base["ret250"] = np.where(
+            base["close_250"].notna() & (base["close_250"] > 0),
+            (base["close"] / base["close_250"] - 1) * 100, np.nan
+        )
 
         # 优化 MA20 计算：使用 pivot 避免 merge 循环
         ma20_dates = dates[pos - 19 : pos + 1]
@@ -343,11 +388,23 @@ class MarketEngine:
         ma20_series.columns = ["ts_code", "ma20"]
         base = base.merge(ma20_series, on="ts_code", how="left")
 
+        # RPS 计算: 5/10/20/120/250
         for n in [5, 10, 20]:
             s = base[["ts_code", f"ret{n}"]].dropna().sort_values(f"ret{n}", ascending=False).reset_index(drop=True)
             s["rank"] = s.index + 1
             s[f"rps{n}"] = (1 - s["rank"] / len(s)) * 100
             base = base.merge(s[["ts_code", f"rps{n}"]], on="ts_code", how="left")
+
+        for n in [120, 250]:
+            col = f"ret{n}"
+            valid = base[["ts_code", col]].dropna()
+            if not valid.empty:
+                valid = valid.sort_values(col, ascending=False).reset_index(drop=True)
+                valid["rank"] = valid.index + 1
+                valid[f"rps{n}"] = (1 - valid["rank"] / len(valid)) * 100
+                base = base.merge(valid[["ts_code", f"rps{n}"]], on="ts_code", how="left")
+            else:
+                base[f"rps{n}"] = np.nan
 
         base["name"] = base["ts_code"].map(self.stock_name_map()).fillna(base["ts_code"])
         base["above_ma20"] = base["close"] >= base["ma20"]
@@ -505,6 +562,10 @@ class MarketEngine:
         rec = self.recommend_top_sectors(trade_date, market_label, sectors)
         mainline = rec[0]["sectorName"] if rec else "暂无"
         mainline_state = "加强" if rec and rec[0]["compositeScore"] >= 75 else ("分歧" if rec else "衰退")
+
+        # ── 多主线 + 星级评分 ──
+        mainlines = self._build_mainlines(rec, trade_date, limit_up)
+
         market_risk = self._build_market_risk_payload(
             score=score,
             up=up,
@@ -546,6 +607,7 @@ class MarketEngine:
                 "status": mainline_state,
                 "reason": "基于RPS、5/10日涨幅、活跃度与环境匹配综合评分",
             },
+            "mainlines": mainlines,
             "marketRisk": market_risk,
             "topSectors": rec,
         }
@@ -623,6 +685,71 @@ class MarketEngine:
             ],
         }
 
+    def _build_mainlines(self, rec: list[dict], trade_date: str, total_limit_up: int) -> list[dict[str, Any]]:
+        """构建多主线 + 星级评分。
+        评分维度:
+          1. 板块内涨停数 (limitUpCount)  — 当日板块成分涨停占比
+          2. 综合得分 (compositeScore)     — RPS+涨幅+活跃度综合分
+          3. 资金活跃度 (amount/activity)  — 成交额大=大资金参与
+        每个维度满分 1 星，合计最高 5 星（维度1权重 2 星，维度2 权重 1.5 星，维度3 权重 1.5 星）
+        """
+        if not rec:
+            return []
+
+        # 从 rec 中提取维度
+        limit_ups = [r.get("limitUpCount", 0) for r in rec]
+        composites = [r.get("compositeScore", 0) for r in rec]
+        amounts = [r.get("amount", 0) for r in rec]
+
+        # 如果 rec 没有 limitUpCount，尝试从 sector_rankings 获取
+        if all(lu == 0 for lu in limit_ups):
+            try:
+                rankings = self.sector_rankings(trade_date)
+                rank_map = {r["sectorCode"]: r.get("limitUpCount", 0) for r in rankings}
+                limit_ups = [rank_map.get(r.get("sectorCode", ""), 0) for r in rec]
+            except Exception:
+                pass
+
+        max_lu = max(limit_ups) if limit_ups and max(limit_ups) > 0 else 1
+        max_comp = max(composites) if composites and max(composites) > 0 else 1
+        max_amt = max(amounts) if amounts and max(amounts) > 0 else 1
+
+        mainlines = []
+        for i, r in enumerate(rec):
+            lu = limit_ups[i]
+            comp = composites[i]
+            amt = amounts[i]
+
+            # 维度1: 涨停数 → 0~2 星
+            lu_star = (lu / max_lu) * 2.0 if max_lu > 0 else 0
+            # 维度2: 综合分 → 0~1.5 星
+            comp_star = (comp / max_comp) * 1.5 if max_comp > 0 else 0
+            # 维度3: 资金量 → 0~1.5 星
+            amt_star = (amt / max_amt) * 1.5 if max_amt > 0 else 0
+
+            raw_stars = lu_star + comp_star + amt_star
+            # 四舍五入到 0.5
+            stars = round(raw_stars * 2) / 2
+            stars = max(0.5, min(5.0, stars))
+
+            status = "加强" if comp >= 75 else ("分歧" if comp >= 50 else "衰退")
+
+            mainlines.append({
+                "sectorCode": r.get("sectorCode", ""),
+                "sectorName": r.get("sectorName", ""),
+                "stars": stars,
+                "status": status,
+                "limitUpCount": lu,
+                "compositeScore": round(comp, 2),
+                "amount": round(amt, 2),
+                "pctChange5d": r.get("pctChange5d", 0),
+                "pctChange10d": r.get("pctChange10d", 0),
+            })
+
+        # 按星级降序排列
+        mainlines.sort(key=lambda x: x["stars"], reverse=True)
+        return mainlines
+
     def recommend_top_sectors(self, trade_date: str, market_label: str, sectors: pd.DataFrame | None = None) -> list[dict[str, Any]]:
         df = sectors.copy() if sectors is not None else self.compute_sector_metrics(trade_date)
         required_columns = {"amount_est", "rps10", "ret5", "ret10", "sector_name", "ts_code"}
@@ -658,12 +785,20 @@ class MarketEngine:
             + df["env_fit_score"] * 0.10
         )
         df = df.sort_values("composite", ascending=False).head(4).reset_index(drop=True)
+
+        # 查询 top4 板块的涨停个数
+        snap = self.stock_snapshot(trade_date)
+        limit_up_codes = set(snap[snap["pct_chg"] >= 9.8]["ts_code"].dropna().tolist()) if snap is not None else set()
+        top_codes = df["ts_code"].tolist()
+        limit_counts = self._batch_query_sector_limits(top_codes, trade_date, limit_up_codes)
+
         out: list[dict[str, Any]] = []
         for i, r in df.iterrows():
+            code = r["ts_code"]
             out.append(
                 {
                     "rank": i + 1,
-                    "sectorCode": r["ts_code"],
+                    "sectorCode": code,
                     "sectorName": r["sector_name"],
                     "compositeScore": round(float(r["composite"]), 2),
                     "rps10": round(float(r["rps10"]), 2),
@@ -672,6 +807,7 @@ class MarketEngine:
                     "activityScore": round(float(r["activity_score"]), 2),
                     "envFitScore": round(float(r["env_fit_score"]), 2),
                     "amount": round(float(r["amount_est"]), 2),
+                    "limitUpCount": limit_counts.get(code, 0),
                     "reason": f"RPS强度与趋势延续性较好，且与{market_label}环境匹配",
                 }
             )
@@ -955,30 +1091,92 @@ class MarketEngine:
 
     def _bull_camp_base(self, trade_date: str) -> list[dict[str, Any]]:
         def _load() -> list[dict[str, Any]]:
+            """
+            入营条件（用户定义）:
+              1. 个股 RPS250 > 87 (250日相对强弱排名前13%)
+              2. 属于当日主线板块
+              3. 日成交额 ≥ 10亿
+            """
+            # 尝试最近几个交易日，避免周末/假日无数据
+            dates_to_try = [trade_date]
             try:
-                stocks = self.compute_stock_metrics(trade_date)
-                sectors = self.compute_sector_metrics(trade_date)
-            except Exception as exc:
-                logger.warning(f"计算牛股集中营失败，返回空列表: {trade_date}, 错误: {exc}")
-                return []
+                recent_dates = self.trade_dates(trade_date, need=10)
+                dates_to_try = [d for d in reversed(recent_dates) if d <= trade_date][:5]
+                if not dates_to_try:
+                    dates_to_try = [trade_date]
+            except Exception:
+                pass
+
+            stocks = None
+            sectors = None
+            actual_date = trade_date
+            for d in dates_to_try:
+                try:
+                    s = self.compute_stock_metrics(d)
+                    sec = self.compute_sector_metrics(d)
+                    if s is not None and not s.empty and sec is not None and not sec.empty:
+                        stocks = s
+                        sectors = sec
+                        actual_date = d
+                        break
+                except Exception as exc:
+                    logger.debug(f"牛股集中营尝试日期 {d} 失败: {exc}")
+                    continue
 
             if stocks is None or stocks.empty or sectors is None or sectors.empty:
+                logger.warning(f"牛股集中营无数据，已尝试: {dates_to_try}")
                 return []
 
-            sectors = sectors[sectors["amount_est"] >= self.rules.sector_amount_min].copy()
-            if sectors.empty:
+            # ── 条件 1: RPS250 > 87，日成交额 ≥ 10亿 ──
+            df = stocks.copy()
+            # 如果 rps250 不存在或全 NaN，降级使用 rps120 或 rps20
+            rps_col = "rps250"
+            if rps_col not in df.columns or df[rps_col].dropna().empty:
+                rps_col = "rps120" if ("rps120" in df.columns and not df["rps120"].dropna().empty) else "rps20"
+                logger.info(f"牛股集中营: rps250 不可用，降级使用 {rps_col}")
+
+            df = df[
+                (df[rps_col] > 87)
+                & (df["amount_yuan"] >= 1_000_000_000)
+            ].copy()
+
+            if df.empty:
+                logger.info(f"牛股集中营: {rps_col}>87 且 amount>=10亿 过滤后无数据")
                 return []
 
-            sector_assignments: dict[str, dict[str, Any]] = {}
-            sorted_sectors = sectors.sort_values(["rps10", "ret5"], ascending=False)
-            for _, row in sorted_sectors.iterrows():
-                sector_code = str(row["ts_code"])
+            # ── 条件 2: 属于主线板块 ──
+            # 获取主线板块列表
+            try:
+                overview = self.market_overview(actual_date)
+                mainlines = overview.get("mainlines", [])
+            except Exception as exc:
+                logger.warning(f"获取主线板块失败: {exc}")
+                mainlines = []
+
+            if not mainlines:
+                # 主线为空时，用推荐板块替代
+                try:
+                    rec = self.recommend_top_sectors(actual_date, "", sectors)
+                    mainlines = [{"sectorCode": r.get("sectorCode", ""), "sectorName": r.get("sectorName", "")} for r in rec[:10]]
+                except Exception:
+                    pass
+
+            if not mainlines:
+                logger.info("牛股集中营: 无主线板块数据")
+                return []
+
+            mainline_codes = {m["sectorCode"] for m in mainlines if m.get("sectorCode")}
+            mainline_name_map = {m["sectorCode"]: m.get("sectorName", "") for m in mainlines}
+
+            # 查询主线板块的成分股
+            mainline_members: dict[str, dict[str, Any]] = {}  # ts_code → sector info
+            for sector_code in mainline_codes:
                 try:
                     if sector_code.endswith(".SI"):
                         members = self.pro.index_member(index_code=sector_code)
                         if members is None or members.empty:
                             continue
-                        valid = members["out_date"].isna() | (members["out_date"] == "") | (members["out_date"] > trade_date)
+                        valid = members["out_date"].isna() | (members["out_date"] == "") | (members["out_date"] > actual_date)
                         codes = members[valid]["con_code"].dropna().unique().tolist()
                     else:
                         members = self.pro.ths_member(ts_code=sector_code)
@@ -986,117 +1184,62 @@ class MarketEngine:
                             continue
                         codes = members["con_code"].dropna().unique().tolist()
                 except Exception as exc:
-                    logger.debug(f"读取板块成分失败: {sector_code}, 错误: {exc}")
+                    logger.debug(f"读取主线板块成分失败: {sector_code}, 错误: {exc}")
                     continue
 
-                sector_meta = {
-                    "sectorCode": sector_code,
-                    "sectorName": str(row["sector_name"]),
-                    "sectorPctChange5d": float(row["ret5"]),
-                    "sectorPctChange10d": float(row["ret10"]),
-                    "sectorRps10": float(row["rps10"]),
-                }
                 for code in codes:
-                    if code not in sector_assignments:
-                        sector_assignments[code] = sector_meta
+                    if code not in mainline_members:
+                        mainline_members[code] = {
+                            "sectorCode": sector_code,
+                            "sectorName": mainline_name_map.get(sector_code, ""),
+                        }
 
-            if not sector_assignments:
+            if not mainline_members:
+                logger.info("牛股集中营: 主线板块成分查询为空")
                 return []
 
-            df = stocks[stocks["ts_code"].isin(sector_assignments.keys())].copy()
+            # 只保留属于主线板块的股票
+            df = df[df["ts_code"].isin(mainline_members.keys())].copy()
             if df.empty:
+                logger.info("牛股集中营: RPS250>87 且在主线板块的股票为空")
                 return []
 
-            df["sectorCode"] = df["ts_code"].map(lambda code: sector_assignments[code]["sectorCode"])
-            df["sectorName"] = df["ts_code"].map(lambda code: sector_assignments[code]["sectorName"])
-            df["sectorPctChange5d"] = df["ts_code"].map(lambda code: sector_assignments[code]["sectorPctChange5d"])
-            df["sectorPctChange10d"] = df["ts_code"].map(lambda code: sector_assignments[code]["sectorPctChange10d"])
-            df["sectorRps10"] = df["ts_code"].map(lambda code: sector_assignments[code]["sectorRps10"])
+            df["sectorCode"] = df["ts_code"].map(lambda c: mainline_members[c]["sectorCode"])
+            df["sectorName"] = df["ts_code"].map(lambda c: mainline_members[c]["sectorName"])
 
-            df = df[
-                (df["rps20"] > 87)
-                & (df["amount_yuan"] >= 1_000_000_000)
-                & (df["pct_chg"] > 0)
-                & (df["ret5"] > df["sectorPctChange5d"])
-                & (df["rps20"] > df["sectorRps10"])
-            ].copy()
-            if df.empty:
-                return []
-
-            rs_latest_values: dict[str, float] = {}
-            rs5_values: dict[str, float] = {}
-            rs10_values: dict[str, float] = {}
-            rs20_values: dict[str, float] = {}
-            keep_codes: list[str] = []
-
-            for _, row in df.iterrows():
-                ts_code = str(row["ts_code"])
-                sector_code = str(row["sectorCode"])
-                try:
-                    rs = self.relative_strength(ts_code, sector_code, trade_date, bars=60)
-                except Exception as exc:
-                    logger.debug(f"相对强弱计算失败: {ts_code}/{sector_code}, 错误: {exc}")
-                    continue
-
-                spread_series = rs.get("spreadSeries") or []
-                latest = float(spread_series[-1]["value"]) if spread_series else 0.0
-                if latest <= 0:
-                    continue
-
-                keep_codes.append(ts_code)
-                rs_latest_values[ts_code] = latest
-                summary = rs.get("summary") or {}
-                rs5_values[ts_code] = float(summary.get("relativeStrength5d", 0.0))
-                rs10_values[ts_code] = float(summary.get("relativeStrength10d", 0.0))
-                rs20_values[ts_code] = float(summary.get("relativeStrength20d", 0.0))
-
-            if not keep_codes:
-                return []
-
-            df = df[df["ts_code"].isin(keep_codes)].copy()
-            df["relativeStrengthLatest"] = df["ts_code"].map(rs_latest_values)
-            df["relativeStrength5d"] = df["ts_code"].map(rs5_values)
-            df["relativeStrength10d"] = df["ts_code"].map(rs10_values)
-            df["relativeStrength20d"] = df["ts_code"].map(rs20_values)
-
+            # ── 计算综合评分 ──
             def minmax(s: pd.Series) -> pd.Series:
                 lo, hi = float(s.min()), float(s.max())
                 if hi - lo < 1e-9:
                     return pd.Series(np.full(len(s), 50.0), index=s.index)
                 return (s - lo) / (hi - lo) * 100
 
-            df["rpsScore"] = minmax(df["rps20"])
-            df["rsScore"] = minmax(df["relativeStrengthLatest"])
+            df["rpsScore"] = minmax(df[rps_col])
             df["amountScore"] = minmax(df["amount_yuan"])
-            df["campScore"] = df["rpsScore"] * 0.5 + df["rsScore"] * 0.3 + df["amountScore"] * 0.2
-            df = df.sort_values(["campScore", "rps20", "relativeStrengthLatest"], ascending=False).reset_index(drop=True)
+            df["retScore"] = minmax(df["ret20"].clip(lower=-50, upper=100)) if "ret20" in df.columns else 50.0
+            df["campScore"] = df["rpsScore"] * 0.5 + df["amountScore"] * 0.2 + df["retScore"] * 0.3
+            df = df.sort_values(["campScore", rps_col], ascending=False).reset_index(drop=True)
 
             out: list[dict[str, Any]] = []
             for _, row in df.iterrows():
-                out.append(
-                    {
-                        "tsCode": str(row["ts_code"]),
-                        "stockName": str(row["name"]),
-                        "sectorCode": str(row["sectorCode"]),
-                        "sectorName": str(row["sectorName"]),
-                        "close": round(float(row["close"]), 2),
-                        "pctChange1d": round(float(row["pct_chg"]), 2),
-                        "pctChange5d": round(float(row["ret5"]), 2),
-                        "pctChange10d": round(float(row["ret10"]), 2),
-                        "sectorPctChange5d": round(float(row["sectorPctChange5d"]), 2),
-                        "sectorPctChange10d": round(float(row["sectorPctChange10d"]), 2),
-                        "rps10": round(float(row["rps10"]), 2),
-                        "rps20": round(float(row["rps20"]), 2),
-                        "sectorRps10": round(float(row["sectorRps10"]), 2),
-                        "amount": round(float(row["amount_yuan"]), 2),
-                        "ma20": round(float(row["ma20"]), 2),
-                        "relativeStrengthLatest": round(float(row["relativeStrengthLatest"]), 2),
-                        "relativeStrength5d": round(float(row["relativeStrength5d"]), 2),
-                        "relativeStrength10d": round(float(row["relativeStrength10d"]), 2),
-                        "relativeStrength20d": round(float(row["relativeStrength20d"]), 2),
-                        "campScore": round(float(row["campScore"]), 2),
-                    }
-                )
+                item: dict[str, Any] = {
+                    "tsCode": str(row["ts_code"]),
+                    "stockName": str(row["name"]),
+                    "sectorCode": str(row["sectorCode"]),
+                    "sectorName": str(row["sectorName"]),
+                    "close": round(float(row["close"]), 2),
+                    "pctChange1d": round(float(row["pct_chg"]), 2),
+                    "pctChange5d": round(float(row["ret5"]), 2),
+                    "pctChange10d": round(float(row["ret10"]), 2),
+                    "rps5": round(float(row["rps5"]), 2) if pd.notna(row.get("rps5")) else 0,
+                    "rps10": round(float(row["rps10"]), 2) if pd.notna(row.get("rps10")) else 0,
+                    "rps20": round(float(row["rps20"]), 2) if pd.notna(row.get("rps20")) else 0,
+                    "rps250": round(float(row[rps_col]), 2),
+                    "amount": round(float(row["amount_yuan"]), 2),
+                    "ma20": round(float(row["ma20"]), 2) if pd.notna(row.get("ma20")) else 0,
+                    "campScore": round(float(row["campScore"]), 2),
+                }
+                out.append(item)
             return out
 
         return self._cached(f"bull_camp_base:{trade_date}", 900, _load)
@@ -1173,6 +1316,58 @@ class MarketEngine:
             streak_map[code] = streak
         return streak_map
 
+    def _bull_camp_score_history(self, trade_date: str, lookback_days: int = 5) -> dict[str, list[float | None]]:
+        """从缓存的 bull_camp_history 中提取每只股票最近 N 天的 campScore，返回 {ts_code: [score_day1, ..., score_dayN]}"""
+        history = self.bull_camp_history(trade_date, days=lookback_days)
+        if not history:
+            return {}
+        # 先收集当日所有 ts_code
+        today_items = history[-1].get("items", []) if history else []
+        today_codes = {str(item.get("tsCode", "")) for item in today_items}
+        # 构建 {ts_code: [score_per_day]}
+        result: dict[str, list[float | None]] = {code: [] for code in today_codes}
+        for day in history:
+            day_map = {str(item.get("tsCode", "")): item.get("campScore") for item in day.get("items", [])}
+            for code in today_codes:
+                result[code].append(day_map.get(code))
+        return result
+
+    def _detect_patterns_batch(self, ts_codes: list[str], trade_date: str) -> dict[str, list[str]]:
+        """批量检测形态，返回 {ts_code: [pattern_tags]}"""
+        result: dict[str, list[str]] = {}
+        dates = self.trade_dates(trade_date, need=280)
+        start = dates[-270] if len(dates) >= 270 else dates[0]
+
+        def _detect_one(ts_code: str) -> tuple[str, list[str]]:
+            try:
+                df = ts.pro_bar(
+                    pro_api=self.pro,
+                    ts_code=ts_code,
+                    adj="qfq",
+                    start_date=start,
+                    end_date=trade_date,
+                    asset="E",
+                )
+                if df is None or df.empty:
+                    return ts_code, []
+                tags = detect_all_patterns(df)
+                return ts_code, tags
+            except Exception as exc:
+                logger.debug(f"形态检测失败 {ts_code}: {exc}")
+                return ts_code, []
+
+        # 并发检测（最多 4 线程，避免 Tushare 限频）
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futures = {pool.submit(_detect_one, code): code for code in ts_codes}
+            for future in as_completed(futures):
+                try:
+                    code, tags = future.result(timeout=30)
+                    result[code] = tags
+                except Exception:
+                    pass
+
+        return result
+
     def bull_camp(self, trade_date: str) -> list[dict[str, Any]]:
         def _load() -> list[dict[str, Any]]:
             base_items = self._bull_camp_base(trade_date)
@@ -1181,6 +1376,15 @@ class MarketEngine:
 
             streak_map = self._bull_camp_streak_map(trade_date, lookback_days=20)
             ann_codes = self._recent_announcement_codes(trade_date, days=7)
+            score_history_map = self._bull_camp_score_history(trade_date, lookback_days=5)
+
+            # 形态检测
+            ts_codes = [str(item.get("tsCode", "")) for item in base_items if item.get("tsCode")]
+            try:
+                pattern_map = self._detect_patterns_batch(ts_codes, trade_date)
+            except Exception as exc:
+                logger.warning(f"批量形态检测失败: {exc}")
+                pattern_map = {}
 
             enriched: list[dict[str, Any]] = []
             for item in base_items:
@@ -1190,6 +1394,8 @@ class MarketEngine:
                 next_item["daysInCamp"] = days_in_camp
                 next_item["isNew"] = days_in_camp <= 1
                 next_item["hasRecentAnnouncement"] = ts_code in ann_codes
+                next_item["patternTags"] = pattern_map.get(ts_code, [])
+                next_item["campScoreHistory"] = score_history_map.get(ts_code, [])
                 enriched.append(next_item)
             return enriched
 
@@ -1305,6 +1511,10 @@ class MarketEngine:
         return {"code": sector_code, "name": name, "points": points}
 
     def relative_strength(self, ts_code: str, sector_code: str, trade_date: str, bars: int = 60) -> dict[str, Any]:
+        # 优先查预计算库
+        pre = self._precomputed.get_stock_rs(ts_code, trade_date)
+        if pre:
+            return pre
         sk = self.stock_kline(ts_code, trade_date, bars=bars)
         bk = self.sector_kline(sector_code, trade_date, bars=bars)
         if not sk["points"] or not bk["points"]:
@@ -1434,3 +1644,482 @@ class MarketEngine:
                 item["netIncomeYoY"] = round((item["netIncome"] / prev["netIncome"] - 1) * 100, 2)
 
         return {"code": ts_code, "name": name, "periods": results}
+
+    def stock_rise_attribution(self, ts_code: str, trade_date: str) -> dict[str, Any]:
+        """
+        个股上涨归因分析 — 从基本面维度解释股价上涨的原因。
+
+        归因维度:
+          1. 板块驱动 — 所属板块是否为主线，板块涨幅/星级
+          2. 业绩驱动 — 营收/净利润同比增速趋势
+          3. 盈利质量 — ROE、毛利率变化趋势
+          4. 估值修复 — 当前 PE/PB 分位（如有数据）
+          5. 资金关注 — 成交额水平、RPS 排名
+          6. 近期催化 — 最近的公告/新闻事件
+        """
+        # ── 优先查预计算库（<10ms）──
+        pre = self._precomputed.get_stock_attribution(ts_code, trade_date)
+        if pre:
+            return pre
+
+        def _load() -> dict[str, Any]:
+            attribution: list[dict[str, Any]] = []  # [{dimension, label, detail, sentiment}]
+            name = self.stock_name_map().get(ts_code, ts_code)
+
+            # ── 1. 板块驱动 ──
+            try:
+                overview = self.market_overview(trade_date)
+                mainlines = overview.get("mainlines", [])
+                sector_info = self.stock_sector_lookup(ts_code, trade_date)
+                sector_code = sector_info.get("sectorCode", "")
+                sector_name = sector_info.get("sectorName", "")
+
+                mainline_match = next((m for m in mainlines if m.get("sectorCode") == sector_code), None)
+                if mainline_match:
+                    stars = mainline_match.get("stars", 0)
+                    pct5 = mainline_match.get("pctChange5d", 0)
+                    status = mainline_match.get("status", "")
+                    attribution.append({
+                        "dimension": "sector",
+                        "label": "主线板块",
+                        "detail": f"属于{sector_name}（★{stars}，{status}），板块5日{pct5:+.1f}%",
+                        "sentiment": "positive" if stars >= 3 else "neutral",
+                    })
+                elif sector_name:
+                    attribution.append({
+                        "dimension": "sector",
+                        "label": "板块归属",
+                        "detail": f"属于{sector_name}，非当日主线",
+                        "sentiment": "neutral",
+                    })
+            except Exception as exc:
+                logger.debug(f"板块归因失败: {ts_code}, {exc}")
+
+            # ── 2. 业绩驱动 ──
+            try:
+                fin = self.stock_financials(ts_code, periods=8)
+                periods = fin.get("periods", [])
+                if periods:
+                    # 最近有同比数据的季度
+                    recent_with_yoy = [p for p in periods if p.get("revenueYoY") is not None][:4]
+                    if recent_with_yoy:
+                        latest = recent_with_yoy[0]
+                        rev_yoy = latest.get("revenueYoY", 0)
+                        ni_yoy = latest.get("netIncomeYoY")
+                        end_date = latest.get("endDate", "")
+                        q_label = f"{end_date[:4]}Q{int(end_date[4:6])//3 or 4}" if len(end_date) >= 6 else end_date
+
+                        # 营收趋势
+                        rev_trend = [p.get("revenueYoY") for p in recent_with_yoy if p.get("revenueYoY") is not None]
+                        if rev_yoy > 20:
+                            sentiment = "positive"
+                            detail = f"{q_label}营收同比+{rev_yoy:.0f}%"
+                        elif rev_yoy > 0:
+                            sentiment = "neutral"
+                            detail = f"{q_label}营收同比+{rev_yoy:.0f}%"
+                        else:
+                            sentiment = "negative"
+                            detail = f"{q_label}营收同比{rev_yoy:.0f}%"
+
+                        # 加速/减速判断
+                        if len(rev_trend) >= 2:
+                            if rev_trend[0] > rev_trend[1]:
+                                detail += "（加速增长）"
+                            elif rev_trend[0] < rev_trend[1] and rev_trend[0] > 0:
+                                detail += "（增速放缓）"
+
+                        attribution.append({
+                            "dimension": "revenue",
+                            "label": "营收增长",
+                            "detail": detail,
+                            "sentiment": sentiment,
+                        })
+
+                        # 净利润
+                        if ni_yoy is not None:
+                            ni_label = f"{q_label}净利润同比{ni_yoy:+.0f}%"
+                            attribution.append({
+                                "dimension": "profit",
+                                "label": "利润增长",
+                                "detail": ni_label,
+                                "sentiment": "positive" if ni_yoy > 20 else ("neutral" if ni_yoy > 0 else "negative"),
+                            })
+
+                    # ── 3. 盈利质量 ──
+                    latest_fin = periods[0]
+                    roe = latest_fin.get("roe")
+                    gm = latest_fin.get("grossMargin")
+                    if roe is not None:
+                        attribution.append({
+                            "dimension": "roe",
+                            "label": "ROE",
+                            "detail": f"ROE {roe:.1f}%",
+                            "sentiment": "positive" if roe > 15 else ("neutral" if roe > 8 else "negative"),
+                        })
+                    if gm is not None:
+                        attribution.append({
+                            "dimension": "margin",
+                            "label": "毛利率",
+                            "detail": f"毛利率 {gm:.1f}%",
+                            "sentiment": "positive" if gm > 40 else ("neutral" if gm > 20 else "negative"),
+                        })
+            except Exception as exc:
+                logger.debug(f"财务归因失败: {ts_code}, {exc}")
+
+            # ── 5. 资金关注 ──
+            try:
+                stocks = self.compute_stock_metrics(trade_date)
+                if stocks is not None and not stocks.empty:
+                    row = stocks[stocks["ts_code"] == ts_code]
+                    if not row.empty:
+                        r = row.iloc[0]
+                        rps20 = float(r.get("rps20", 0)) if pd.notna(r.get("rps20")) else 0
+                        rps250_val = float(r.get("rps250", 0)) if pd.notna(r.get("rps250")) else None
+                        amount = float(r.get("amount_yuan", 0))
+
+                        rps_detail = f"RPS20={rps20:.0f}"
+                        if rps250_val is not None:
+                            rps_detail += f"，RPS250={rps250_val:.0f}"
+
+                        attribution.append({
+                            "dimension": "momentum",
+                            "label": "动量排名",
+                            "detail": rps_detail,
+                            "sentiment": "positive" if rps20 > 80 else ("neutral" if rps20 > 50 else "negative"),
+                        })
+
+                        if amount > 0:
+                            amt_yi = amount / 1e8
+                            attribution.append({
+                                "dimension": "volume",
+                                "label": "成交额",
+                                "detail": f"日成交{amt_yi:.1f}亿",
+                                "sentiment": "positive" if amount >= 1e9 else "neutral",
+                            })
+            except Exception as exc:
+                logger.debug(f"资金归因失败: {ts_code}, {exc}")
+
+            # ── 6. 近期催化 ──
+            try:
+                news = self.stock_news(ts_code, trade_date, limit=3)
+                if news:
+                    titles = [n.get("title", "") for n in news[:3] if n.get("title")]
+                    if titles:
+                        attribution.append({
+                            "dimension": "catalyst",
+                            "label": "近期公告",
+                            "detail": " | ".join(titles[:2]),
+                            "sentiment": "neutral",
+                        })
+            except Exception as exc:
+                logger.debug(f"新闻归因失败: {ts_code}, {exc}")
+
+            return {
+                "tsCode": ts_code,
+                "stockName": name,
+                "attribution": attribution,
+            }
+
+        return self._cached(f"rise_attr:{ts_code}:{trade_date}", 600, _load)
+
+    def stock_sector_lookup(self, ts_code: str, trade_date: str) -> dict[str, str]:
+        """查询个股所属的最强板块（RPS 最高的那个）"""
+        def _load() -> dict[str, str]:
+            try:
+                sectors = self.compute_sector_metrics(trade_date)
+                if sectors is None or sectors.empty:
+                    return {"sectorCode": "", "sectorName": ""}
+            except Exception:
+                return {"sectorCode": "", "sectorName": ""}
+
+            best: dict[str, str] = {"sectorCode": "", "sectorName": ""}
+            best_rps = -999.0
+
+            for _, row in sectors.iterrows():
+                sector_code = str(row["ts_code"])
+                try:
+                    members = self.pro.ths_member(ts_code=sector_code)
+                    if members is None or members.empty:
+                        continue
+                    codes = members["con_code"].dropna().unique().tolist()
+                    if ts_code in codes:
+                        rps = float(row.get("rps10", 0))
+                        if rps > best_rps:
+                            best_rps = rps
+                            best = {
+                                "sectorCode": sector_code,
+                                "sectorName": str(row.get("sector_name", "")),
+                            }
+                except Exception:
+                    continue
+            return best
+
+        return self._cached(f"stock_sector:{ts_code}:{trade_date}", 3600, _load)
+
+    def stock_news(self, ts_code: str, trade_date: str, limit: int = 20) -> list[dict[str, Any]]:
+        """获取个股最近的公告列表"""
+        safe_limit = max(1, min(int(limit), 50))
+
+        def _load() -> list[dict[str, Any]]:
+            start_date = (pd.Timestamp(trade_date) - pd.Timedelta(days=90)).strftime("%Y%m%d")
+            items: list[dict[str, Any]] = []
+
+            # 尝试获取公告
+            for endpoint in ["anns_d", "anns"]:
+                fn = getattr(self.pro, endpoint, None)
+                if fn is None:
+                    continue
+                try:
+                    df = fn(
+                        ts_code=ts_code,
+                        start_date=start_date,
+                        end_date=trade_date,
+                    )
+                except Exception as exc:
+                    logger.debug(f"公告接口调用失败: {endpoint}, 错误: {exc}")
+                    continue
+
+                if df is None or df.empty:
+                    continue
+
+                # 根据实际列名适配
+                date_col = None
+                for c in ["ann_date", "pub_date", "trade_date"]:
+                    if c in df.columns:
+                        date_col = c
+                        break
+
+                title_col = None
+                for c in ["title", "ann_title", "content"]:
+                    if c in df.columns:
+                        title_col = c
+                        break
+
+                if date_col:
+                    df = df.sort_values(date_col, ascending=False)
+
+                for _, row in df.head(safe_limit).iterrows():
+                    item: dict[str, Any] = {
+                        "date": str(row[date_col]) if date_col and pd.notna(row.get(date_col)) else "",
+                        "title": str(row[title_col]) if title_col and pd.notna(row.get(title_col)) else "公告",
+                    }
+                    # 可选字段
+                    if "url" in df.columns and pd.notna(row.get("url")):
+                        item["url"] = str(row["url"])
+                    items.append(item)
+
+                if items:
+                    break  # 有数据就不尝试下一个 endpoint
+
+            return items
+
+        return self._cached(f"stock_news:{ts_code}:{trade_date}:{safe_limit}", 1800, _load)
+
+    def stock_tags(self, ts_code: str, trade_date: str) -> dict[str, Any]:
+        """
+        个股标签：概念题材 + 资金属性（游资/基金）+ 同题材关联股。
+        优先从预计算库读（<10ms），fallback 到实时计算。
+
+        返回:
+          {
+            tsCode, stockName,
+            concepts: [{code, name, rps10}],      # 所属概念板块（按 RPS 排序）
+            capitalType: "游资主导" | "基金重仓" | "混合" | "未知",
+            capitalDetail: str,                     # 判断依据说明
+            relatedStocks: [{tsCode, name, ret5}],  # 同题材强势关联股
+          }
+        """
+        # ── 优先查预计算库（<10ms）──
+        pre = self._precomputed.get_stock_tags(ts_code, trade_date)
+        if pre:
+            return pre
+
+        def _load() -> dict[str, Any]:
+            name = self.stock_name_map().get(ts_code, ts_code)
+            result: dict[str, Any] = {
+                "tsCode": ts_code,
+                "stockName": name,
+                "concepts": [],
+                "capitalType": "未知",
+                "capitalDetail": "",
+                "relatedStocks": [],
+            }
+
+            # ── 1. 所属概念题材 ──
+            try:
+                sectors = self.compute_sector_metrics(trade_date)
+                if sectors is not None and not sectors.empty:
+                    matched_sectors: list[dict] = []
+                    for _, row in sectors.iterrows():
+                        sector_code = str(row["ts_code"])
+                        try:
+                            members = self.pro.ths_member(ts_code=sector_code)
+                            if members is None or members.empty:
+                                continue
+                            codes = members["con_code"].dropna().unique().tolist()
+                            if ts_code in codes:
+                                matched_sectors.append({
+                                    "code": sector_code,
+                                    "name": str(row.get("sector_name", "")),
+                                    "rps10": round(float(row.get("rps10", 0)), 1),
+                                    "ret5": round(float(row.get("ret5", 0)), 1),
+                                    "_members": codes,  # 暂存，用于关联股
+                                })
+                        except Exception:
+                            continue
+
+                    # 按 RPS 排序，取前 8 个概念
+                    matched_sectors.sort(key=lambda x: x["rps10"], reverse=True)
+                    top_concepts = matched_sectors[:8]
+                    result["concepts"] = [
+                        {"code": c["code"], "name": c["name"], "rps10": c["rps10"]}
+                        for c in top_concepts
+                    ]
+
+                    # ── 3. 关联股票（从最强概念板块中提取同题材强势股）──
+                    if top_concepts:
+                        best_concept = top_concepts[0]
+                        peer_codes = [c for c in best_concept["_members"] if c != ts_code]
+                        # 获取这些股票的指标
+                        try:
+                            stock_metrics = self.compute_stock_metrics(trade_date)
+                            if stock_metrics is not None and not stock_metrics.empty:
+                                peers = stock_metrics[stock_metrics["ts_code"].isin(peer_codes)].copy()
+                                if not peers.empty:
+                                    peers = peers.sort_values("ret5", ascending=False).head(8)
+                                    name_map = self.stock_name_map()
+                                    result["relatedStocks"] = [
+                                        {
+                                            "tsCode": str(r["ts_code"]),
+                                            "name": name_map.get(str(r["ts_code"]), str(r["ts_code"])),
+                                            "ret5": round(float(r.get("ret5", 0)), 1),
+                                            "pctChg": round(float(r.get("pct_chg", 0)), 2),
+                                            "concept": best_concept["name"],
+                                        }
+                                        for _, r in peers.iterrows()
+                                    ]
+                        except Exception as exc:
+                            logger.debug(f"关联股查询失败: {exc}")
+            except Exception as exc:
+                logger.debug(f"概念题材查询失败: {ts_code}, {exc}")
+
+            # ── 2. 资金属性（游资 vs 基金）──
+            try:
+                capital_signals: list[str] = []
+                fund_score = 0  # 正分=基金，负分=游资
+
+                # (a) 龙虎榜检查 — 近30天是否上过龙虎榜
+                start_dt = (pd.Timestamp(trade_date) - pd.Timedelta(days=60)).strftime("%Y%m%d")
+                try:
+                    top_df = self.pro.top_list(
+                        ts_code=ts_code,
+                        start_date=start_dt,
+                        end_date=trade_date,
+                    )
+                    if top_df is not None and not top_df.empty:
+                        capital_signals.append(f"近期{len(top_df)}次登龙虎榜")
+                        fund_score -= 2  # 龙虎榜偏游资
+
+                        # 检查机构席位
+                        try:
+                            top_inst_df = self.pro.top_inst(
+                                ts_code=ts_code,
+                                start_date=start_dt,
+                                end_date=trade_date,
+                            )
+                            if top_inst_df is not None and not top_inst_df.empty:
+                                # 有机构专用席位
+                                inst_rows = top_inst_df[
+                                    top_inst_df["exalter"].fillna("").str.contains("机构|基金", regex=True)
+                                ] if "exalter" in top_inst_df.columns else pd.DataFrame()
+                                if not inst_rows.empty:
+                                    net_buy = inst_rows["buy"].sum() - inst_rows["sell"].sum() if {"buy", "sell"}.issubset(inst_rows.columns) else 0
+                                    if net_buy > 0:
+                                        capital_signals.append("机构席位净买入")
+                                        fund_score += 3
+                                    else:
+                                        capital_signals.append("机构席位净卖出")
+                                        fund_score -= 1
+                                # 知名游资席位
+                                hot_money_kw = ["华鑫", "东方财富", "国金", "天风", "国泰君安"]
+                                if "exalter" in top_inst_df.columns:
+                                    hot_rows = top_inst_df[
+                                        top_inst_df["exalter"].fillna("").str.contains("|".join(hot_money_kw), regex=True)
+                                    ]
+                                    if not hot_rows.empty:
+                                        capital_signals.append("知名游资席位活跃")
+                                        fund_score -= 2
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+                # (b) 基金重仓检查 — 最近的十大流通股东
+                try:
+                    holder_df = self.pro.top10_floatholders(
+                        ts_code=ts_code,
+                        start_date=(pd.Timestamp(trade_date) - pd.Timedelta(days=180)).strftime("%Y%m%d"),
+                        end_date=trade_date,
+                    )
+                    if holder_df is not None and not holder_df.empty:
+                        # 统计基金/机构持股比例
+                        if "holder_name" in holder_df.columns:
+                            latest_date = holder_df["end_date"].max() if "end_date" in holder_df.columns else None
+                            if latest_date:
+                                latest = holder_df[holder_df["end_date"] == latest_date]
+                            else:
+                                latest = holder_df.head(10)
+                            fund_holders = latest[
+                                latest["holder_name"].fillna("").str.contains(
+                                    "基金|社保|保险|QFII|证金|汇金|养老", regex=True
+                                )
+                            ]
+                            fund_count = len(fund_holders)
+                            total_count = len(latest)
+                            if fund_count >= 4:
+                                capital_signals.append(f"十大流通股东中{fund_count}家机构/基金")
+                                fund_score += 4
+                            elif fund_count >= 2:
+                                capital_signals.append(f"十大流通股东中{fund_count}家机构/基金")
+                                fund_score += 2
+                            elif fund_count == 0 and total_count > 0:
+                                capital_signals.append("十大流通股东无机构/基金")
+                                fund_score -= 2
+                except Exception:
+                    pass
+
+                # (c) 成交额 + 换手率特征
+                try:
+                    stock_metrics = self.compute_stock_metrics(trade_date)
+                    if stock_metrics is not None and not stock_metrics.empty:
+                        row = stock_metrics[stock_metrics["ts_code"] == ts_code]
+                        if not row.empty:
+                            amt = float(row.iloc[0].get("amount", 0))
+                            # 小盘高换手偏游资
+                            if amt < 5e5:  # 成交额 < 5亿
+                                capital_signals.append("小盘特征")
+                                fund_score -= 1
+                            elif amt > 2e6:  # 成交额 > 20亿
+                                capital_signals.append("大盘特征")
+                                fund_score += 1
+                except Exception:
+                    pass
+
+                # 综合判断
+                if fund_score >= 3:
+                    result["capitalType"] = "基金重仓"
+                elif fund_score <= -3:
+                    result["capitalType"] = "游资主导"
+                elif capital_signals:
+                    result["capitalType"] = "混合"
+                else:
+                    result["capitalType"] = "未知"
+
+                result["capitalDetail"] = "；".join(capital_signals) if capital_signals else "暂无数据"
+
+            except Exception as exc:
+                logger.debug(f"资金属性分析失败: {ts_code}, {exc}")
+
+            return result
+
+        return self._cached(f"stock_tags:{ts_code}:{trade_date}", 1800, _load)
