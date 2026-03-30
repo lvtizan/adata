@@ -1,39 +1,67 @@
-import type { MarketOverview, MainlineSector } from "@/shared/types";
+import type { MarketOverview, MainlineSector, MarketRisk } from "@/shared/types";
+import { cn } from "@/lib/utils";
 
-function StarRating({ stars }: { stars: number }) {
-  const full = Math.floor(stars);
-  const half = stars % 1 >= 0.5;
-  const empty = 5 - full - (half ? 1 : 0);
+/** 主线板块标签 — 左侧强度条 + 状态着色 */
+function MainlineTag({ sector, rank }: { sector: MainlineSector; rank: number }) {
+  const pct = sector.pctChange10d;
+  const pctColor = pct > 0 ? "text-state-up" : pct < 0 ? "text-state-down" : "text-text-tertiary";
+
+  // 状态决定左竖条和背景色
+  const statusStyle: Record<string, { bar: string; bg: string; text: string }> = {
+    "加强": { bar: "bg-emerald-500", bg: "bg-emerald-500/8", text: "text-emerald-500" },
+    "分歧": { bar: "bg-amber-500",   bg: "bg-amber-500/8",   text: "text-amber-500" },
+    "衰退": { bar: "bg-red-400",     bg: "bg-red-400/8",     text: "text-red-400" },
+  };
+  const s = statusStyle[sector.status] || { bar: "bg-text-quaternary", bg: "bg-surface-hover/50", text: "text-text-tertiary" };
+
+  // 星级 → 竖条高度（1-5星 → 20%-100%）
+  const barHeight = Math.max(20, Math.round((sector.stars / 5) * 100));
+
   return (
-    <span className="inline-flex items-center gap-px text-amber-400 leading-none" title={`${stars} 星`}>
-      {"★".repeat(full)}
-      {half && <span className="relative inline-block w-[0.6em] overflow-hidden">★</span>}
-      <span className="text-text-quaternary">{"☆".repeat(empty)}</span>
+    <span className={cn("inline-flex items-center gap-1.5 pl-0 pr-2 py-1 rounded text-xs whitespace-nowrap relative overflow-hidden", s.bg)}>
+      {/* 左侧强度竖条 */}
+      <span className="w-[3px] self-stretch rounded-full overflow-hidden bg-surface-active/30 shrink-0 relative ml-1">
+        <span className={cn("absolute bottom-0 left-0 w-full rounded-full", s.bar)} style={{ height: `${barHeight}%` }} />
+      </span>
+      {/* 排名序号 */}
+      <span className="text-[10px] text-text-quaternary font-mono w-3 text-center shrink-0">{rank}</span>
+      {/* 板块名 */}
+      <span className="font-semibold text-text-primary">{sector.sectorName}</span>
+      {/* 涨幅 */}
+      <span className={cn("font-mono text-[11px]", pctColor)}>
+        {pct > 0 ? "+" : ""}{pct.toFixed(1)}%
+      </span>
+      {/* 涨停数 */}
+      {sector.limitUpCount > 0 && (
+        <span className="text-[10px] text-state-up font-mono">{sector.limitUpCount}↑</span>
+      )}
+      {/* 状态 */}
+      <span className={cn("text-[10px] font-medium", s.text)}>{sector.status}</span>
     </span>
   );
 }
 
-function MainlineRow({ sector }: { sector: MainlineSector }) {
-  const pct = sector.pctChange10d;
-  const pctColor = pct > 0 ? "text-state-up" : pct < 0 ? "text-state-down" : "text-text-tertiary";
-  const statusColors: Record<string, string> = {
-    "加强": "bg-emerald-500/15 text-emerald-400 border-emerald-500/30",
-    "分歧": "bg-amber-500/15 text-amber-400 border-amber-500/30",
-    "衰退": "bg-red-500/15 text-red-400 border-red-500/30",
+/** 风险指示条（替代仪表盘） */
+function RiskIndicator({ risk }: { risk: MarketRisk | undefined }) {
+  if (!risk) return null;
+  const score = risk.pointerValue ?? risk.score ?? 50;
+  const toneMap: Record<string, string> = {
+    positive: "text-state-down",
+    warning: "text-state-warning",
+    danger: "text-state-up",
+    neutral: "text-text-secondary",
   };
+  const barColor = score >= 65 ? "bg-state-up" : score >= 45 ? "bg-state-warning" : "bg-state-down";
+  const toneClass = toneMap[risk.tone] || "";
+
   return (
-    <div className="flex items-center gap-2 py-0.5">
-      <span className="font-semibold text-sm text-text-primary shrink-0">{sector.sectorName}</span>
-      <StarRating stars={sector.stars} />
-      <span className={`px-1.5 py-0.5 rounded text-[10px] font-mono ${pctColor} bg-surface-hover/60 shrink-0`}>
-        10日{pct > 0 ? "+" : ""}{pct.toFixed(1)}%
-      </span>
-      {sector.limitUpCount > 0 && (
-        <span className="text-[10px] text-state-up font-mono shrink-0">{sector.limitUpCount}涨停</span>
-      )}
-      <span className={`px-1 py-0.5 text-[10px] rounded border ${statusColors[sector.status] || "bg-surface-hover/60 text-text-tertiary border-border-subtle"}`}>
-        {sector.status}
-      </span>
+    <div className="flex items-center gap-2 pl-3 border-l border-border-default">
+      <span className="text-xs text-text-tertiary whitespace-nowrap">风险</span>
+      <div className="w-16 h-1.5 rounded-full bg-surface-active relative overflow-hidden">
+        <div className={cn("h-full rounded-full transition-all", barColor)} style={{ width: `${score}%` }} />
+      </div>
+      <span className={cn("text-sm font-bold tabular-nums min-w-[24px]", toneClass)}>{score}</span>
+      <span className={cn("text-xs font-medium", toneClass)}>{risk.label}</span>
     </div>
   );
 }
@@ -42,48 +70,26 @@ export function MarketSummary({ overview }: { overview: MarketOverview | undefin
   if (!overview) return null;
 
   const mainlines = overview.mainlines || [];
+  const breadth = overview.breadth;
+  const emotion = overview.emotionState;
 
   return (
-    <div className="flex items-stretch border border-border-default">
-      {/* 主线板块（垂直列表） */}
-      <div className="min-w-[280px] px-3 py-2 border-r border-border-default">
-        <span className="block text-xs text-text-tertiary mb-1">主线板块</span>
-        {mainlines.length > 0 ? (
-          <div className="flex flex-col">
-            {mainlines.map((s) => (
-              <MainlineRow key={s.sectorCode} sector={s} />
+    <div className="flex items-center gap-3 flex-wrap min-w-0">
+      {/* 主线板块 */}
+      {mainlines.length > 0 && (
+        <div className="flex items-center gap-1.5 min-w-0">
+          <span className="text-xs text-text-tertiary shrink-0">主线</span>
+          <div className="flex items-center gap-1.5 flex-wrap">
+            {mainlines.map((s, i) => (
+              <MainlineTag key={s.sectorCode} sector={s} rank={i + 1} />
             ))}
           </div>
-        ) : (
-          <strong className="block text-sm font-semibold leading-snug">
-            {overview.mainline?.name || "--"}
-          </strong>
-        )}
-      </div>
+        </div>
+      )}
 
-      {/* 涨停/跌停 */}
-      <div className="min-w-[100px] px-3 py-2.5 border-r border-border-default">
-        <span className="block text-xs text-text-tertiary mb-1">涨停/跌停</span>
-        <strong className="block text-sm font-semibold leading-snug">
-          {overview.breadth?.limitUpCount ?? "--"} / {overview.breadth?.limitDownCount ?? "--"}
-        </strong>
-      </div>
-
-      {/* 情绪 */}
-      <div className="min-w-[80px] px-3 py-2.5 border-r border-border-default">
-        <span className="block text-xs text-text-tertiary mb-1">情绪</span>
-        <strong className="block text-sm font-semibold leading-snug">
-          {overview.emotionState?.label || "--"}
-        </strong>
-      </div>
-
-      {/* 聚焦板块 */}
-      <div className="min-w-[120px] px-3 py-2.5">
-        <span className="block text-xs text-text-tertiary mb-1">聚焦板块</span>
-        <strong className="block text-sm font-semibold leading-snug">
-          {overview.topSectors?.slice(0, 3).map((s) => s.sectorName).join(" / ") || "--"}
-        </strong>
-      </div>
+      {/* 风险 */}
+      <div className="w-px h-4 bg-border-default shrink-0" />
+      <RiskIndicator risk={overview.marketRisk} />
     </div>
   );
 }

@@ -16,8 +16,8 @@ export function ChartShell({ title, subtitle, loading, error, empty, className, 
   const label = title && subtitle ? `${title}：${subtitle}` : title || subtitle;
 
   return (
-    <div className={cn("flex flex-col border-b border-border-subtle", className)}>
-      <div className="relative flex-1 min-h-[200px]">
+    <div className={cn("flex flex-col border-b border-border-subtle h-full", className)}>
+      <div className="relative flex-1 min-h-0">
         {/* 标题叠加在左上角 */}
         {(label || actions) && (
           <div className="absolute top-1.5 left-2 right-2 flex items-center justify-between z-20 pointer-events-none">

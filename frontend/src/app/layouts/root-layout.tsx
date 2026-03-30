@@ -1,7 +1,8 @@
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
-import { AppShell, TopBar, RightPanel, BottomBar } from "@/shared/layout";
+import { AppShell, TopBar, BottomBar } from "@/shared/layout";
+import { AiChatWidget } from "@/shared/layout/ai-chat-widget";
 import { useMarketOverview, useBullCamp, useWatchlist } from "@/queries";
-import { Activity, BarChart3, Eye, Flame, Settings } from "lucide-react";
+import { Activity, BarChart3, Eye, Flame, Settings, Crosshair, FileText } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/shared/ui/button";
 
@@ -10,6 +11,8 @@ const navItems = [
   { path: "/index-radar", label: "指数雷达", icon: Activity },
   { path: "/watchlist", label: "自选股", icon: Eye },
   { path: "/bullcamp", label: "牛股集中营", icon: Flame },
+  { path: "/hh-scan", label: "HH筛选", icon: Crosshair },
+  { path: "/market-recap", label: "盘前纪要", icon: FileText },
   { path: "/settings", label: "设置", icon: Settings },
 ];
 
@@ -50,7 +53,6 @@ export function RootLayout() {
           ))}
         </TopBar>
       }
-      rightPanel={<RightPanel />}
       bottomBar={
         <BottomBar>
           <span>{overview?.tradeDate || "--"}</span>
@@ -60,6 +62,7 @@ export function RootLayout() {
       }
     >
       <Outlet />
+      <AiChatWidget />
     </AppShell>
   );
 }

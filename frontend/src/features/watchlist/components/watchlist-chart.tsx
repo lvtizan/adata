@@ -810,13 +810,13 @@ export function WatchlistChart({ tsCode, sectorCode, stockName, activeTool, onSe
         <div ref={containerRef} className="w-full h-full" />
 
         <div
-          className="absolute z-20 rounded-md overflow-hidden shadow-sm"
+          className="absolute z-20 rounded overflow-hidden opacity-70 hover:opacity-100 transition-opacity"
           style={{
-            top: 8,
+            top: 38,
             left: 8,
-            width: 220,
-            height: 130,
-            border: `1px solid ${isDark ? "#2a2e3a" : "#d7dce4"}`,
+            width: 150,
+            height: 88,
+            border: `1px solid ${isDark ? "rgba(42,46,58,0.6)" : "rgba(215,220,228,0.6)"}`,
           }}
         >
           <RsPip rsData={rsData} stockName={stockName} isDark={isDark} emptyReason={rsEmptyReason} />

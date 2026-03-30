@@ -1458,6 +1458,146 @@ class MarketEngine:
 
         return self._cached(f"bull_camp:{trade_date}", 900, _load)
 
+    def hh_scan(self, trade_date: str) -> dict[str, Any]:
+        """扫描牛股集中营中的HH（更高高点）买入信号，按板块分组"""
+        def _load() -> dict[str, Any]:
+            # 获取牛股集中营的股票列表
+            bull_items = self.bull_camp(trade_date)
+            if not bull_items:
+                return {
+                    "tradeDate": trade_date,
+                    "totalSignals": 0,
+                    "sectors": []
+                }
+
+            # 获取股票列表和交易日期信息
+            ts_codes = [str(item.get("tsCode", "")) for item in bull_items if item.get("tsCode")]
+            if not ts_codes:
+                return {
+                    "tradeDate": trade_date,
+                    "totalSignals": 0,
+                    "sectors": []
+                }
+
+            # 获取K线数据和HH信号检测
+            dates = self.trade_dates(trade_date, need=260)
+            start = dates[-250] if len(dates) >= 250 else dates[0]
+
+            def _detect_hh_one(ts_code: str) -> tuple[str, list[dict[str, Any]]]:
+                """检测单个股票的HH信号"""
+                try:
+                    df = ts.pro_bar(
+                        pro_api=self.pro,
+                        ts_code=ts_code,
+                        adj="qfq",
+                        start_date=start,
+                        end_date=trade_date,
+                        asset="E",
+                    )
+                    if df is None or df.empty:
+                        return ts_code, []
+
+                    # 检测HH信号
+                    from pattern_detector import detect_hh_signals
+                    hh_result = detect_hh_signals(df)
+                    signals = hh_result.get("signals", [])
+
+                    # 过滤最近10个交易日内的信号
+                    recent_signals = []
+                    if signals and len(df) > 0:
+                        recent_dates = df["trade_date"].tail(10).tolist() if "trade_date" in df.columns else []
+                        for sig in signals:
+                            sig_date = sig.get("date")
+                            if sig_date and sig_date in recent_dates:
+                                recent_signals.append(sig)
+
+                    return ts_code, recent_signals
+                except Exception as exc:
+                    logger.debug(f"HH信号检测失败 {ts_code}: {exc}")
+                    return ts_code, []
+
+            # 并发检测（最多4线程）
+            hh_map: dict[str, list[dict[str, Any]]] = {}
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                futures = {pool.submit(_detect_hh_one, code): code for code in ts_codes}
+                for future in as_completed(futures):
+                    try:
+                        code, signals = future.result(timeout=30)
+                        if signals:
+                            hh_map[code] = signals
+                    except Exception:
+                        pass
+
+            # 构建结果，按板块分组
+            sector_groups: dict[str, dict[str, Any]] = {}
+
+            for item in bull_items:
+                ts_code = str(item.get("tsCode", ""))
+                if ts_code not in hh_map or not hh_map[ts_code]:
+                    continue
+
+                # 获取股票的板块信息
+                sector_info = self.stock_sector_lookup(ts_code, trade_date)
+                sector_code = sector_info.get("sectorCode", "")
+                sector_name = sector_info.get("sectorName", "")
+
+                if not sector_code:
+                    sector_code = "未分类"
+                    sector_name = "未分类"
+
+                if sector_code not in sector_groups:
+                    sector_groups[sector_code] = {
+                        "sectorCode": sector_code,
+                        "sectorName": sector_name,
+                        "stocks": []
+                    }
+
+                # 为每个信号添加股票和板块信息
+                for sig in hh_map[ts_code]:
+                    stock_data = {
+                        "tsCode": ts_code,
+                        "stockName": item.get("stockName", ""),
+                        "close": item.get("close", 0),
+                        "pctChange1d": item.get("pctChange1d", 0),
+                        "pctChange5d": item.get("pctChange5d", 0),
+                        "rps20": item.get("rps20", 0),
+                        "campScore": item.get("campScore", 0),
+                        "amount": item.get("amount", 0),
+                        "signalDate": sig.get("date", ""),
+                        "signalType": sig.get("type", ""),
+                        "signalPrice": sig.get("price", 0),
+                    }
+                    sector_groups[sector_code]["stocks"].append(stock_data)
+
+            # 构建最终响应
+            result_sectors = []
+            for sector_code, sector_data in sector_groups.items():
+                # 按campScore降序排序
+                stocks = sorted(
+                    sector_data["stocks"],
+                    key=lambda x: x.get("campScore", 0),
+                    reverse=True
+                )
+                result_sectors.append({
+                    "sectorCode": sector_data["sectorCode"],
+                    "sectorName": sector_data["sectorName"],
+                    "signalCount": len(stocks),
+                    "stocks": stocks
+                })
+
+            # 按signalCount降序排序
+            result_sectors.sort(key=lambda x: x["signalCount"], reverse=True)
+
+            total_signals = sum(len(sector["stocks"]) for sector in result_sectors)
+
+            return {
+                "tradeDate": trade_date,
+                "totalSignals": total_signals,
+                "sectors": result_sectors
+            }
+
+        return self._cached(f"hh_scan:{trade_date}", 900, _load)
+
     def _fallback_sector_stocks(self, stock_codes: list[str], trade_date: str, sort_by: str = "rps10") -> list[dict[str, Any]]:
         """RPS/MA链路失败时，至少返回板块当日成分股列表"""
         snap = self.stock_snapshot(trade_date)
@@ -2363,3 +2503,566 @@ class MarketEngine:
             }
 
         return self._cached(f"hh_stats:{ts_code}:{trade_date}", 600, _load)
+
+    def market_recap(self, trade_date: str) -> dict[str, Any]:
+        """盘前纪要：涨停热点 / 机构买卖 / 游资动向 / 新高股票 / 异动预警"""
+        def _load() -> dict[str, Any]:
+            result = {
+                "tradeDate": trade_date,
+                "limitUpHotspots": self._recap_limit_up_hotspots(trade_date),
+                "institutional": self._recap_institutional(trade_date),
+                "hotMoney": self._recap_hot_money(trade_date),
+                "newHighs": self._recap_new_highs(trade_date),
+                "alerts": self._recap_alerts(trade_date),
+            }
+            return result
+
+        return self._cached(f"market_recap:{trade_date}", 900, _load)
+
+    def _recap_limit_up_hotspots(self, trade_date: str) -> dict[str, Any]:
+        """涨停/跌停热点及连板统计"""
+        try:
+            stocks = self.compute_stock_metrics(trade_date)
+            if stocks.empty:
+                return {
+                    "limitUpCount": 0,
+                    "limitDownCount": 0,
+                    "byBoard": [],
+                    "bySector": []
+                }
+
+            # 识别涨停和跌停股票
+            limit_up_stocks = stocks[stocks["pct_chg"] >= 9.8].copy()
+            limit_down_stocks = stocks[stocks["pct_chg"] <= -9.8].copy()
+
+            limit_up_count = len(limit_up_stocks)
+            limit_down_count = len(limit_down_stocks)
+
+            # 计算连板数（consecutive limit-up days）
+            if not limit_up_stocks.empty:
+                # 获取最近7个交易日
+                dates = self.trade_dates(trade_date, need=7)
+                dates_desc = list(reversed(dates))  # 最新的日期在前
+
+                # 为每个涨停股票计算连板数
+                def _count_consecutive_boards(ts_code):
+                    count = 0
+                    for i, d in enumerate(dates_desc):
+                        try:
+                            day_metrics = self.compute_stock_metrics(d)
+                            if day_metrics.empty:
+                                break
+                            day_stock = day_metrics[day_metrics["ts_code"] == ts_code]
+                            if day_stock.empty or day_stock["pct_chg"].iloc[0] < 9.8:
+                                break
+                            count += 1
+                        except Exception:
+                            break
+                    return count
+
+                limit_up_stocks["consecutive_boards"] = limit_up_stocks["ts_code"].apply(_count_consecutive_boards)
+
+                # 分组显示：按连板数分组
+                board_groups = {}
+                for _, row in limit_up_stocks.iterrows():
+                    boards = int(row["consecutive_boards"])
+                    if boards not in board_groups:
+                        board_groups[boards] = []
+                    board_groups[boards].append({
+                        "tsCode": row["ts_code"],
+                        "stockName": row.get("name", row["ts_code"]),
+                        "sectorName": row.get("sector_name", "未分类"),
+                        "close": round(float(row["close"]), 2),
+                        "pctChg": round(float(row["pct_chg"]), 2)
+                    })
+
+                # 生成 byBoard 列表（按连板数降序）
+                by_board = []
+                for boards in sorted(board_groups.keys(), reverse=True):
+                    board_label = f"{boards}连板" if boards > 1 else "首板"
+                    by_board.append({
+                        "board": board_label,
+                        "count": len(board_groups[boards]),
+                        "stocks": board_groups[boards]
+                    })
+
+                # 按板块分组统计
+                sector_count = {}
+                for _, row in limit_up_stocks.iterrows():
+                    sector = row.get("sector_name", "未分类")
+                    if sector not in sector_count:
+                        sector_count[sector] = {"count": 0, "stocks": []}
+                    sector_count[sector]["count"] += 1
+                    sector_count[sector]["stocks"].append({
+                        "tsCode": row["ts_code"],
+                        "stockName": row.get("name", row["ts_code"]),
+                        "close": round(float(row["close"]), 2),
+                        "pctChg": round(float(row["pct_chg"]), 2),
+                        "consecutiveBoards": int(row["consecutive_boards"])
+                    })
+
+                by_sector = sorted(
+                    [{"sectorName": k, "count": v["count"], "stocks": v["stocks"]}
+                     for k, v in sector_count.items()],
+                    key=lambda x: x["count"],
+                    reverse=True
+                )
+            else:
+                by_board = []
+                by_sector = []
+
+            return {
+                "limitUpCount": limit_up_count,
+                "limitDownCount": limit_down_count,
+                "byBoard": by_board,
+                "bySector": by_sector
+            }
+
+        except Exception as exc:
+            logger.warning(f"计算涨跌停热点失败: {exc}")
+            return {
+                "limitUpCount": 0,
+                "limitDownCount": 0,
+                "byBoard": [],
+                "bySector": []
+            }
+
+    def _recap_institutional(self, trade_date: str) -> dict[str, Any]:
+        """机构买卖席位统计"""
+        try:
+            # 获取股票名称映射
+            stock_names = self.stock_name_map()
+
+            # 当日机构数据
+            daily_data = []
+            try:
+                top_inst = self.pro.top_inst(trade_date=trade_date)
+                if top_inst is not None and not top_inst.empty:
+                    # 过滤机构席位（包含"机构"或"基金"）
+                    inst_rows = top_inst[
+                        top_inst["exalter"].fillna("").str.contains("机构|基金", regex=True)
+                    ]
+
+                    if not inst_rows.empty:
+                        # 按ts_code分组，求和买卖金额
+                        grouped = inst_rows.groupby("ts_code").agg({
+                            "buy": "sum",
+                            "sell": "sum",
+                        }).reset_index()
+                        grouped["net_buy"] = grouped["buy"] - grouped["sell"]
+                        grouped["name"] = grouped["ts_code"].map(stock_names).fillna(grouped["ts_code"])
+
+                        # 获取股票今日收盘价和涨幅
+                        metrics = self.compute_stock_metrics(trade_date)
+                        if not metrics.empty:
+                            grouped = grouped.merge(
+                                metrics[["ts_code", "close", "pct_chg"]],
+                                on="ts_code",
+                                how="left"
+                            )
+
+                        daily_data = grouped.to_dict("records")
+            except Exception as exc:
+                logger.debug(f"获取当日机构数据失败: {exc}")
+
+            # 3日机构数据
+            three_day_data_buy = []
+            three_day_data_sell = []
+            try:
+                d3_ago = self.trade_dates(trade_date, need=3)[0]
+                top_inst_3d = self.pro.top_inst(start_date=d3_ago, end_date=trade_date)
+                if top_inst_3d is not None and not top_inst_3d.empty:
+                    inst_rows_3d = top_inst_3d[
+                        top_inst_3d["exalter"].fillna("").str.contains("机构|基金", regex=True)
+                    ]
+
+                    if not inst_rows_3d.empty:
+                        grouped_3d = inst_rows_3d.groupby("ts_code").agg({
+                            "buy": "sum",
+                            "sell": "sum",
+                        }).reset_index()
+                        grouped_3d["net_buy"] = grouped_3d["buy"] - grouped_3d["sell"]
+                        grouped_3d["name"] = grouped_3d["ts_code"].map(stock_names).fillna(grouped_3d["ts_code"])
+
+                        # 获取股票信息
+                        metrics = self.compute_stock_metrics(trade_date)
+                        if not metrics.empty:
+                            grouped_3d = grouped_3d.merge(
+                                metrics[["ts_code", "close", "pct_chg"]],
+                                on="ts_code",
+                                how="left"
+                            )
+
+                        # 按净买入排序
+                        buy_list = grouped_3d[grouped_3d["net_buy"] > 0].sort_values("net_buy", ascending=False)
+                        sell_list = grouped_3d[grouped_3d["net_buy"] < 0].sort_values("net_buy", ascending=True)
+
+                        three_day_data_buy = [
+                            {
+                                "tsCode": row["ts_code"],
+                                "stockName": row.get("name", row["ts_code"]),
+                                "close": round(float(row["close"]), 2) if pd.notna(row["close"]) else 0,
+                                "pctChg": round(float(row["pct_chg"]), 2) if pd.notna(row["pct_chg"]) else 0,
+                                "buyAmount": round(float(row["buy"]), 2),
+                                "sellAmount": round(float(row["sell"]), 2),
+                                "netAmount": round(float(row["net_buy"]), 2)
+                            }
+                            for _, row in buy_list.iterrows()
+                        ]
+
+                        three_day_data_sell = [
+                            {
+                                "tsCode": row["ts_code"],
+                                "stockName": row.get("name", row["ts_code"]),
+                                "close": round(float(row["close"]), 2) if pd.notna(row["close"]) else 0,
+                                "pctChg": round(float(row["pct_chg"]), 2) if pd.notna(row["pct_chg"]) else 0,
+                                "buyAmount": round(float(row["buy"]), 2),
+                                "sellAmount": round(float(row["sell"]), 2),
+                                "netAmount": round(float(row["net_buy"]), 2)
+                            }
+                            for _, row in sell_list.iterrows()
+                        ]
+            except Exception as exc:
+                logger.debug(f"获取3日机构数据失败: {exc}")
+
+            # 处理当日数据
+            daily_net_buy = []
+            daily_net_sell = []
+            if daily_data:
+                daily_df = pd.DataFrame(daily_data)
+                buy_df = daily_df[daily_df["net_buy"] > 0].sort_values("net_buy", ascending=False)
+                sell_df = daily_df[daily_df["net_buy"] < 0].sort_values("net_buy", ascending=True)
+
+                daily_net_buy = [
+                    {
+                        "tsCode": row["ts_code"],
+                        "stockName": row.get("name", row["ts_code"]),
+                        "close": round(float(row["close"]), 2) if pd.notna(row["close"]) else 0,
+                        "pctChg": round(float(row["pct_chg"]), 2) if pd.notna(row["pct_chg"]) else 0,
+                        "buyCount": 1,
+                        "sellCount": 0,
+                        "buyAmount": round(float(row["buy"]), 2),
+                        "sellAmount": round(float(row["sell"]), 2),
+                        "netAmount": round(float(row["net_buy"]), 2)
+                    }
+                    for _, row in buy_df.iterrows()
+                ]
+
+                daily_net_sell = [
+                    {
+                        "tsCode": row["ts_code"],
+                        "stockName": row.get("name", row["ts_code"]),
+                        "close": round(float(row["close"]), 2) if pd.notna(row["close"]) else 0,
+                        "pctChg": round(float(row["pct_chg"]), 2) if pd.notna(row["pct_chg"]) else 0,
+                        "buyCount": 0,
+                        "sellCount": 1,
+                        "buyAmount": round(float(row["buy"]), 2),
+                        "sellAmount": round(float(row["sell"]), 2),
+                        "netAmount": round(float(row["net_buy"]), 2)
+                    }
+                    for _, row in sell_df.iterrows()
+                ]
+
+            return {
+                "dailyNetBuy": daily_net_buy[:10],  # 限制前10个
+                "dailyNetSell": daily_net_sell[:10],
+                "threeDay": {
+                    "netBuy": three_day_data_buy[:10],
+                    "netSell": three_day_data_sell[:10]
+                }
+            }
+
+        except Exception as exc:
+            logger.warning(f"计算机构买卖数据失败: {exc}")
+            return {
+                "dailyNetBuy": [],
+                "dailyNetSell": [],
+                "threeDay": {"netBuy": [], "netSell": []}
+            }
+
+    def _recap_hot_money(self, trade_date: str) -> dict[str, Any]:
+        """游资（热钱）动向统计"""
+        try:
+            stock_names = self.stock_name_map()
+            desk_data = {}
+
+            # 从 top_inst 获取游资数据（非机构席位）
+            try:
+                top_inst = self.pro.top_inst(trade_date=trade_date)
+                if top_inst is not None and not top_inst.empty:
+                    # 过滤非机构席位（不包含"机构"和"基金"）
+                    hot_rows = top_inst[
+                        ~top_inst["exalter"].fillna("").str.contains("机构|基金", regex=True)
+                    ]
+
+                    if not hot_rows.empty:
+                        # 按营业部（exalter）分组
+                        for _, row in hot_rows.iterrows():
+                            desk = row.get("exalter", "未知营业部")
+                            ts_code = row.get("ts_code", "")
+
+                            if desk not in desk_data:
+                                desk_data[desk] = {"buy": 0, "sell": 0, "stocks": {}}
+
+                            buy_amt = float(row.get("buy", 0))
+                            sell_amt = float(row.get("sell", 0))
+                            net_amt = buy_amt - sell_amt
+
+                            desk_data[desk]["buy"] += buy_amt
+                            desk_data[desk]["sell"] += sell_amt
+
+                            if ts_code not in desk_data[desk]["stocks"]:
+                                desk_data[desk]["stocks"][ts_code] = {
+                                    "buy": 0,
+                                    "sell": 0
+                                }
+                            desk_data[desk]["stocks"][ts_code]["buy"] += buy_amt
+                            desk_data[desk]["stocks"][ts_code]["sell"] += sell_amt
+
+                    # 获取股票信息
+                    metrics = self.compute_stock_metrics(trade_date)
+
+                    # 构建净买入和净卖出列表
+                    net_buy_desks = []
+                    net_sell_desks = []
+
+                    for desk, data in desk_data.items():
+                        net_total = data["buy"] - data["sell"]
+                        stocks_list = []
+
+                        for ts_code, amounts in data["stocks"].items():
+                            net_amt = amounts["buy"] - amounts["sell"]
+                            stock_name = stock_names.get(ts_code, ts_code)
+
+                            # 获取股票当前价格和涨幅
+                            if not metrics.empty:
+                                stock_row = metrics[metrics["ts_code"] == ts_code]
+                                if not stock_row.empty:
+                                    close = float(stock_row["close"].iloc[0])
+                                    pct_chg = float(stock_row["pct_chg"].iloc[0])
+                                else:
+                                    close = 0
+                                    pct_chg = 0
+                            else:
+                                close = 0
+                                pct_chg = 0
+
+                            stocks_list.append({
+                                "tsCode": ts_code,
+                                "stockName": stock_name,
+                                "close": round(close, 2),
+                                "pctChg": round(pct_chg, 2),
+                                "netAmount": round(net_amt, 2),
+                                "direction": "buy" if net_amt > 0 else "sell"
+                            })
+
+                        # 按净额排序
+                        stocks_list.sort(key=lambda x: abs(x["netAmount"]), reverse=True)
+
+                        desk_item = {
+                            "desk": desk,
+                            "netAmount": round(net_total, 2),
+                            "stocks": stocks_list[:5]  # 限制每个营业部5个股票
+                        }
+
+                        if net_total > 0:
+                            net_buy_desks.append(desk_item)
+                        else:
+                            net_sell_desks.append(desk_item)
+
+                    # 排序
+                    net_buy_desks.sort(key=lambda x: x["netAmount"], reverse=True)
+                    net_sell_desks.sort(key=lambda x: x["netAmount"], reverse=False)
+
+            except Exception as exc:
+                logger.debug(f"获取游资数据失败: {exc}")
+
+            return {
+                "netBuy": net_buy_desks[:5],
+                "netSell": net_sell_desks[:5]
+            }
+
+        except Exception as exc:
+            logger.warning(f"计算游资动向失败: {exc}")
+            return {"netBuy": [], "netSell": []}
+
+    def _recap_new_highs(self, trade_date: str) -> dict[str, Any]:
+        """创新高股票统计"""
+        try:
+            stocks = self.compute_stock_metrics(trade_date)
+            if stocks.empty:
+                return {
+                    "count": 0,
+                    "trend": {"today": 0, "yesterday": 0, "dayBefore": 0},
+                    "stocks": []
+                }
+
+            # 获取历史日期
+            dates = self.trade_dates(trade_date, need=250)
+            pos = dates.index(trade_date)
+            yesterday = dates[pos - 1] if pos > 0 else trade_date
+            day_before = dates[pos - 2] if pos > 1 else trade_date
+
+            # 获取近期快照以计算250日最高价
+            snapshots = self.stock_snapshot_batch([dates[pos - 249]] if pos >= 249 else [dates[0]] + dates)
+
+            new_highs = []
+
+            # 对于有较强势头的股票（rps20 > 70 或 pct_chg > 0），检查是否创新高
+            candidates = stocks[
+                (stocks.get("rps20", pd.Series(0, index=stocks.index)) > 70) |
+                (stocks["pct_chg"] > 0)
+            ].copy()
+
+            if not candidates.empty:
+                # 获取250日数据以检查最高价
+                try:
+                    d250_idx = pos - 250 if pos >= 250 else 0
+                    d250 = dates[d250_idx]
+
+                    # 加载250日数据
+                    hist_data = []
+                    for i in range(d250_idx, pos + 1):
+                        try:
+                            snap = snapshots.get(dates[i])
+                            if snap is not None and not snap.empty and "high" in snap.columns:
+                                hist_data.append(snap[["ts_code", "high"]].copy())
+                        except Exception:
+                            pass
+
+                    if hist_data:
+                        hist_df = pd.concat(hist_data, ignore_index=True)
+                        max_highs = hist_df.groupby("ts_code")["high"].max().reset_index()
+                        max_highs.columns = ["ts_code", "max_high_250"]
+
+                        candidates = candidates.merge(max_highs, on="ts_code", how="left")
+                        candidates["is_new_high"] = candidates["close"] >= candidates.get("max_high_250", candidates["close"])
+                    else:
+                        # 降级：使用 close_250 作为近似
+                        candidates["is_new_high"] = candidates["close"] >= (candidates.get("close_250", candidates["close"]) * 1.01)
+
+                except Exception as exc:
+                    logger.debug(f"计算250日最高价失败，使用降级方案: {exc}")
+                    candidates["is_new_high"] = candidates["close"] >= (candidates.get("close_250", candidates["close"]) * 1.01)
+
+                # 过滤创新高的股票
+                high_stocks = candidates[candidates.get("is_new_high", False)].copy()
+
+                if not high_stocks.empty:
+                    new_highs = [
+                        {
+                            "tsCode": row["ts_code"],
+                            "stockName": row.get("name", row["ts_code"]),
+                            "close": round(float(row["close"]), 2),
+                            "pctChg": round(float(row["pct_chg"]), 2),
+                            "sectorName": row.get("sector_name", "未分类"),
+                            "highlights": f"创250日新高，RPS20={round(float(row.get('rps20', 0)), 1)}"
+                        }
+                        for _, row in high_stocks.iterrows()
+                    ]
+
+            # 计算趋势数据（与历史对比）
+            try:
+                yesterday_stocks = self.compute_stock_metrics(yesterday)
+                day_before_stocks = self.compute_stock_metrics(day_before)
+
+                def _count_new_highs(stocks_df):
+                    if stocks_df.empty:
+                        return 0
+                    # 简化版：以pct_chg > 9% 作为近似新高判断
+                    return len(stocks_df[stocks_df["pct_chg"] > 9.0])
+
+                today_count = len(new_highs)
+                yesterday_count = _count_new_highs(yesterday_stocks)
+                day_before_count = _count_new_highs(day_before_stocks)
+            except Exception:
+                today_count = len(new_highs)
+                yesterday_count = 0
+                day_before_count = 0
+
+            return {
+                "count": today_count,
+                "trend": {
+                    "today": today_count,
+                    "yesterday": yesterday_count,
+                    "dayBefore": day_before_count
+                },
+                "stocks": new_highs[:20]
+            }
+
+        except Exception as exc:
+            logger.warning(f"计算创新高股票失败: {exc}")
+            return {
+                "count": 0,
+                "trend": {"today": 0, "yesterday": 0, "dayBefore": 0},
+                "stocks": []
+            }
+
+    def _recap_alerts(self, trade_date: str) -> dict[str, Any]:
+        """异动预警：30日平均线偏离值"""
+        try:
+            stocks = self.compute_stock_metrics(trade_date)
+            if stocks.empty:
+                return {"items": []}
+
+            alerts = []
+
+            # 计算所有股票的 ma30（前19个交易日 + 今日）
+            dates = self.trade_dates(trade_date, need=30)
+            pos = dates.index(trade_date)
+            ma30_dates = dates[pos - 19 : pos + 1]
+
+            if len(ma30_dates) < 20:
+                return {"items": []}
+
+            # 批量加载30日数据
+            snapshots = self.stock_snapshot_batch(ma30_dates)
+            ma30_data = []
+            for d in ma30_dates:
+                snap = snapshots.get(d)
+                if snap is not None and not snap.empty:
+                    snap_copy = snap[["ts_code", "close"]].copy()
+                    snap_copy["date"] = d
+                    ma30_data.append(snap_copy)
+
+            if not ma30_data:
+                return {"items": []}
+
+            ma30_df = pd.concat(ma30_data, ignore_index=True)
+            ma30_pivot = ma30_df.pivot(index="ts_code", columns="date", values="close")
+            ma30_series = ma30_pivot.mean(axis=1).reset_index()
+            ma30_series.columns = ["ts_code", "ma30"]
+
+            # 计算偏离值
+            stocks = stocks.merge(ma30_series, on="ts_code", how="left")
+            stocks["deviation"] = np.where(
+                stocks["ma30"] > 0,
+                (stocks["close"] - stocks["ma30"]) / stocks["ma30"] * 100,
+                0
+            )
+
+            # 过滤严重偏离的股票（abs(deviation) > 20%）
+            alert_stocks = stocks[abs(stocks["deviation"]) > 20].copy()
+
+            if not alert_stocks.empty:
+                alert_stocks = alert_stocks.sort_values("deviation", ascending=False)
+
+                for _, row in alert_stocks.iterrows():
+                    deviation = float(row["deviation"])
+                    alert_type = f"30天涨幅偏离值{abs(deviation):.0f}%" if abs(deviation) > 0 else "30天平均线偏离"
+
+                    alerts.append({
+                        "tsCode": row["ts_code"],
+                        "stockName": row.get("name", row["ts_code"]),
+                        "close": round(float(row["close"]), 2),
+                        "pctChg": round(float(row["pct_chg"]), 2),
+                        "deviation": round(deviation, 1),
+                        "sectorName": row.get("sector_name", "未分类"),
+                        "alertType": alert_type
+                    })
+
+            return {"items": alerts[:20]}
+
+        except Exception as exc:
+            logger.warning(f"计算异动预警失败: {exc}")
+            return {"items": []}

@@ -245,6 +245,16 @@ class Handler(BaseHTTPRequestHandler):
             logger.debug(f"获取牛股集中营: {trade_date}")
             return json_response(self, {"tradeDate": trade_date, "items": engine.bull_camp(trade_date)})
 
+        # HH扫描API - 扫描牛股中的HH买入信号，按板块分组
+        if path == "/api/hh-scan":
+            logger.debug(f"HH扫描: {trade_date}")
+            return json_response(self, engine.hh_scan(trade_date))
+
+        # 盘前纪要API - 涨停热点 / 机构买卖 / 游资动向 / 新高股票 / 异动预警
+        if path == "/api/market-recap":
+            logger.debug(f"获取盘前纪要: {trade_date}")
+            return json_response(self, engine.market_recap(trade_date))
+
         # 牛股历史API (连营天数计算用)
         if path == "/api/camp/bull-stocks/history":
             days = int(q.get("days", ["20"])[0])

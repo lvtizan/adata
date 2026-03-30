@@ -1,7 +1,8 @@
 import { useAppStore } from "@/store";
-import { Moon, Sun, PanelRight } from "lucide-react";
+import { Moon, Sun, Shield, ShieldOff } from "lucide-react";
 import { Button } from "@/shared/ui/button";
 import { MarketSearch } from "./market-search";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
 
 interface TopBarProps {
   title?: string;
@@ -9,7 +10,7 @@ interface TopBarProps {
 }
 
 export function TopBar({ title, children }: TopBarProps) {
-  const { theme, toggleTheme, toggleRightPanel } = useAppStore();
+  const { theme, toggleTheme, stealthMode, toggleStealthMode } = useAppStore();
 
   return (
     <header className="h-12 flex items-center gap-3 px-4 border-b border-border-default bg-canvas shrink-0">
@@ -29,9 +30,21 @@ export function TopBar({ title, children }: TopBarProps) {
       <div className="ml-auto flex items-center gap-2 min-w-0">
         <MarketSearch />
         {title && <span className="text-text-secondary text-sm">{title}</span>}
-        <Button variant="ghost" size="icon" className="w-8 h-8" onClick={toggleRightPanel}>
-          <PanelRight className="w-4 h-4" />
-        </Button>
+        <Tooltip delayDuration={300}>
+          <TooltipTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              className={`w-8 h-8 ${stealthMode ? "text-accent" : ""}`}
+              onClick={toggleStealthMode}
+            >
+              {stealthMode ? <Shield className="w-4 h-4" /> : <ShieldOff className="w-4 h-4" />}
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent className="text-xs">
+            {stealthMode ? "摸鱼模式 · 点击展开图表" : "点击开启摸鱼模式"}
+          </TooltipContent>
+        </Tooltip>
         <Button variant="ghost" size="icon" className="w-8 h-8" onClick={toggleTheme}>
           {theme === "dark" ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
         </Button>

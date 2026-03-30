@@ -145,8 +145,8 @@ export default function WatchlistPage() {
       </div>
 
       {/* 左 resize handle */}
-      <div className="w-[6px] cursor-col-resize relative shrink-0 group" onMouseDown={startResizeLeft}>
-        <div className="absolute top-0 bottom-0 left-[2px] w-[2px] group-hover:bg-border-strong transition-colors" />
+      <div className="w-[8px] cursor-col-resize relative shrink-0 group flex items-center justify-center" onMouseDown={startResizeLeft}>
+        <div className="w-[4px] h-8 rounded-full bg-border-default/60 group-hover:bg-text-tertiary group-hover:h-12 transition-all" />
       </div>
 
       {/* ══ 中列：K 线图 ══ */}
@@ -250,8 +250,8 @@ export default function WatchlistPage() {
       </div>
 
       {/* 右 resize handle */}
-      <div className="w-[6px] cursor-col-resize relative shrink-0 group" onMouseDown={startResizeRight}>
-        <div className="absolute top-0 bottom-0 left-[2px] w-[2px] group-hover:bg-border-strong transition-colors" />
+      <div className="w-[8px] cursor-col-resize relative shrink-0 group flex items-center justify-center" onMouseDown={startResizeRight}>
+        <div className="w-[4px] h-8 rounded-full bg-border-default/60 group-hover:bg-text-tertiary group-hover:h-12 transition-all" />
       </div>
 
       {/* ══ 右列：上涨归因 + 详细标签 ══ */}

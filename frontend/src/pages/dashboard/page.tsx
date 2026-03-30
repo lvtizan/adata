@@ -1,14 +1,14 @@
 import { useEffect, useRef, useCallback, useState } from "react";
 import { useMarketOverview, useSectorRankings, useSectorStocks, useWatchlist } from "@/queries";
-import { useDashboardStore } from "@/store";
+import { useDashboardStore, useAppStore } from "@/store";
 import { MarketSummary } from "@/features/market/components/market-summary";
-import { RiskGauge } from "@/features/market/components/risk-gauge";
 import { SectorTable } from "@/features/sectors/components/sector-table";
 import { StockTable } from "@/features/stocks/components/stock-table";
 import { CandlestickPanel } from "@/features/chart/components/candlestick-panel";
 import { WatchlistChart } from "@/features/watchlist/components/watchlist-chart";
 import { ChartShell } from "@/shared/charts";
 import { useNavigate } from "react-router-dom";
+import { ChevronLeft, ChevronRight } from "lucide-react";
 
 /**
  * 基于百分比的弹性列宽 hook。
@@ -47,10 +47,10 @@ function useResizablePct(initialPct: number, minPct: number, maxPct: number, con
 function Resizer({ onMouseDown }: { onMouseDown: (e: React.MouseEvent) => void }) {
   return (
     <div
-      className="w-[10px] cursor-col-resize relative shrink-0 group"
+      className="w-[8px] cursor-col-resize relative shrink-0 group flex items-center justify-center"
       onMouseDown={onMouseDown}
     >
-      <div className="absolute top-0 bottom-0 left-[4px] w-[2px] group-hover:bg-border-strong transition-colors" />
+      <div className="w-[4px] h-8 rounded-full bg-border-default/60 group-hover:bg-text-tertiary group-hover:h-12 transition-all" />
     </div>
   );
 }
@@ -66,6 +66,8 @@ export default function DashboardPage() {
   const { selectedSectorCode, selectedStockCode, setSelectedSectorCode, setSelectedStockCode } = useDashboardStore();
   const { data: stocks = [], isLoading: stocksLoading } = useSectorStocks(selectedSectorCode);
   const { data: watchlistItems = [] } = useWatchlist();
+  const stealthMode = useAppStore((s) => s.stealthMode);
+  const toggleStealth = useAppStore((s) => s.toggleStealthMode);
 
   const watchlistCodes = new Set(watchlistItems.map((w) => w.tsCode));
 
@@ -90,12 +92,9 @@ export default function DashboardPage() {
 
   return (
     <div className="flex flex-col h-full">
-      {/* Summary bar */}
-      <div className="px-3 py-2 border-b border-border-default">
-        <div className="flex items-stretch min-w-0 w-full">
-          <MarketSummary overview={overview} />
-          <RiskGauge risk={overview?.marketRisk} />
-        </div>
+      {/* Summary bar — 单行紧凑 */}
+      <div className="px-3 py-1.5 border-b border-border-default overflow-x-auto">
+        <MarketSummary overview={overview} />
       </div>
 
       {/* Main layout: 3-column */}
@@ -103,7 +102,7 @@ export default function DashboardPage() {
         {/* Column 1: Sector rankings */}
         <div
           className="flex flex-col min-h-0 border-r border-border-default overflow-hidden"
-          style={{ flex: `0 1 ${col1.pct * 100}%`, minWidth: 220 }}
+          style={stealthMode ? { flex: "1 1 50%" } : { flex: `0 1 ${col1.pct * 100}%`, minWidth: 220 }}
         >
           <div className="px-3 py-2 border-b border-border-default shrink-0">
             <h2 className="text-sm font-medium">板块列表</h2>
@@ -112,12 +111,12 @@ export default function DashboardPage() {
           <SectorTable data={rankings} selectedCode={selectedSectorCode} onSelect={setSelectedSectorCode} />
         </div>
 
-        <Resizer onMouseDown={col1.onMouseDown} />
+        {!stealthMode && <Resizer onMouseDown={col1.onMouseDown} />}
 
         {/* Column 2: Sector stocks */}
         <div
-          className="flex flex-col min-h-0 border-r border-border-default overflow-hidden"
-          style={{ flex: `0 1 ${col2.pct * 100}%`, minWidth: 220 }}
+          className={`flex flex-col min-h-0 overflow-hidden ${stealthMode ? "" : "border-r border-border-default"}`}
+          style={stealthMode ? { flex: "1 1 50%" } : { flex: `0 1 ${col2.pct * 100}%`, minWidth: 220 }}
         >
           <div className="px-3 py-2 border-b border-border-default shrink-0">
             <h2 className="text-sm font-medium">板块内个股</h2>
@@ -128,10 +127,9 @@ export default function DashboardPage() {
           <StockTable
             data={stocks}
             selectedCode={selectedStockCode}
-            onSelect={(code) => {
-              setSelectedStockCode(code);
-              const sector = selectedSector;
-              navigate(`/sector-workbench?sectorCode=${encodeURIComponent(sector?.sectorCode || "")}&sectorName=${encodeURIComponent(sector?.sectorName || "")}&stockCode=${encodeURIComponent(code)}`);
+            onSelect={setSelectedStockCode}
+            onNameClick={(item) => {
+              navigate(`/sector-workbench?sectorCode=${encodeURIComponent(selectedSector?.sectorCode || "")}&sectorName=${encodeURIComponent(selectedSector?.sectorName || "")}&stockCode=${encodeURIComponent(item.tsCode)}`);
             }}
             loading={stocksLoading}
             watchlistCodes={watchlistCodes}
@@ -140,33 +138,52 @@ export default function DashboardPage() {
           />
         </div>
 
-        <Resizer onMouseDown={col2.onMouseDown} />
+        {!stealthMode && <Resizer onMouseDown={col2.onMouseDown} />}
 
-        {/* Column 3: Charts (takes remaining space) */}
-        <div className="flex-1 flex flex-col min-h-0 min-w-[260px]">
-          <div className="flex-1 min-h-0">
-            <CandlestickPanel kind="sector" code={selectedSector?.sectorCode || ""} label={selectedSector?.sectorName || ""} title="细分板块 K 线" emptyText="选择板块后显示" />
+        {/* Column 3: Charts — 摸鱼模式下折叠 */}
+        {stealthMode ? (
+          <div
+            className="w-9 shrink-0 flex flex-col items-center justify-center border-l border-border-default bg-surface-subtle cursor-pointer hover:bg-surface-hover transition-colors group"
+            onClick={toggleStealth}
+            title="展开图表"
+          >
+            <ChevronLeft className="w-4 h-4 text-text-tertiary group-hover:text-text-primary transition-colors" />
+            <span className="text-[10px] text-text-tertiary group-hover:text-text-secondary mt-1" style={{ writingMode: "vertical-rl" }}>K 线</span>
           </div>
-          <div className="flex-1 min-h-0">
-            <ChartShell
-              title="选中个股 K 线"
-              subtitle={selectedStock?.stockName || ""}
-              empty={!selectedStock?.tsCode ? "选择个股后显示" : undefined}
-              className="h-full"
+        ) : (
+          <div className="flex-1 flex flex-col min-h-0 min-w-[260px] relative">
+            {/* 折叠按钮 */}
+            <button
+              onClick={toggleStealth}
+              className="absolute top-2 right-2 z-30 w-6 h-6 rounded flex items-center justify-center bg-surface-subtle/80 hover:bg-surface-hover text-text-tertiary hover:text-text-primary transition-colors"
+              title="折叠图表 (摸鱼模式)"
             >
-              {selectedStock?.tsCode ? (
-                <WatchlistChart
-                  key={selectedStock.tsCode}
-                  tsCode={selectedStock.tsCode}
-                  sectorCode={selectedSector?.sectorCode || ""}
-                  stockName={selectedStock.stockName}
-                />
-              ) : (
-                <div />
-              )}
-            </ChartShell>
+              <ChevronRight className="w-3.5 h-3.5" />
+            </button>
+            <div className="flex-1 min-h-0">
+              <CandlestickPanel kind="sector" code={selectedSector?.sectorCode || ""} label={selectedSector?.sectorName || ""} title="细分板块 K 线" emptyText="选择板块后显示" />
+            </div>
+            <div className="flex-1 min-h-0">
+              <ChartShell
+                title="选中个股 K 线"
+                subtitle={selectedStock?.stockName || ""}
+                empty={!selectedStock?.tsCode ? "选择个股后显示" : undefined}
+                className="h-full"
+              >
+                {selectedStock?.tsCode ? (
+                  <WatchlistChart
+                    key={selectedStock.tsCode}
+                    tsCode={selectedStock.tsCode}
+                    sectorCode={selectedSector?.sectorCode || ""}
+                    stockName={selectedStock.stockName}
+                  />
+                ) : (
+                  <div />
+                )}
+              </ChartShell>
+            </div>
           </div>
-        </div>
+        )}
       </div>
     </div>
   );

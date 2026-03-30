@@ -8,6 +8,8 @@ interface StockTableProps {
   data: SectorStock[];
   selectedCode: string;
   onSelect: (code: string) => void;
+  /** 点击股票名称时触发（用于跳转板块工作台），不传则只选中 */
+  onNameClick?: (item: SectorStock) => void;
   loading?: boolean;
   watchlistCodes?: Set<string>;
   sectorCode?: string;
@@ -32,7 +34,7 @@ function stockSortFn(a: SectorStock, b: SectorStock, key: string, dir: "asc" | "
   }
 }
 
-export function StockTable({ data, selectedCode, onSelect, loading, watchlistCodes = new Set(), sectorCode, sectorName }: StockTableProps) {
+export function StockTable({ data, selectedCode, onSelect, onNameClick, loading, watchlistCodes = new Set(), sectorCode, sectorName }: StockTableProps) {
   const addMutation = useAddToWatchlist();
   const removeMutation = useRemoveFromWatchlist();
 
@@ -62,7 +64,10 @@ export function StockTable({ data, selectedCode, onSelect, loading, watchlistCod
       label: "名称",
       render: (item) => (
         <span className="flex items-center gap-1 text-sm">
-          <span className="flex flex-col leading-tight">
+          <span
+            className={`flex flex-col leading-tight ${onNameClick ? "cursor-pointer hover:text-accent" : ""}`}
+            onClick={onNameClick ? (e) => { e.stopPropagation(); onNameClick(item); } : undefined}
+          >
             <span>{item.stockName}</span>
             <span className="text-xs text-text-quaternary">{item.tsCode.replace(/\.\w+$/, '')}</span>
           </span>

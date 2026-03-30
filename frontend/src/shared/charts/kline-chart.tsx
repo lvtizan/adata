@@ -8,6 +8,7 @@ import type { SupportLevel, ResistanceLevel } from "@/services/stock.service";
 
 interface KlineChartProps {
   points: CandlePoint[];
+  /** 固定高度（px）。不传则自适应父容器高度 */
   height?: number;
   showVolume?: boolean;
   /** HH 信号标记 (H1, H2, H3...) */
@@ -186,7 +187,7 @@ function loadChartData(chart: Chart, symbol: string, data: Array<{
   chart.scrollToRealTime();
 }
 
-export function KlineChart({ points, height = 300, showVolume = true, signals, drawdowns, supports, resistances }: KlineChartProps) {
+export function KlineChart({ points, height, showVolume = true, signals, drawdowns, supports, resistances }: KlineChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<Chart | null>(null);
   const theme = useAppStore((s) => s.theme);
@@ -213,7 +214,8 @@ export function KlineChart({ points, height = 300, showVolume = true, signals, d
 
     // 添加成交量子图
     if (showVolume) {
-      chart.createIndicator("VOL", false, { id: "pane_vol", height: Math.round(height * 0.2) });
+      const volH = height ? Math.round(height * 0.2) : 48;
+      chart.createIndicator("VOL", false, { id: "pane_vol", height: volH });
     }
 
     // 转换并填充数据
@@ -323,5 +325,5 @@ export function KlineChart({ points, height = 300, showVolume = true, signals, d
     };
   }, [points, height, showVolume, isDark, signals, drawdowns, supports, resistances]);
 
-  return <div ref={containerRef} className="w-full" style={{ height }} />;
+  return <div ref={containerRef} className="w-full" style={height ? { height } : { height: "100%" }} />;
 }

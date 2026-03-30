@@ -5,6 +5,8 @@ import IndexRadarPage from "@/pages/index-radar/page";
 import SectorWorkbenchPage from "@/pages/sector-workbench/page";
 import WatchlistPage from "@/pages/watchlist/page";
 import BullcampPage from "@/pages/bullcamp/page";
+import HHScanPage from "@/pages/hh-scan/page";
+import MarketRecapPage from "@/pages/market-recap/page";
 import SettingsPage from "@/pages/settings/page";
 
 export const router = createBrowserRouter([
@@ -18,6 +20,8 @@ export const router = createBrowserRouter([
       { path: "sector-workbench", element: <SectorWorkbenchPage /> },
       { path: "watchlist", element: <WatchlistPage /> },
       { path: "bullcamp", element: <BullcampPage /> },
+      { path: "hh-scan", element: <HHScanPage /> },
+      { path: "market-recap", element: <MarketRecapPage /> },
       { path: "settings", element: <SettingsPage /> },
     ],
   },

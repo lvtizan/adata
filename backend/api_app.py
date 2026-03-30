@@ -123,6 +123,12 @@ async def get_bull_stocks():
     return {"tradeDate": date, "items": items}
 
 
+@app.get("/api/hh-scan")
+async def get_hh_scan():
+    date = engine.latest_data_trade_date()
+    return engine.hh_scan(date)
+
+
 @app.get("/api/camp/bull-stocks/history")
 async def get_bull_stocks_history(days: int = 20):
     date = engine.latest_data_trade_date()
@@ -179,6 +185,13 @@ async def delete_drawings(symbol: str, scope: str = "stock", timeframe: str = "1
 async def get_index_risk():
     date = engine.latest_data_trade_date()
     return analyze_all_indices(engine.pro, date)
+
+
+# ===== 盘前纪要 =====
+@app.get("/api/market-recap")
+async def get_market_recap(tradeDate: str = ""):
+    date = tradeDate or engine.latest_data_trade_date()
+    return engine.market_recap(date)
 
 
 # ===== 健康检查 =====

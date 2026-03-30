@@ -25,11 +25,11 @@ export function CandlestickPanel({ kind, code, label, title, emptyText = "请选
       loading={query.isLoading}
       error={query.error?.message}
       empty={!code ? emptyText : undefined}
+      className="h-full"
     >
       {query.data?.points && (
         <KlineChart
           points={query.data.points}
-          height={220}
           signals={patternData?.signals}
           drawdowns={patternData?.drawdowns}
           supports={patternData?.supports}
