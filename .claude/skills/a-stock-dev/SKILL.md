@@ -14,13 +14,15 @@ description: |
 
 本地运行的 A 股板块强度分析系统。数据源 Tushare，前端 React + Vite + TypeScript，后端 Python。
 
+**图表库**：`klinecharts` v10（替换了之前的 `lightweight-charts`）。K 线图使用 `init()` / `dispose()` API，详见 https://klinecharts.com 。
+
 ## 启动方式
 
-项目在 iCloud Drive 下，**不能双击 .command 文件**（会卡死 Finder）。
+项目已迁移到本地磁盘 `/Users/kp/Code/A数据/`。
 
-正确做法——在终端执行：
+在终端执行：
 ```bash
-cd "$HOME/Library/Mobile Documents/com~apple~CloudDocs/AI项目 2/A数据"
+cd /Users/kp/Code/A数据
 bash dev.sh        # 启动
 bash stop.sh       # 停止
 ```
@@ -64,6 +66,8 @@ frontend/src/
 ├── pages/                  # 页面组件（一个路由一个目录）
 │   ├── bullcamp/page.tsx
 │   ├── dashboard/page.tsx
+│   ├── index-radar/page.tsx
+│   ├── sector-workbench/page.tsx
 │   ├── settings/page.tsx
 │   └── watchlist/page.tsx
 ├── queries/                # React Query hooks
@@ -111,13 +115,11 @@ frontend/src/
 - 颜色用语义化 token：`text-primary`, `bg-canvas`, `border-default`, `accent`
 - 深色模式通过 `document.documentElement.classList.toggle("dark")` 控制
 
-## iCloud 防坑指南
+## 项目路径说明
 
-项目路径在 iCloud Drive 下（`~/Library/Mobile Documents/com~apple~CloudDocs/`），这会导致：
+项目已从 iCloud Drive 迁移到本地磁盘 `/Users/kp/Code/A数据/`。iCloud 同步相关的问题不再存在。
 
-1. **冲突副本**：iCloud 可能产生 `xxx 2` 目录（如 `app 2/`、`features 2/`）。发现后立即删除，这些是同步冲突的副本，会干扰 Vite 的模块解析。
-2. **文件锁定**：正在同步的文件可能暂时不可读，Vite 报 "Failed to resolve import" 可能是这个原因。
-3. **node_modules**：通过 symlink 放到 iCloud 外（`~/.cache/a-data-local/`），避免同步大量小文件。
+注意：如果发现 `xxx 2` 冲突副本文件（如 `SKILL 2.md`、`components 2.json`），可以安全删除。
 
 ## 开发原则：一致性是过程约束，不是事后检查
 

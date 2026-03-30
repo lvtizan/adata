@@ -242,7 +242,7 @@ python3 -m compileall backend
 - 启动方式沿用原方案，不要改来改去
 - 原方案入口：
 ```bash
-cd ~/Library/Mobile\ Documents/com~apple~CloudDocs/AI项目\ 2/A数据 && ./dev.command
+cd /Users/kp/Code/A数据 && ./dev.command
 ```
 
 ### 3. 用户要求“开发前先看踩坑 MD”

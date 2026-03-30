@@ -1,11 +1,10 @@
 #!/bin/bash
 # ============================================================
 # setup_local_deps.sh
-# 把 node_modules、后端缓存等重目录从 iCloud 项目中分离到本地，
-# 用 symlink 连回来。避免 iCloud 同步这些大文件/海量小文件。
+# 把 node_modules、后端缓存等重目录分离到本地缓存，用 symlink 连回来。
 #
 # 用法：在项目根目录运行一次即可
-#   cd ~/Library/Mobile\ Documents/com~apple~CloudDocs/AI项目/A数据
+#   cd /Users/kp/Code/A数据
 #   bash setup_local_deps.sh
 # ============================================================
 

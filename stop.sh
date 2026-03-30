@@ -1,7 +1,7 @@
 #!/bin/bash
 DIR="$(cd "$(dirname "$0")" && pwd)"
 # 停止前端和后端
-for p in 5173 8080; do lsof -ti :$p 2>/dev/null | xargs kill -9 2>/dev/null; done
+for p in 5173 8088 8082; do lsof -ti :$p 2>/dev/null | xargs kill -9 2>/dev/null; done
 # 停止调度器
 PID_FILE="$DIR/.pids/scheduler.pid"
 if [ -f "$PID_FILE" ]; then

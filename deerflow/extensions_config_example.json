@@ -3,7 +3,7 @@
   "mcpServers": {
     "astock": {
       "command": "python3",
-      "args": ["/path/to/A数据/backend/mcp_server.py"],
+      "args": ["/Users/kp/Code/A数据/backend/mcp_server.py"],
       "env": {},
       "description": "A股板块强度分析系统：市场概览、板块排行、牛股集中营、个股K线、财务数据、相对强弱"
     }

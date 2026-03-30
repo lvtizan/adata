@@ -1,6 +1,6 @@
 #!/bin/zsh
 set -e
-cd "/Users/kp/Library/Mobile Documents/com~apple~CloudDocs/AI项目/A数据"
+cd "/Users/kp/Code/A数据"
 if [ -f /tmp/sector-web.pid ]; then
   kill "$(cat /tmp/sector-web.pid)" >/dev/null 2>&1 || true
 fi

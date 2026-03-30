@@ -3,7 +3,7 @@
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # 先清理旧进程
-for p in 5173 8080 8082; do
+for p in 5173 8088 8082; do
     lsof -ti :$p 2>/dev/null | xargs kill -9 2>/dev/null
 done
 sleep 1
@@ -25,7 +25,7 @@ nohup ./node_modules/.bin/vite --host 127.0.0.1 --port 5173 > /tmp/a-data-fronte
 
 echo "✅ 已启动"
 echo "   前端: http://127.0.0.1:5173"
-echo "   后端: http://127.0.0.1:8080"
+echo "   后端: http://127.0.0.1:8088"
 echo "   调度器: 自动运行（09:00/11:35/15:10）"
 echo "   日志: tail -f /tmp/a-data-backend.log"
 echo "   调度日志: tail -f /tmp/a-data-scheduler.log"
