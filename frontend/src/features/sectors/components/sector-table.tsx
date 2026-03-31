@@ -20,6 +20,7 @@ function sectorSortFn(a: SectorRanking, b: SectorRanking, key: string, dir: "asc
     case "rank": return numSort(a.rank, b.rank, dir);
     case "limitUpCount": return numSort(a.limitUpCount, b.limitUpCount, dir);
     case "rps10": return numSort(a.rps10, b.rps10, dir);
+    case "pctChange1d": return numSort(a.pctChange1d, b.pctChange1d, dir);
     case "pctChange5d": return numSort(a.pctChange5d, b.pctChange5d, dir);
     case "pctChange10d": return numSort(a.pctChange10d, b.pctChange10d, dir);
     case "amount": return numSort(a.amount, b.amount, dir);
@@ -50,6 +51,7 @@ export function SectorTable({ data, selectedCode, onSelect }: SectorTableProps) 
     },
     { key: "limitUpCount", label: "涨停", align: "right", sortable: true, render: (item) => <span className="text-sm">{item.limitUpCount ?? 0}</span> },
     { key: "rps10", label: "RPS", align: "right", sortable: true, render: (item) => <span className="text-sm font-mono">{item.rps10 ?? "-"}</span> },
+    { key: "pctChange1d", label: "今日", align: "right", sortable: true, render: (item) => <NumericCell value={item.pctChange1d} format={fmtPct} /> },
     { key: "pctChange5d", label: "5日", align: "right", sortable: true, render: (item) => <NumericCell value={item.pctChange5d} format={fmtPct} /> },
     { key: "pctChange10d", label: "10日", align: "right", sortable: true, render: (item) => <NumericCell value={item.pctChange10d} format={fmtPct} /> },
     { key: "amount", label: "成交额", align: "right", sortable: true, render: (item) => <span className="text-sm text-text-secondary">{fmtAmount(item.amount)}</span> },

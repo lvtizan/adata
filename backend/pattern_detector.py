@@ -1209,115 +1209,83 @@ def detect_feng_signals(df: pd.DataFrame) -> dict[str, Any]:
     # 支撑位 — 用聚类找真正的水平支撑
     swing_lows = _find_swing_lows(low_arr, window=3)
     strong_supports = _find_support_levels(low_arr, close_arr, swing_lows, tolerance=0.05)
-    # 严格过滤：count>=3，或 count>=2 且触及跨度>=30根K线（排除近期偶然的两次回调）
-    support_prices = []
-    for s in strong_supports:
-        if s["count"] >= 3:
-            support_prices.append(s["price"])
-        elif s["count"] >= 2 and (max(s["indices"]) - min(s["indices"])) >= 30:
-            support_prices.append(s["price"])
+    # count>=2 且触及间隔>=10根K线（同一波回调的两根K线不算）
+    support_prices = [s["price"] for s in strong_supports if s["count"] >= 2]
 
     signals: list[dict[str, Any]] = []
     buy_signals: list[dict[str, Any]] = []
 
-    # ── 状态机：扫描全序列 ──
-    # 状态: idle → got_stop(止跌) → got_h1(第一次反包) → got_pullback(H1后回调)
-    state = "idle"
-    stop_idx = -1       # 止跌K线位置
-    stop_score = 0.0
-    h1_idx = -1          # H1 位置
-    h1_high = 0.0
-    pullback_low = 0.0   # H1 后回调低点
-    recent_high = 0.0    # 近期高点（用于判断回调深度）
+    # ── Al Brooks 式 H1/H2 数法 ──
+    #
+    # 逻辑：扫描波段高点，高点之后价格回调到支撑位附近时，
+    #        开始数 "今高>昨高" 的次数：
+    #        第1次 = H1（第一次尝试反转）
+    #        H1 失败（价格继续跌或横盘）后第2次 = H2 = W底确认
+    #
+    # 波段高点用 swing_high 识别，回调低点必须靠近支撑位
 
-    for i in range(10, n):
-        lo_price = low_arr[i]
+    swing_highs = _find_swing_highs(high_arr, window=5)
 
-        # 持续跟踪近期高点（向前看20根）
-        lookback_h = max(0, i - 20)
-        recent_high = float(np.max(high_arr[lookback_h:i + 1]))
+    for sh_idx, sh_price in swing_highs:
+        # 从每个波段高点开始向后扫描，寻找回调到支撑位的 H1/H2
+        h_count = 0       # 已数到第几个 H
+        h1_idx = -1
+        pullback_started = False
+        pullback_low_price = sh_price
 
-        if state == "idle":
-            # 必须从近期高点回调至少 8% 才开始找止跌
-            if recent_high <= 0:
+        for i in range(sh_idx + 1, min(sh_idx + 40, n)):
+            # 跟踪回调低点
+            if low_arr[i] < pullback_low_price:
+                pullback_low_price = float(low_arr[i])
+
+            # 判断是否在回调中（从高点有任何下跌，但不超过40%）
+            drop = (sh_price - low_arr[i]) / sh_price if sh_price > 0 else 0
+            if drop > 0.40:
+                break  # 跌太多，不是正常回调
+            if drop < 0.01:
+                continue  # 还没开始回调
+
+            # 必须靠近支撑位才开始数
+            if not _near_support(pullback_low_price, support_prices, 0.05):
                 continue
-            pullback_depth = (recent_high - lo_price) / recent_high
-            if pullback_depth < 0.08:
-                continue
 
-            # 在支撑位附近寻找止跌K线
-            score = _score_stop_k(i, open_arr, high_arr, low_arr, close_arr, support_prices)
-            if score >= 5 and _near_support(lo_price, support_prices, 0.03):
-                state = "got_stop"
-                stop_idx = i
-                stop_score = score
-                signals.append({
-                    "date": str(dates[i]),
-                    "price": round(float(lo_price), 2),
-                    "label": f"止跌★{score:.0f}",
-                    "type": "stopDecline",
-                })
-
-        elif state == "got_stop":
-            # 止跌后寻找 H1（价格反包: 今高>昨高）
+            # 检测 "今高 > 昨高" = 一次反转尝试
             if _is_price_breakout(i, high_arr):
-                state = "got_h1"
-                h1_idx = i
-                h1_high = float(high_arr[i])
-                signals.append({
-                    "date": str(dates[i]),
-                    "price": round(float(high_arr[i]), 2),
-                    "label": "H1",
-                    "type": "h1",
-                })
-            # 如果超过 8 根还没 H1，放弃
-            elif i - stop_idx > 8:
-                state = "idle"
+                h_count += 1
 
-        elif state == "got_h1":
-            # H1 后等回调（至少 1 根阴线或今低 < 昨低）
-            if close_arr[i] < open_arr[i] or low_arr[i] < low_arr[i - 1]:
-                state = "got_pullback"
-                pullback_low = float(low_arr[i])
-            # 如果 H1 后连涨不回调超过 5 根，放弃重新找
-            elif i - h1_idx > 5:
-                state = "idle"
-
-        elif state == "got_pullback":
-            # 更新回调低点
-            if low_arr[i] < pullback_low:
-                pullback_low = float(low_arr[i])
-
-            # 寻找 H2（第二次反包: 今高>昨高 + 收阳）= W 底确认
-            if _is_price_breakout(i, high_arr):
-                h2_price = float(high_arr[i])
-                # W 底：止损 = 回调低点（或止跌K线低点取更低者）
-                sl = round(min(pullback_low, float(low_arr[stop_idx])), 2)
-                entry = round(float(close_arr[i]), 2)
-                risk = entry - sl
-                if risk > 0:
-                    tp = round(entry + risk * 2, 2)
+                if h_count == 1:
+                    h1_idx = i
                     signals.append({
                         "date": str(dates[i]),
-                        "price": round(float(low_arr[i]), 2),
-                        "label": "W",
-                        "type": "h2_w",
+                        "price": round(float(high_arr[i]), 2),
+                        "label": "H1",
+                        "type": "h1",
                     })
-                    buy_signals.append({
-                        "type": "buy",
-                        "date": str(dates[i]),
-                        "price": entry,
-                        "pattern": "wBottom",
-                        "patternLabel": "W底",
-                        "stopLoss": sl,
-                        "takeProfit": tp,
-                        "riskReward": 2.0,
-                    })
-                state = "idle"
 
-            # 回调超过 10 根没 H2，放弃
-            elif i - h1_idx > 15:
-                state = "idle"
+                elif h_count == 2:
+                    # H2 = W底确认
+                    sl = round(float(pullback_low_price), 2)
+                    entry = round(float(close_arr[i]), 2)
+                    risk = entry - sl
+                    if risk > 0:
+                        tp = round(entry + risk * 2, 2)
+                        signals.append({
+                            "date": str(dates[i]),
+                            "price": round(float(low_arr[i]), 2),
+                            "label": "W",
+                            "type": "h2_w",
+                        })
+                        buy_signals.append({
+                            "type": "buy",
+                            "date": str(dates[i]),
+                            "price": entry,
+                            "pattern": "wBottom",
+                            "patternLabel": "W底",
+                            "stopLoss": sl,
+                            "takeProfit": tp,
+                            "riskReward": 2.0,
+                        })
+                    break  # 这个波段高点的 H1/H2 完成，去找下一个波段高点
 
     return {"signals": signals, "buySignals": buy_signals}
 

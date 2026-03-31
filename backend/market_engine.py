@@ -450,6 +450,7 @@ class MarketEngine:
                 s["ma30"] = s["close"]
         else:
             s["ma30"] = s["close"]
+        s["ret1"] = s["pct_chg"] if "pct_chg" in s.columns else 0.0
         s["ret5"] = (s["close"] / s["close_5"] - 1) * 100
         s["ret10"] = (s["close"] / s["close_10"] - 1) * 100
         s["amount_est"] = s["vol"] * s["avg_price"] * 100
@@ -898,6 +899,7 @@ class MarketEngine:
                     "prevRank": prev_rank,
                     "sectorCode": code,
                     "sectorName": r["sector_name"],
+                    "pctChange1d": round(float(r.get("ret1", 0)), 2),
                     "pctChange5d": round(float(r["ret5"]), 2),
                     "pctChange10d": round(float(r["ret10"]), 2),
                     "rps10": round(float(r["rps10"]), 2),

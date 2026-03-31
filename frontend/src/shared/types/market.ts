@@ -40,6 +40,7 @@ export interface MainlineSector {
   limitUpCount: number;
   compositeScore: number;
   amount: number;
+  pctChange1d: number;
   pctChange5d: number;
   pctChange10d: number;
 }
