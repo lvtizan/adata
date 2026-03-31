@@ -398,31 +398,15 @@ export function KlineChart({ points, height, showVolume = true, signals, drawdow
       }
     }
 
-    // ── 冯总交易信号标注（信号链: 止跌→H1→H2(W)）──
+    // ── 冯总信号标注：只标 H1 和 W ──
     if (fengSignals) {
-      const overlayMap: Record<string, string> = { stopDecline: "fengStopDecline", h1: "hhMarker", h2_w: "fengDoubleBottom" };
       for (const s of fengSignals.signals ?? []) {
         const ts = toTs(s.date);
         if (!ts) continue;
-        if (s.type === "h2_w") {
-          // W底：只在K线下方显示一个 W
+        if (s.type === "h1") {
+          chart.createOverlay({ name: "hhMarker", points: [{ timestamp: ts, value: s.price }], extendData: "H1", lock: true });
+        } else if (s.type === "h2_w") {
           chart.createOverlay({ name: "fengDoubleBottom", points: [{ timestamp: ts, value: s.price }], lock: true });
-        } else {
-          const name = overlayMap[s.type] || "fengStopDecline";
-          chart.createOverlay({ name, points: [{ timestamp: ts, value: s.price }], extendData: s.label, lock: true });
-        }
-      }
-      // 仅最近一个买入信号画止损止盈线
-      const buys = fengSignals.buySignals ?? [];
-      if (buys.length > 0) {
-        const buy = buys[buys.length - 1];
-        const ts = toTs(buy.date);
-        if (ts) {
-          chart.createOverlay({ name: "fengBuy", points: [{ timestamp: ts, value: buy.price }], extendData: `B ${buy.patternLabel}`, lock: true });
-          chart.createOverlay({ name: "horizontalStraightLine", points: [{ value: buy.stopLoss }], styles: { line: { color: "#F44336", size: 1, style: "dashed" as const } }, lock: true });
-          chart.createOverlay({ name: "levelTag", points: [{ value: buy.stopLoss }], extendData: { text: `止损 ${buy.stopLoss}`, color: "#ffffff", backgroundColor: "rgba(239,68,68,0.85)", borderColor: "rgba(239,68,68,0.9)" }, lock: true });
-          chart.createOverlay({ name: "horizontalStraightLine", points: [{ value: buy.takeProfit }], styles: { line: { color: "#4CAF50", size: 1, style: "dashed" as const } }, lock: true });
-          chart.createOverlay({ name: "levelTag", points: [{ value: buy.takeProfit }], extendData: { text: `止盈 ${buy.takeProfit} (2R)`, color: "#ffffff", backgroundColor: "rgba(34,197,94,0.85)", borderColor: "rgba(34,197,94,0.9)" }, lock: true });
         }
       }
     }
