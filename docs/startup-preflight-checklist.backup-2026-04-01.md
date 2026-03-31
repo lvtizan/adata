@@ -1,6 +1,6 @@
 # 服务启动前检查清单
 
-适用于当前 `bash dev.sh` 启动链路下，每次启动前端 / 后端 / 调度器之前的快速检查。
+适用于本项目每次启动前端 / 后端 / 调度器之前的快速检查。
 
 ## 前端启动前
 
@@ -18,19 +18,19 @@
    - 如果出现 `Outdated Optimize Dep`，先重启前端并强制重建依赖预构建
 
 4. 检查端口占用
-   - 前端：`5174`
-   - 后端：`8088`
+   - 前端：`5173`
+   - 后端：`8080`
    - FastAPI：`8082`
 
 5. 检查是否真的有 dev server 在监听
-   - `lsof -nP -iTCP:5174 -sTCP:LISTEN`
+   - `lsof -nP -iTCP:5173 -sTCP:LISTEN`
 
 ## 后端启动前
 
 1. 检查 `.env` 是否可读、`TUSHARE_TOKEN` 是否存在
 2. 检查 `backend/data/` 下数据库路径是否可写
 3. 检查后端端口是否已被占用
-   - `lsof -nP -iTCP:8088 -sTCP:LISTEN`
+   - `lsof -nP -iTCP:8080 -sTCP:LISTEN`
    - `lsof -nP -iTCP:8082 -sTCP:LISTEN`
 
 ## 启动后自验
@@ -45,7 +45,7 @@
    - `python3 -m compileall backend`
 
 4. 前端首页连通性
-   - `curl -I --max-time 5 http://127.0.0.1:5174/`
+   - `curl -I --max-time 5 http://127.0.0.1:5173/`
 
 ## 典型错误对应
 
@@ -60,14 +60,3 @@
 3. `listen EPERM`
    - 当前环境不允许直接监听该端口，或启动方式有问题
    - 先检查现有监听进程与启动脚本
-
-## 当前标准命令
-
-1. 启动
-   - `bash dev.sh`
-
-2. 停止
-   - `bash dev.sh stop`
-
-3. 查看状态
-   - `bash dev.sh status`

@@ -13,39 +13,33 @@
 
 ## 🚀 快速开始
 
-当前唯一推荐的本地开发启动方式是 `dev.sh`。
+> 新前后端本地启动 SOP：`docs/SOP-本地启动网站.md`
 
-### 1. 首次设置
+### 1. 自动设置（推荐）
 
 ```bash
 ./setup.sh
 ```
 
-然后确认 `backend/.env` 已填写 `TUSHARE_TOKEN`，并使用当前开发端口配置:
+按提示输入你的 Tushare Token 即可。
+
+### 2. 手动设置
 
 ```bash
-HOST=127.0.0.1
-PORT=8088
-DEBUG=false
+# 安装依赖
+pip3 install -r requirements.txt
+
+# 配置Token
+cp backend/.env.example backend/.env
+# 编辑 backend/.env，填入你的token
+
+# 启动服务器
+./start_server.sh
 ```
 
-### 2. 启动开发环境
+### 3. 访问系统
 
-```bash
-bash dev.sh
-```
-
-会启动:
-
-- 后端: `http://127.0.0.1:8088`
-- 前端: `http://127.0.0.1:5174`
-
-### 3. 停止或查看状态
-
-```bash
-bash dev.sh stop
-bash dev.sh status
-```
+浏览器打开: `http://127.0.0.1:8080`
 
 ## ⚙️ 配置说明
 
@@ -60,9 +54,9 @@ TUSHARE_TOKEN=your_token_here
 # Tushare 代理（可选）
 # TUSHARE_HTTP_URL=http://your_proxy
 
-# 服务器配置（当前开发环境）
+# 服务器配置（可选）
 HOST=127.0.0.1
-PORT=8088
+PORT=8080
 DEBUG=false
 ```
 
@@ -109,14 +103,22 @@ python3 benchmark.py
 ### 查看日志
 
 ```bash
-tail -f /tmp/a-data-backend.log
-tail -f /tmp/a-data-frontend.log
+# 实时查看日志
+tail -f backend/logs/app.log
+
+# 查看错误日志
+grep ERROR backend/logs/app.log
 ```
 
 ### 调试模式
 
 ```bash
-DEBUG=true bash dev.sh
+# 方法1: 环境变量
+DEBUG=true ./start_server.sh
+
+# 方法2: 修改config.yaml
+server:
+  debug: true
 ```
 
 ## 📁 项目结构
@@ -136,8 +138,7 @@ DEBUG=true bash dev.sh
 │   ├── styles.css         # 样式
 │   └── app.js             # 前端逻辑
 ├── setup.sh               # 快速设置脚本
-├── dev.sh                 # 当前开发环境启动脚本
-├── stop.sh                # 停止脚本
+├── start_server.sh        # 启动脚本
 └── requirements.txt       # 依赖列表
 ```
 
@@ -153,15 +154,14 @@ DEBUG=true bash dev.sh
 
 ```bash
 # 查找占用端口的进程
-lsof -i :8088
-lsof -i :5174
+lsof -i :8080
 
 # 杀死进程
 kill -9 <PID>
 
 # 或更换端口
-export PORT=8089
-bash dev.sh
+export PORT=8081
+./start_server.sh
 ```
 
 ### Token 无效
@@ -179,7 +179,7 @@ nano .env
 
 - 首次启动需要预热缓存（约30秒）
 - 检查网络连接
-- 查看 `/tmp/a-data-backend.log` 了解详细情况
+- 查看 `logs/app.log` 了解详细情况
 
 ## 📝 更新日志
 
