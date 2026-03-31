@@ -71,7 +71,9 @@ const FREQ_OPTIONS = [
 
 export function WatchlistChart({ tsCode, sectorCode, stockName, activeTool, onSelectionChange, onDrawingsChange }: WatchlistChartProps) {
   const [frequency, setFrequency] = useState<string>("1d");
+  const [buyMode, setBuyMode] = useState(false);
   const chartRef = useRef<Chart | null>(null);
+  const chartContainerRef = useRef<HTMLDivElement>(null);
   const saveTimerRef = useRef<number | null>(null);
 
   const barsMap: Record<string, number> = { "1d": 120, "1w": 104, "1M": 60 };
@@ -101,7 +103,53 @@ export function WatchlistChart({ tsCode, sectorCode, stockName, activeTool, onSe
     })));
   }, [tsCode, onDrawingsChange]);
 
-  // 买入划线事件
+  // 买入模式：点击图表选价位
+  useEffect(() => {
+    if (!buyMode) return;
+    const container = chartContainerRef.current;
+    const chart = chartRef.current as any;
+    if (!container || !chart) return;
+
+    container.style.cursor = "crosshair";
+    const onKeyDown = (e: KeyboardEvent) => { if (e.key === "Escape") setBuyMode(false); };
+    window.addEventListener("keydown", onKeyDown);
+    const onClick = (e: MouseEvent) => {
+      const rect = container.getBoundingClientRect();
+      const y = e.clientY - rect.top;
+      // klinecharts v10: convertFromPixel
+      const price = chart.convertFromPixel?.({ y }, { paneId: "candle_pane" })?.value;
+      if (!price || price <= 0) return;
+
+      const entry = +price.toFixed(2);
+      const supports = patternData?.supports ?? [];
+      const below = supports.filter((s: any) => s.price < entry).sort((a: any, b: any) => b.price - a.price);
+      const sl = below.length > 0 ? +below[0].price.toFixed(2) : +(entry * 0.95).toFixed(2);
+      const risk = entry - sl;
+      if (risk <= 0) { setBuyMode(false); return; }
+      const tp = +(entry + risk * 2).toFixed(2);
+
+      // 入场线（蓝色）
+      chart.createOverlay({ name: "horizontalStraightLine", lock: true, points: [{ value: entry }], styles: { line: { color: "#3b82f6", size: 1.5, style: "solid" } } });
+      chart.createOverlay({ name: "leftTag", lock: true, points: [{ value: entry }], extendData: { text: `入场 ${entry}`, color: "#ffffff", bg: "rgba(59,130,246,0.85)" } });
+      // 止损线（红色）
+      chart.createOverlay({ name: "horizontalStraightLine", lock: true, points: [{ value: sl }], styles: { line: { color: "#ef4444", size: 1, style: "dashed" } } });
+      chart.createOverlay({ name: "leftTag", lock: true, points: [{ value: sl }], extendData: { text: `止损 ${sl}`, color: "#ffffff", bg: "rgba(239,68,68,0.85)" } });
+      // 止盈线（绿色）
+      chart.createOverlay({ name: "horizontalStraightLine", lock: true, points: [{ value: tp }], styles: { line: { color: "#22c55e", size: 1, style: "dashed" } } });
+      chart.createOverlay({ name: "leftTag", lock: true, points: [{ value: tp }], extendData: { text: `止盈 ${tp} (2R)`, color: "#ffffff", bg: "rgba(34,197,94,0.85)" } });
+
+      setBuyMode(false);
+    };
+
+    container.addEventListener("click", onClick, { once: true });
+    return () => {
+      container.style.cursor = "";
+      container.removeEventListener("click", onClick);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [buyMode, patternData]);
+
+  // 画线事件
   useEffect(() => {
     const handler = (event: Event) => {
       const detail = (event as CustomEvent<{ action: string }>).detail;
@@ -109,26 +157,8 @@ export function WatchlistChart({ tsCode, sectorCode, stockName, activeTool, onSe
       const chart = chartRef.current as any;
 
       if (detail.action === "addBuyEntry") {
-        chart.createOverlay({
-          id: `buy-entry-${Date.now()}`, name: "priceLine",
-          styles: { line: { color: "#3b82f6", size: 1.5, style: "solid" } },
-          onComplete: (params: any) => {
-            const entryPrice = params?.overlay?.points?.[0]?.value;
-            if (!entryPrice || entryPrice <= 0) return;
-            const entry = +entryPrice.toFixed(2);
-            const supports = patternData?.supports ?? [];
-            const below = supports.filter((s) => s.price < entry).sort((a, b) => b.price - a.price);
-            const sl = below.length > 0 ? +below[0].price.toFixed(2) : +(entry * 0.95).toFixed(2);
-            const risk = entry - sl;
-            if (risk <= 0) return;
-            const tp = +(entry + risk * 2).toFixed(2);
-            chart.createOverlay({ name: "horizontalStraightLine", lock: true, points: [{ value: sl }], styles: { line: { color: "#ef4444", size: 1, style: "dashed" } } });
-            chart.createOverlay({ name: "levelTag", lock: true, points: [{ value: sl }], extendData: { text: `止损 ${sl}`, color: "#ffffff", backgroundColor: "rgba(239,68,68,0.85)", borderColor: "rgba(239,68,68,0.9)" } });
-            chart.createOverlay({ name: "horizontalStraightLine", lock: true, points: [{ value: tp }], styles: { line: { color: "#22c55e", size: 1, style: "dashed" } } });
-            chart.createOverlay({ name: "levelTag", lock: true, points: [{ value: tp }], extendData: { text: `止盈 ${tp} (2R)`, color: "#ffffff", backgroundColor: "rgba(34,197,94,0.85)", borderColor: "rgba(34,197,94,0.9)" } });
-            chart.createOverlay({ name: "levelTag", lock: true, points: [{ value: entry }], extendData: { text: `入场 ${entry}`, color: "#ffffff", backgroundColor: "rgba(59,130,246,0.85)", borderColor: "rgba(59,130,246,0.9)" } });
-          },
-        });
+        setBuyMode(true);
+        return;
       }
 
       if (detail.action === "addSupportAtClose" || detail.action === "addResistanceAtClose") {
@@ -175,7 +205,12 @@ export function WatchlistChart({ tsCode, sectorCode, stockName, activeTool, onSe
         </span>
       </div>
 
-      <div className="relative flex-1 min-h-0">
+      <div ref={chartContainerRef} className="relative flex-1 min-h-0">
+        {buyMode && (
+          <div className="absolute top-0 left-0 right-0 z-30 bg-amber-500/90 text-white text-center text-xs py-1 cursor-crosshair">
+            点击K线图选择入场价位 · 按 ESC 取消
+          </div>
+        )}
         {isLoading && (
           <div className="absolute inset-0 flex items-center justify-center text-text-tertiary text-sm z-10 bg-canvas/80">加载中...</div>
         )}

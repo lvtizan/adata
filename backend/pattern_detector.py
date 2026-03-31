@@ -1227,8 +1227,10 @@ def detect_feng_signals(df: pd.DataFrame) -> dict[str, Any]:
     swing_highs = _find_swing_highs(high_arr, window=5)
 
     for sh_idx, sh_price in swing_highs:
-        h_count = 0
+        # 状态: seeking_h1 → got_h1_wait_pullback → seeking_h2
+        state = "seeking_h1"
         h1_idx = -1
+        h1_failed = False  # H1 后是否已回落
         pullback_low_price = sh_price
 
         for i in range(sh_idx + 1, min(sh_idx + 40, n)):
@@ -1244,20 +1246,25 @@ def detect_feng_signals(df: pd.DataFrame) -> dict[str, Any]:
             if not _near_support(pullback_low_price, support_prices, 0.05):
                 continue
 
-            if _is_price_breakout(i, high_arr):
-                h_count += 1
+            is_hh = _is_price_breakout(i, high_arr)
 
-                if h_count == 1 and i not in used_bars:
-                    h1_idx = i
-                    used_bars.add(i)
-                    signals.append({
-                        "date": str(dates[i]),
-                        "price": round(float(high_arr[i]), 2),
-                        "label": "H1",
-                        "type": "h1",
-                    })
+            if state == "seeking_h1" and is_hh and i not in used_bars:
+                h1_idx = i
+                used_bars.add(i)
+                signals.append({
+                    "date": str(dates[i]),
+                    "price": round(float(high_arr[i]), 2),
+                    "label": "H1",
+                    "type": "h1",
+                })
+                state = "got_h1_wait_pullback"
 
-                elif h_count == 2 and i not in used_bars:
+            elif state == "got_h1_wait_pullback":
+                # H1 后等回落：至少一根 K 线今高 <= 昨高
+                if not is_hh:
+                    state = "seeking_h2"
+
+            elif state == "seeking_h2" and is_hh and i not in used_bars:
                     # 验证 W 底有效：后续 3 根 K 线不能跌破 W 的低点
                     w_low = float(low_arr[i])
                     valid_w = True

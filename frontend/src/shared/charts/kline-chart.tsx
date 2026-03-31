@@ -114,6 +114,28 @@ function ensureOverlays() {
       return [{ type: "text", attrs: { x: point.x, y: point.y + 10, text: "W", align: "center" as const, baseline: "top" as const }, styles: { color: "#FF9800", size: 13, weight: 800 }, ignoreEvent: true }];
     },
   });
+
+  // 左侧价格标签（贴左边缘）
+  registerOverlay<{ text: string; color: string; bg: string }>({
+    name: "leftTag",
+    needDefaultPointFigure: false, needDefaultXAxisFigure: false, needDefaultYAxisFigure: false,
+    totalStep: 1,
+    createYAxisFigures: ({ overlay, coordinates }) => {
+      const point = coordinates[0];
+      const data = overlay.extendData;
+      if (!point || !data || typeof data !== "object") return [];
+      return {
+        type: "text",
+        attrs: { x: 4, y: point.y, text: data.text, align: "left" as const, baseline: "middle" as const },
+        styles: {
+          backgroundColor: data.bg, borderColor: data.bg,
+          borderSize: 1, borderRadius: 3, color: data.color,
+          size: 10, weight: 600, paddingLeft: 4, paddingRight: 4, paddingTop: 2, paddingBottom: 2,
+        },
+        ignoreEvent: true,
+      };
+    },
+  });
 }
 
 function loadChartData(chart: Chart, symbol: string, data: Array<{
@@ -201,6 +223,18 @@ export function KlineChart({
       if (nearest) {
         chart.createOverlay({ name: "horizontalStraightLine", groupId: SYSTEM_GROUP, points: [{ value: nearest.price }], styles: { line: { color: "#ef4444", size: 1, style: "solid" as const } }, lock: true });
         chart.createOverlay({ name: "levelTag", groupId: SYSTEM_GROUP, points: [{ value: nearest.price }], extendData: { text: `压力 x${nearest.count}`, color: "#ffffff", backgroundColor: "rgba(239,68,68,0.85)", borderColor: "rgba(239,68,68,0.9)" }, lock: true });
+      }
+    }
+
+    // ── 左峰突破线：刚被突破的前高（蓝色实线）──
+    if (resistances?.length && validPoints.length) {
+      const currentPrice = validPoints[validPoints.length - 1].close;
+      // 找刚被突破的压力位（价格低于当前价 = 已突破）
+      const broken = resistances.filter((r) => r.price < currentPrice && r.price > currentPrice * 0.9).sort((a, b) => b.price - a.price);
+      const peakLine = broken[0];
+      if (peakLine) {
+        chart.createOverlay({ name: "horizontalStraightLine", groupId: SYSTEM_GROUP, points: [{ value: peakLine.price }], styles: { line: { color: "#3b82f6", size: 1.5, style: "solid" as const } }, lock: true });
+        chart.createOverlay({ name: "levelTag", groupId: SYSTEM_GROUP, points: [{ value: peakLine.price }], extendData: { text: `突破前高`, color: "#ffffff", backgroundColor: "rgba(59,130,246,0.85)", borderColor: "rgba(59,130,246,0.9)" }, lock: true });
       }
     }
 
