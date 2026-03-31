@@ -2,6 +2,8 @@
 __pycache__/
 *.pyc
 *.pyo
+venv/
+backend/venv/
 
 # Node
 node_modules/
@@ -24,6 +26,7 @@ output/
 .DS_Store
 *.log
 Thumbs.db
+.pids/
 
 # IDE
 .vscode/

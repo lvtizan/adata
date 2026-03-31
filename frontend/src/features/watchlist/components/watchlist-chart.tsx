@@ -113,9 +113,28 @@ export function WatchlistChart({ tsCode, sectorCode, stockName, activeTool, onSe
     })));
   }, [tsCode, onDrawingsChange]);
 
+  // 根据入场价计算止损止盈
+  const calcSlTp = useCallback((entry: number) => {
+    const supports = patternData?.supports ?? [];
+    const below = supports.filter((s: any) => s.price < entry).sort((a: any, b: any) => b.price - a.price);
+    const sl = below.length > 0 ? +below[0].price.toFixed(2) : +(entry * 0.95).toFixed(2);
+    const risk = entry - sl;
+    const tp = risk > 0 ? +(entry + risk * 2).toFixed(2) : +(entry * 1.1).toFixed(2);
+    return { sl, tp };
+  }, [patternData]);
+
+  // 更新止损止盈线位置和标签
+  const updateSlTpOverlays = useCallback((chart: any, groupId: string, entry: number, sl: number, tp: number) => {
+    chart.overrideOverlay({ id: `${groupId}-sl`, points: [{ value: sl }] });
+    chart.overrideOverlay({ id: `${groupId}-sl-tag`, points: [{ value: sl }], extendData: { text: `止损 ${sl}`, color: "#ffffff", bg: "rgba(239,68,68,0.85)" } });
+    chart.overrideOverlay({ id: `${groupId}-tp`, points: [{ value: tp }] });
+    chart.overrideOverlay({ id: `${groupId}-tp-tag`, points: [{ value: tp }], extendData: { text: `止盈 ${tp} (2R)`, color: "#ffffff", bg: "rgba(34,197,94,0.85)" } });
+    chart.overrideOverlay({ id: `${groupId}-entry-tag`, points: [{ value: entry }], extendData: { text: `入场 ${entry}`, color: "#ffffff", bg: "rgba(59,130,246,0.85)" } });
+  }, []);
+
   // 买入模式：点击透明遮罩选价位
   const handleBuyClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    const chart = chartRef.current;
+    const chart = chartRef.current as any;
     const container = chartContainerRef.current;
     if (!chart || !container || !stockData?.points?.length) return;
 
@@ -140,34 +159,38 @@ export function WatchlistChart({ tsCode, sectorCode, stockName, activeTool, onSe
     if (!price || price <= 0) { setBuyMode(false); return; }
 
     const entry = +price.toFixed(2);
-    const supports = patternData?.supports ?? [];
-    const below = supports.filter((s: any) => s.price < entry).sort((a: any, b: any) => b.price - a.price);
-    const sl = below.length > 0 ? +below[0].price.toFixed(2) : +(entry * 0.95).toFixed(2);
-    const risk = entry - sl;
-    if (risk <= 0) { setBuyMode(false); return; }
-    const tp = +(entry + risk * 2).toFixed(2);
+    const { sl, tp } = calcSlTp(entry);
+    const groupId = `buy-${Date.now()}`;
 
-    // 入场线（蓝色）
-    chart.createOverlay({ name: "horizontalStraightLine", lock: true, points: [{ value: entry }], styles: { line: { color: "#3b82f6", size: 1.5, style: "solid" } } });
-    chart.createOverlay({ name: "leftTag", lock: true, points: [{ value: entry }], extendData: { text: `入场 ${entry}`, color: "#ffffff", bg: "rgba(59,130,246,0.85)" } });
-    // 止损线（红色）
-    chart.createOverlay({ name: "horizontalStraightLine", lock: true, points: [{ value: sl }], styles: { line: { color: "#ef4444", size: 1, style: "dashed" } } });
-    chart.createOverlay({ name: "leftTag", lock: true, points: [{ value: sl }], extendData: { text: `止损 ${sl}`, color: "#ffffff", bg: "rgba(239,68,68,0.85)" } });
-    // 止盈线（绿色）
-    chart.createOverlay({ name: "horizontalStraightLine", lock: true, points: [{ value: tp }], styles: { line: { color: "#22c55e", size: 1, style: "dashed" } } });
-    chart.createOverlay({ name: "leftTag", lock: true, points: [{ value: tp }], extendData: { text: `止盈 ${tp} (2R)`, color: "#ffffff", bg: "rgba(34,197,94,0.85)" } });
-
-    // 自动创建价格预警
-    void createPriceAlert({
-      tsCode,
-      stockName: stockName ?? tsCode,
-      entryPrice: entry,
-      stopLoss: sl,
-      takeProfit: tp,
+    // 入场线（蓝色，可拖动）
+    chart.createOverlay({
+      id: `${groupId}-entry`,
+      name: "horizontalStraightLine",
+      points: [{ value: entry }],
+      styles: { line: { color: "#3b82f6", size: 1.5, style: "solid" } },
+      onPressedMoveEnd: (event: any) => {
+        const newPrice = event.overlay?.points?.[0]?.value;
+        if (!newPrice || newPrice <= 0) return;
+        const newEntry = +newPrice.toFixed(2);
+        const { sl: newSl, tp: newTp } = calcSlTp(newEntry);
+        updateSlTpOverlays(chart, groupId, newEntry, newSl, newTp);
+        // 更新预警
+        void createPriceAlert({ tsCode, stockName: stockName ?? tsCode, entryPrice: newEntry, stopLoss: newSl, takeProfit: newTp });
+      },
     });
+    chart.createOverlay({ id: `${groupId}-entry-tag`, name: "leftTag", lock: true, points: [{ value: entry }], extendData: { text: `入场 ${entry}`, color: "#ffffff", bg: "rgba(59,130,246,0.85)" } });
+    // 止损线（红色）
+    chart.createOverlay({ id: `${groupId}-sl`, name: "horizontalStraightLine", lock: true, points: [{ value: sl }], styles: { line: { color: "#ef4444", size: 1, style: "dashed" } } });
+    chart.createOverlay({ id: `${groupId}-sl-tag`, name: "leftTag", lock: true, points: [{ value: sl }], extendData: { text: `止损 ${sl}`, color: "#ffffff", bg: "rgba(239,68,68,0.85)" } });
+    // 止盈线（绿色）
+    chart.createOverlay({ id: `${groupId}-tp`, name: "horizontalStraightLine", lock: true, points: [{ value: tp }], styles: { line: { color: "#22c55e", size: 1, style: "dashed" } } });
+    chart.createOverlay({ id: `${groupId}-tp-tag`, name: "leftTag", lock: true, points: [{ value: tp }], extendData: { text: `止盈 ${tp} (2R)`, color: "#ffffff", bg: "rgba(34,197,94,0.85)" } });
+
+    // 创建价格预警
+    void createPriceAlert({ tsCode, stockName: stockName ?? tsCode, entryPrice: entry, stopLoss: sl, takeProfit: tp });
 
     setBuyMode(false);
-  }, [stockData, patternData, tsCode, stockName]);
+  }, [stockData, patternData, tsCode, stockName, calcSlTp, updateSlTpOverlays]);
 
   // ESC 退出买入模式
   useEffect(() => {

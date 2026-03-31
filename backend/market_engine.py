@@ -1674,8 +1674,8 @@ class MarketEngine:
         start = dates[-bars] if len(dates) >= bars else dates[0]
         try:
             df = ts.pro_bar(
-                pro_api=self.pro,
                 ts_code=ts_code,
+                api=self.pro,
                 adj="qfq",
                 start_date=start,
                 end_date=trade_date,
@@ -1770,14 +1770,17 @@ class MarketEngine:
         b = pd.DataFrame(bk["points"])[["time", "close"]].rename(columns={"close": "b_close"})
         m = s.merge(b, on="time", how="inner")
 
-        # 大盘（沪深300）
+        # 大盘（沪深300）— 指数用 index_daily
         try:
-            mk = self.stock_kline("000300.SH", trade_date, bars=bars)
-            if mk["points"]:
-                mdf = pd.DataFrame(mk["points"])[["time", "close"]].rename(columns={"close": "m_close"})
+            dates = self.trade_dates(trade_date, need=max(bars + 10, 80))
+            idx_start = dates[-bars] if len(dates) >= bars else dates[0]
+            mdf_raw = self.pro.index_daily(ts_code="000300.SH", start_date=idx_start, end_date=trade_date)
+            if mdf_raw is not None and not mdf_raw.empty:
+                mdf_raw = mdf_raw.sort_values("trade_date").reset_index(drop=True)
+                mdf = mdf_raw[["trade_date", "close"]].rename(columns={"trade_date": "time", "close": "m_close"})
                 m = m.merge(mdf, on="time", how="left")
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"大盘指数加载失败: {exc}")
         if "m_close" not in m.columns:
             m["m_close"] = np.nan
 
