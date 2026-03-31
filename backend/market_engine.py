@@ -450,7 +450,7 @@ class MarketEngine:
                 s["ma30"] = s["close"]
         else:
             s["ma30"] = s["close"]
-        s["ret1"] = s["pct_chg"] if "pct_chg" in s.columns else 0.0
+        s["ret1"] = s["pct_change"] if "pct_change" in s.columns else 0.0
         s["ret5"] = (s["close"] / s["close_5"] - 1) * 100
         s["ret10"] = (s["close"] / s["close_10"] - 1) * 100
         s["amount_est"] = s["vol"] * s["avg_price"] * 100
@@ -1762,12 +1762,24 @@ class MarketEngine:
             return {
                 "stock": {"tsCode": ts_code, "name": sk.get("name", ts_code), "rpsSeries": []},
                 "sector": {"sectorCode": sector_code, "name": bk.get("name", sector_code), "rpsSeries": []},
+                "market": {"name": "沪深300", "rpsSeries": []},
                 "summary": {"relativeStrength5d": 0, "relativeStrength10d": 0, "relativeStrength20d": 0, "label": "同步"},
             }
 
         s = pd.DataFrame(sk["points"])[["time", "close"]].rename(columns={"close": "s_close"})
         b = pd.DataFrame(bk["points"])[["time", "close"]].rename(columns={"close": "b_close"})
         m = s.merge(b, on="time", how="inner")
+
+        # 大盘（沪深300）
+        try:
+            mk = self.stock_kline("000300.SH", trade_date, bars=bars)
+            if mk["points"]:
+                mdf = pd.DataFrame(mk["points"])[["time", "close"]].rename(columns={"close": "m_close"})
+                m = m.merge(mdf, on="time", how="left")
+        except Exception:
+            pass
+        if "m_close" not in m.columns:
+            m["m_close"] = np.nan
 
         def pct_n(series: pd.Series, n: int) -> float:
             if len(series) <= n:
@@ -1786,6 +1798,12 @@ class MarketEngine:
 
         m["s_norm"] = (m["s_close"] / m["s_close"].iloc[0] - 1) * 100
         m["b_norm"] = (m["b_close"] / m["b_close"].iloc[0] - 1) * 100
+        m_first = m["m_close"].dropna().iloc[0] if m["m_close"].notna().any() else None
+        m["m_norm"] = (m["m_close"] / m_first - 1) * 100 if m_first else np.nan
+
+        market_series = []
+        if m["m_norm"].notna().any():
+            market_series = [{"time": x["time"], "value": round(float(x["m_norm"]), 2)} for _, x in m.iterrows() if pd.notna(x["m_norm"])]
 
         return {
             "stock": {
@@ -1803,6 +1821,10 @@ class MarketEngine:
                 "pctChange10d": round(b10, 2),
                 "pctChange20d": round(b20, 2),
                 "rpsSeries": [{"time": x["time"], "value": round(float(x["b_norm"]), 2)} for _, x in m.iterrows()],
+            },
+            "market": {
+                "name": "沪深300",
+                "rpsSeries": market_series,
             },
             "spreadSeries": [{"time": x["time"], "value": round(float(x["s_norm"] - x["b_norm"]), 2)} for _, x in m.iterrows()],
             "summary": {

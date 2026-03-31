@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -16,6 +17,8 @@ from market_engine import MarketEngine
 from watchlist_store import WatchlistStore
 from daily_briefs_store import DailyBriefsStore
 from drawings_store import DrawingsStore
+from price_alert_store import PriceAlertStore
+from price_monitor import PriceMonitor
 from index_risk_analyzer import analyze_all_indices
 
 # 初始化日志和配置
@@ -27,6 +30,8 @@ WEB_DIR = ROOT / "web"
 BACKEND = ROOT / "backend"
 WATCHLIST_DB = ROOT / "backend" / "data" / "watchlist.db"
 DRAWINGS_DB = ROOT / "backend" / "data" / "drawings.db"
+ALERTS_DB = ROOT / "backend" / "data" / "price_alerts.db"
+SETTINGS_PATH = ROOT / "backend" / "data" / "settings.json"
 
 # 加载配置
 config = get_config()
@@ -37,11 +42,35 @@ engine = MarketEngine(config)
 watchlist_store = WatchlistStore(WATCHLIST_DB)
 briefs_store = DailyBriefsStore()
 drawings_store = DrawingsStore(DRAWINGS_DB)
+alert_store = PriceAlertStore(ALERTS_DB)
+
+
+def _load_settings() -> dict:
+    if SETTINGS_PATH.exists():
+        try:
+            return json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {}
+
+
+def _save_settings(data: dict) -> None:
+    SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    SETTINGS_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def get_webhook_url() -> str:
+    s = _load_settings()
+    return s.get("webhook_url", "") or os.getenv("WECHAT_WORK_WEBHOOK_URL", "")
 
 # 预热缓存（后台线程）
 logger.info("启动缓存预热...")
 warmup_thread = threading.Thread(target=engine.warmup, daemon=True, name="WarmupThread")
 warmup_thread.start()
+
+# 启动价格监控线程
+price_monitor = PriceMonitor(alert_store, get_webhook_url)
+price_monitor.start()
 
 
 class _NumpyEncoder(json.JSONEncoder):
@@ -172,6 +201,55 @@ class Handler(BaseHTTPRequestHandler):
                     self,
                     {"ok": True, "deleted": deleted, "symbol": symbol, "scope": scope, "timeframe": timeframe},
                 )
+            return json_response(self, {"error": "method not allowed"}, 405)
+
+        # ── 价格预警 API ──
+        if path == "/api/price-alerts":
+            if method == "GET":
+                status_filter = q.get("status", [None])[0]
+                return json_response(self, {"items": alert_store.list_alerts(status_filter)})
+            if method == "POST":
+                b = body or {}
+                ts_code = b.get("tsCode", "")
+                if not ts_code:
+                    return json_response(self, {"error": "missing tsCode"}, 400)
+                alert = alert_store.create_alert(
+                    ts_code=ts_code,
+                    stock_name=b.get("stockName", ""),
+                    entry_price=float(b.get("entryPrice", 0)),
+                    stop_loss=float(b["stopLoss"]) if b.get("stopLoss") else None,
+                    take_profit=float(b["takeProfit"]) if b.get("takeProfit") else None,
+                )
+                return json_response(self, {"alert": alert}, 201)
+            return json_response(self, {"error": "method not allowed"}, 405)
+
+        if path.startswith("/api/price-alerts/"):
+            parts = path.split("/")
+            if len(parts) >= 4:
+                alert_id_str = parts[3]
+                if alert_id_str == "monitor-status":
+                    return json_response(self, {"alive": price_monitor.alive})
+                try:
+                    alert_id = int(alert_id_str)
+                except ValueError:
+                    return json_response(self, {"error": "invalid alert id"}, 400)
+                if method == "DELETE":
+                    deleted = alert_store.delete_alert(alert_id)
+                    return json_response(self, {"ok": deleted})
+            return json_response(self, {"error": "not found"}, 404)
+
+        # ── 设置 API ──
+        if path == "/api/settings/webhook":
+            if method == "GET":
+                url = get_webhook_url()
+                masked = url[:20] + "..." if len(url) > 20 else url
+                return json_response(self, {"webhookUrl": masked, "configured": bool(url)})
+            if method == "PUT":
+                url = (body or {}).get("webhookUrl", "")
+                settings = _load_settings()
+                settings["webhook_url"] = url
+                _save_settings(settings)
+                return json_response(self, {"ok": True, "configured": bool(url)})
             return json_response(self, {"error": "method not allowed"}, 405)
 
         # 服务器状态（不需要预热即可返回）

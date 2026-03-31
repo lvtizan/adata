@@ -1,8 +1,8 @@
 import { useState, useRef, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { useBullCamp, useStockSector } from "@/queries";
+import { useBullCamp, useStockSector, useStockFinancials } from "@/queries";
 import { DataTable, NumericCell, type Column } from "@/shared/table";
-import { fmtPct, fmtAmount } from "@/shared/utils/format";
+import { fmtPct, fmtAmount, fmtYi, fmtQuarter } from "@/shared/utils/format";
 import { CampTag } from "@/features/bullcamp/components/camp-tag";
 import { ScoreSparkline } from "@/features/bullcamp/components/score-sparkline";
 import { FinancialsPanel } from "@/features/bullcamp/components/financials-panel";
@@ -46,6 +46,7 @@ export default function BullcampPage() {
   // 如果选中的牛股没有 sectorCode，查一下
   const needSectorLookup = !!selected && !selected.sectorCode;
   const { data: sectorLookup } = useStockSector(needSectorLookup ? selected.tsCode : "");
+  const { data: financials } = useStockFinancials(selected?.tsCode ?? "");
   const effectiveSectorCode = selected?.sectorCode || sectorLookup?.sectorCode || "";
 
   useEffect(() => {
@@ -164,8 +165,8 @@ export default function BullcampPage() {
                   {[
                     { label: "RPS20", value: selected.rps20 },
                     { label: "5日", value: selected.pctChange5d, pct: true },
-                    { label: "相对强弱", value: selected.relativeStrengthLatest?.toFixed(1) },
-                    { label: "综合分", value: selected.campScore?.toFixed(0) },
+
+                    { label: "净利", value: financials?.periods?.[0]?.netIncome != null ? fmtYi(financials.periods[0].netIncome) : "-" },
                   ].map((m) => (
                     <div key={m.label} className="px-2 py-1 border-r border-border-default last:border-r-0 min-w-[60px]">
                       <span className="block text-[10px] text-text-tertiary">{m.label}</span>
@@ -178,6 +179,24 @@ export default function BullcampPage() {
                     </div>
                   ))}
                 </div>
+                {/* 营收同比趋势（最近4季） */}
+                {financials?.periods && financials.periods.length > 0 && (
+                  <div className="flex items-center gap-0.5 text-[10px] ml-2">
+                    <span className="text-text-quaternary mr-0.5">营收同比</span>
+                    {financials.periods.slice(0, 4).reverse().map((p) => (
+                      <span
+                        key={p.endDate}
+                        className={cn(
+                          "px-1.5 py-0.5 rounded font-mono",
+                          p.revenueYoY == null ? "text-text-quaternary" :
+                          p.revenueYoY >= 0 ? "text-state-up bg-state-up/10" : "text-state-down bg-state-down/10"
+                        )}
+                      >
+                        {fmtQuarter(p.endDate)} {p.revenueYoY != null ? `${p.revenueYoY > 0 ? "+" : ""}${p.revenueYoY.toFixed(0)}%` : "-"}
+                      </span>
+                    ))}
+                  </div>
+                )}
               </div>
               {/* 概念标签行 */}
               <StockTagsPanel

@@ -4,17 +4,22 @@ import { useStockChart, useRelativeStrength, useStockPatterns, useChartDrawings 
 import { useAppStore } from "@/store";
 import { KlineChart } from "@/shared/charts";
 import { clearLocalDrawings, readLocalDrawings, writeLocalDrawings } from "@/lib/chart-drawings";
-import { saveChartDrawings, clearChartDrawings } from "@/services";
+import { saveChartDrawings, clearChartDrawings, createPriceAlert } from "@/services";
 import type { ChartDrawingOverlay, RelativeStrengthData } from "@/shared/types";
 
-// ── RS 迷你双线图 ──
+// ── RS 迷你三线图（个股 / 板块 / 大盘）──
 function RsMiniChart({ rsData, stockName }: { rsData: RelativeStrengthData; stockName?: string }) {
   const W = 150, H = 60;
   const stockSeries = rsData.stock.rpsSeries;
   const sectorSeries = rsData.sector.rpsSeries;
+  const marketSeries = rsData.market?.rpsSeries ?? [];
   if (!stockSeries.length) return null;
 
-  const allValues = [...stockSeries.map((p) => p.value), ...sectorSeries.map((p) => p.value)];
+  const allValues = [
+    ...stockSeries.map((p) => p.value),
+    ...sectorSeries.map((p) => p.value),
+    ...marketSeries.map((p) => p.value),
+  ];
   const minV = Math.min(...allValues);
   const maxV = Math.max(...allValues);
   const range = maxV - minV || 1;
@@ -28,8 +33,10 @@ function RsMiniChart({ rsData, stockName }: { rsData: RelativeStrengthData; stoc
 
   const stockPath = toPath(stockSeries);
   const sectorPath = toPath(sectorSeries);
+  const marketPath = marketSeries.length > 0 ? toPath(marketSeries) : "";
   const lastStock = stockSeries[stockSeries.length - 1]?.value ?? 0;
   const lastSector = sectorSeries[sectorSeries.length - 1]?.value ?? 0;
+  const lastMarket = marketSeries.length > 0 ? marketSeries[marketSeries.length - 1]?.value ?? 0 : null;
 
   return (
     <div
@@ -38,6 +45,7 @@ function RsMiniChart({ rsData, stockName }: { rsData: RelativeStrengthData; stoc
     >
       <div className="text-[10px] text-text-tertiary mb-0.5">RS 相对强度</div>
       <svg width={W} height={H} className="block">
+        {marketPath && <path d={marketPath} fill="none" stroke="#333333" strokeWidth={1} opacity={0.5} />}
         <path d={sectorPath} fill="none" stroke="#3b82f6" strokeWidth={1.2} opacity={0.6} />
         <path d={stockPath} fill="none" stroke="#ef4444" strokeWidth={1.5} />
       </svg>
@@ -45,10 +53,12 @@ function RsMiniChart({ rsData, stockName }: { rsData: RelativeStrengthData; stoc
         <span className="text-state-up">{lastStock.toFixed(1)}</span>
         <span className="text-text-quaternary">{rsData.summary.label}</span>
         <span className="text-blue-500">{lastSector.toFixed(1)}</span>
+        {lastMarket != null && <span className="text-neutral-600">{lastMarket.toFixed(1)}</span>}
       </div>
-      <div className="flex items-center gap-2 mt-0.5 text-[9px] text-text-quaternary">
+      <div className="flex items-center gap-2 mt-0.5 text-[9px] text-text-quaternary flex-wrap">
         <span className="flex items-center gap-0.5"><span className="inline-block w-2 h-0.5 bg-red-500 rounded" />{stockName || rsData.stock.name}</span>
         <span className="flex items-center gap-0.5"><span className="inline-block w-2 h-0.5 bg-blue-500 rounded" />{rsData.sector.name}</span>
+        {marketSeries.length > 0 && <span className="flex items-center gap-0.5"><span className="inline-block w-2 h-0.5 bg-neutral-800 rounded" />沪深300</span>}
       </div>
     </div>
   );
@@ -103,61 +113,69 @@ export function WatchlistChart({ tsCode, sectorCode, stockName, activeTool, onSe
     })));
   }, [tsCode, onDrawingsChange]);
 
-  // 买入模式：点击图表选价位（用K线数据的价格范围手动算）
-  useEffect(() => {
-    if (!buyMode || !stockData?.points?.length) return;
+  // 买入模式：点击透明遮罩选价位
+  const handleBuyClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    const chart = chartRef.current;
     const container = chartContainerRef.current;
-    const chart = chartRef.current as any;
-    if (!container || !chart) return;
+    if (!chart || !container || !stockData?.points?.length) return;
 
-    container.style.cursor = "crosshair";
+    const rect = container.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
 
-    // 计算可见价格范围
-    const pts = stockData.points;
-    const allHighs = pts.map((p) => p.high);
-    const allLows = pts.map((p) => p.low);
-    const maxPrice = Math.max(...allHighs);
-    const minPrice = Math.min(...allLows);
+    // 用 klinecharts 精确转换坐标
+    const result = chart.convertFromPixel([{ x, y }], { paneId: "candle_pane" });
+    const point = Array.isArray(result) ? result[0] : result;
+    let price = point?.value;
 
+    // 备用方案：用像素比例估算
+    if (!price || price <= 0) {
+      const pts = stockData.points;
+      const maxPrice = Math.max(...pts.map((p) => p.high));
+      const minPrice = Math.min(...pts.map((p) => p.low));
+      const chartHeight = rect.height * 0.78;
+      const ratio = Math.max(0, Math.min(1, y / chartHeight));
+      price = maxPrice - ratio * (maxPrice - minPrice);
+    }
+    if (!price || price <= 0) { setBuyMode(false); return; }
+
+    const entry = +price.toFixed(2);
+    const supports = patternData?.supports ?? [];
+    const below = supports.filter((s: any) => s.price < entry).sort((a: any, b: any) => b.price - a.price);
+    const sl = below.length > 0 ? +below[0].price.toFixed(2) : +(entry * 0.95).toFixed(2);
+    const risk = entry - sl;
+    if (risk <= 0) { setBuyMode(false); return; }
+    const tp = +(entry + risk * 2).toFixed(2);
+
+    // 入场线（蓝色）
+    chart.createOverlay({ name: "horizontalStraightLine", lock: true, points: [{ value: entry }], styles: { line: { color: "#3b82f6", size: 1.5, style: "solid" } } });
+    chart.createOverlay({ name: "leftTag", lock: true, points: [{ value: entry }], extendData: { text: `入场 ${entry}`, color: "#ffffff", bg: "rgba(59,130,246,0.85)" } });
+    // 止损线（红色）
+    chart.createOverlay({ name: "horizontalStraightLine", lock: true, points: [{ value: sl }], styles: { line: { color: "#ef4444", size: 1, style: "dashed" } } });
+    chart.createOverlay({ name: "leftTag", lock: true, points: [{ value: sl }], extendData: { text: `止损 ${sl}`, color: "#ffffff", bg: "rgba(239,68,68,0.85)" } });
+    // 止盈线（绿色）
+    chart.createOverlay({ name: "horizontalStraightLine", lock: true, points: [{ value: tp }], styles: { line: { color: "#22c55e", size: 1, style: "dashed" } } });
+    chart.createOverlay({ name: "leftTag", lock: true, points: [{ value: tp }], extendData: { text: `止盈 ${tp} (2R)`, color: "#ffffff", bg: "rgba(34,197,94,0.85)" } });
+
+    // 自动创建价格预警
+    void createPriceAlert({
+      tsCode,
+      stockName: stockName ?? tsCode,
+      entryPrice: entry,
+      stopLoss: sl,
+      takeProfit: tp,
+    });
+
+    setBuyMode(false);
+  }, [stockData, patternData, tsCode, stockName]);
+
+  // ESC 退出买入模式
+  useEffect(() => {
+    if (!buyMode) return;
     const onKeyDown = (e: KeyboardEvent) => { if (e.key === "Escape") setBuyMode(false); };
     window.addEventListener("keydown", onKeyDown);
-
-    const onClick = (e: MouseEvent) => {
-      const rect = container.getBoundingClientRect();
-      const y = e.clientY - rect.top;
-      const chartHeight = rect.height * 0.78; // K线主图区域约占78%（剩余是成交量）
-      const ratio = Math.max(0, Math.min(1, y / chartHeight));
-      const price = maxPrice - ratio * (maxPrice - minPrice);
-      if (price <= 0) { setBuyMode(false); return; }
-
-      const entry = +price.toFixed(2);
-      const supports = patternData?.supports ?? [];
-      const below = supports.filter((s: any) => s.price < entry).sort((a: any, b: any) => b.price - a.price);
-      const sl = below.length > 0 ? +below[0].price.toFixed(2) : +(entry * 0.95).toFixed(2);
-      const risk = entry - sl;
-      if (risk <= 0) { setBuyMode(false); return; }
-      const tp = +(entry + risk * 2).toFixed(2);
-
-      // 入场线（蓝色）
-      chart.createOverlay({ name: "horizontalStraightLine", lock: true, points: [{ value: entry }], styles: { line: { color: "#3b82f6", size: 1.5, style: "solid" } } });
-      chart.createOverlay({ name: "leftTag", lock: true, points: [{ value: entry }], extendData: { text: `入场 ${entry}`, color: "#ffffff", bg: "rgba(59,130,246,0.85)" } });
-      // 止损线（红色）
-      chart.createOverlay({ name: "horizontalStraightLine", lock: true, points: [{ value: sl }], styles: { line: { color: "#ef4444", size: 1, style: "dashed" } } });
-      chart.createOverlay({ name: "leftTag", lock: true, points: [{ value: sl }], extendData: { text: `止损 ${sl}`, color: "#ffffff", bg: "rgba(239,68,68,0.85)" } });
-      // 止盈线（绿色）
-      chart.createOverlay({ name: "horizontalStraightLine", lock: true, points: [{ value: tp }], styles: { line: { color: "#22c55e", size: 1, style: "dashed" } } });
-      chart.createOverlay({ name: "leftTag", lock: true, points: [{ value: tp }], extendData: { text: `止盈 ${tp} (2R)`, color: "#ffffff", bg: "rgba(34,197,94,0.85)" } });
-
-      setBuyMode(false);
-    };
-
-    container.addEventListener("click", onClick, { once: true });
-    return () => {
-      container.style.cursor = "";
-      container.removeEventListener("click", onClick);
-      window.removeEventListener("keydown", onKeyDown);
-    };
-  }, [buyMode, stockData, patternData]);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [buyMode]);
 
   // 画线事件
   useEffect(() => {
@@ -217,9 +235,18 @@ export function WatchlistChart({ tsCode, sectorCode, stockName, activeTool, onSe
 
       <div ref={chartContainerRef} className="relative flex-1 min-h-0">
         {buyMode && (
-          <div className="absolute top-0 left-0 right-0 z-30 bg-amber-500/90 text-white text-center text-xs py-1 cursor-crosshair">
-            点击K线图选择入场价位 · 按 ESC 取消
-          </div>
+          <>
+            {/* 透明遮罩：挡在图表上面接收点击 */}
+            <div
+              className="absolute inset-0 z-40 cursor-crosshair"
+              onClick={handleBuyClick}
+              onKeyDown={(e) => { if (e.key === "Escape") setBuyMode(false); }}
+              tabIndex={-1}
+            />
+            <div className="absolute top-0 left-0 right-0 z-50 bg-amber-500/90 text-white text-center text-xs py-1 pointer-events-none">
+              点击K线图选择入场价位 · 按 ESC 取消
+            </div>
+          </>
         )}
         {isLoading && (
           <div className="absolute inset-0 flex items-center justify-center text-text-tertiary text-sm z-10 bg-canvas/80">加载中...</div>

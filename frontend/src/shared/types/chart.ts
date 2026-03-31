@@ -61,6 +61,7 @@ export interface RelativeStrengthSide {
 export interface RelativeStrengthData {
   stock: RelativeStrengthSide;
   sector: RelativeStrengthSide;
+  market?: { name: string; rpsSeries: RpsSeries[] };
   spreadSeries: RpsSeries[];
   summary: {
     relativeStrength5d: number;

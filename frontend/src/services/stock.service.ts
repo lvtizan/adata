@@ -178,6 +178,55 @@ export function getStockTags(tsCode: string) {
   return api<StockTagsResult>(`/stock/${tsCode}/tags`);
 }
 
+// ── 价格预警 ──
+
+export interface PriceAlert {
+  id: number;
+  tsCode: string;
+  stockName: string;
+  entryPrice: number;
+  stopLoss: number | null;
+  takeProfit: number | null;
+  status: string;
+  triggeredType: string | null;
+  triggeredAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export function createPriceAlert(data: {
+  tsCode: string;
+  stockName: string;
+  entryPrice: number;
+  stopLoss: number;
+  takeProfit: number;
+}) {
+  return api<{ alert: PriceAlert }>("/price-alerts", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export function getPriceAlerts(status?: string) {
+  const qs = status ? `?status=${status}` : "";
+  return api<{ items: PriceAlert[] }>(`/price-alerts${qs}`);
+}
+
+export function deletePriceAlert(id: number) {
+  return api<{ ok: boolean }>(`/price-alerts/${id}`, { method: "DELETE" });
+}
+
+export function getWebhookSettings() {
+  return api<{ webhookUrl: string; configured: boolean }>("/settings/webhook");
+}
+
+export function saveWebhookSettings(webhookUrl: string) {
+  return api<{ ok: boolean; configured: boolean }>("/settings/webhook", {
+    method: "PUT",
+    body: JSON.stringify({ webhookUrl }),
+  });
+}
+
 // ── HH 信号成功率统计 ──
 
 export function getStockHHStats(tsCode: string) {
