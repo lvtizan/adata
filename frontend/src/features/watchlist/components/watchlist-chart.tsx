@@ -69,18 +69,12 @@ interface WatchlistChartProps {
   sectorCode: string;
   stockName?: string;
   activeTool?: string | null;
+  frequency?: string;
   onSelectionChange?: (selection: { id: string | null; locked: boolean; name: string | null }) => void;
   onDrawingsChange?: (overlays: Array<{ id: string; name: string; lock: boolean; points: number; label?: string }>) => void;
 }
 
-const FREQ_OPTIONS = [
-  { value: "1d", label: "日" },
-  { value: "1w", label: "周" },
-  { value: "1M", label: "月" },
-] as const;
-
-export function WatchlistChart({ tsCode, sectorCode, stockName, activeTool, onSelectionChange, onDrawingsChange }: WatchlistChartProps) {
-  const [frequency, setFrequency] = useState<string>("1d");
+export function WatchlistChart({ tsCode, sectorCode, stockName, activeTool, frequency = "1d", onSelectionChange, onDrawingsChange }: WatchlistChartProps) {
   const [buyMode, setBuyMode] = useState(false);
   const chartRef = useRef<Chart | null>(null);
   const chartContainerRef = useRef<HTMLDivElement>(null);
@@ -236,26 +230,6 @@ export function WatchlistChart({ tsCode, sectorCode, stockName, activeTool, onSe
 
   return (
     <div className="flex flex-col h-full">
-      {/* 日/周/月切换 */}
-      <div className="flex items-center gap-1 px-2 py-1 border-b border-border-default shrink-0">
-        {FREQ_OPTIONS.map((opt) => (
-          <button
-            key={opt.value}
-            onClick={() => setFrequency(opt.value)}
-            className={`px-2.5 py-0.5 text-xs rounded transition-colors ${
-              frequency === opt.value
-                ? "bg-accent/15 text-accent font-medium"
-                : "text-text-secondary hover:text-text-primary hover:bg-surface-hover"
-            }`}
-          >
-            {opt.label}
-          </button>
-        ))}
-        <span className="text-[10px] text-text-quaternary ml-1">
-          {frequency === "1d" ? "日线" : frequency === "1w" ? "周线" : "月线"}
-        </span>
-      </div>
-
       <div ref={chartContainerRef} className="relative flex-1 min-h-0">
         {buyMode && (
           <>

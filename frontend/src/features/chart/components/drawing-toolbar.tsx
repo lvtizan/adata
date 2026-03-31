@@ -32,6 +32,7 @@ interface DrawingToolbarProps {
   onAddResistanceTemplate: () => void;
   onAddTagTemplate: () => void;
   onAddBuyEntry?: () => void;
+  rightContent?: ReactNode;
 }
 
 function ToolBtn({ active, title, onClick, children, className = "" }: {
@@ -65,6 +66,7 @@ export function DrawingToolbar({
   onAddResistanceTemplate,
   onAddTagTemplate,
   onAddBuyEntry,
+  rightContent,
 }: DrawingToolbarProps) {
   return (
     <div className="flex items-center gap-0.5 px-1">
@@ -109,6 +111,8 @@ export function DrawingToolbar({
       {overlays.length > 0 && (
         <span className="ml-1 text-[10px] text-text-quaternary">{overlays.length} 条</span>
       )}
+
+      {rightContent && <div className="ml-auto flex items-center">{rightContent}</div>}
     </div>
   );
 }

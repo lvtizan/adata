@@ -1,8 +1,8 @@
 import { useState, useRef, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { useWatchlist, useUpdateWatchlist, useRemoveFromWatchlist, useStockSector } from "@/queries";
+import { useWatchlist, useUpdateWatchlist, useRemoveFromWatchlist, useStockSector, useStockFinancials } from "@/queries";
 import { DataTable, NumericCell, type Column } from "@/shared/table";
-import { fmtPct } from "@/shared/utils/format";
+import { fmtPct, fmtQuarter } from "@/shared/utils/format";
 import { WatchlistChart } from "@/features/watchlist/components/watchlist-chart";
 import { AttributionPanel } from "@/features/chart/components/attribution-panel";
 import { StockTagsPanel } from "@/features/chart/components/stock-tags-panel";
@@ -13,6 +13,12 @@ import { Input } from "@/shared/ui/input";
 import type { WatchlistItem } from "@/shared/types";
 import { cn } from "@/lib/utils";
 import { useDashboardStore } from "@/store";
+
+const FREQ_OPTIONS = [
+  { value: "1d", label: "日" },
+  { value: "1w", label: "周" },
+  { value: "1M", label: "月" },
+] as const;
 
 export default function WatchlistPage() {
   const navigate = useNavigate();
@@ -25,6 +31,7 @@ export default function WatchlistPage() {
   const [editingSubgroup, setEditingSubgroup] = useState(false);
   const [subgroupValue, setSubgroupValue] = useState("");
   const [drawingTool, setDrawingTool] = useState<string | null>(null);
+  const [frequency, setFrequency] = useState<string>("1d");
   const [selectedOverlay, setSelectedOverlay] = useState<{ id: string | null; locked: boolean; name: string | null }>({ id: null, locked: false, name: null });
   const [drawings, setDrawings] = useState<Array<{ id: string; name: string; lock: boolean; points: number; label?: string }>>([]);
 
@@ -39,6 +46,7 @@ export default function WatchlistPage() {
 
   const needSectorLookup = !!selected && !selected.sectorCode;
   const { data: sectorLookup } = useStockSector(needSectorLookup ? selected.tsCode : "");
+  const { data: financials } = useStockFinancials(selected?.tsCode ?? "");
   const effectiveSectorCode = selected?.sectorCode || sectorLookup?.sectorCode || "";
 
   useEffect(() => {
@@ -161,16 +169,16 @@ export default function WatchlistPage() {
                   <span className="text-[10px] text-text-tertiary font-mono">{selected.tsCode}</span>
                 </div>
                 {/* 指标卡片 */}
-                <div className="flex items-stretch border border-border-default rounded text-xs">
+                <div className="flex items-stretch h-[50px] border border-border-default rounded text-xs overflow-hidden shrink-0">
                   {[
                     { label: "RPS20", value: selected.rps20 },
                     { label: "5日", value: selected.pctChange5d, pct: true },
                     { label: "10日", value: selected.pctChange10d, pct: true },
                   ].map((m) => (
-                    <div key={m.label} className="px-2 py-1 border-r border-border-default last:border-r-0 min-w-[60px]">
+                    <div key={m.label} className="px-3 py-1.5 border-r border-border-default last:border-r-0 min-w-[72px] flex flex-col justify-center">
                       <span className="block text-[10px] text-text-tertiary">{m.label}</span>
                       <strong className={cn(
-                        "text-xs font-semibold font-mono",
+                        "text-xs font-semibold font-mono mt-0.5",
                         m.pct && m.value != null && (m.value >= 0 ? "text-state-up" : "text-state-down")
                       )}>
                         {m.pct ? fmtPct(m.value) : (m.value ?? "-")}
@@ -178,6 +186,30 @@ export default function WatchlistPage() {
                     </div>
                   ))}
                 </div>
+                {financials?.periods && financials.periods.length > 0 && (
+                  <div className="flex items-start shrink-0">
+                    <div className="text-[10px] text-text-tertiary leading-none pt-1">营收同比</div>
+                    <div className="flex items-stretch h-[50px] border border-border-default rounded text-xs overflow-hidden ml-3">
+                      {financials.periods.slice(0, 4).map((period) => (
+                        <div key={period.endDate} className="px-3 py-1.5 border-r border-border-default last:border-r-0 min-w-[82px] flex flex-col justify-center">
+                          <span className="block text-[10px] text-text-tertiary">{fmtQuarter(period.endDate)}</span>
+                          <strong
+                            className={cn(
+                              "block text-xs font-semibold font-mono mt-0.5",
+                              period.revenueYoY == null
+                                ? "text-text-quaternary"
+                                : period.revenueYoY >= 0
+                                  ? "text-state-up"
+                                  : "text-state-down",
+                            )}
+                          >
+                            {period.revenueYoY != null ? fmtPct(period.revenueYoY) : "-"}
+                          </strong>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 {/* 分组 + 移出 */}
                 <div className="ml-auto flex items-center gap-1 shrink-0">
                   {editingSubgroup ? (
@@ -228,6 +260,24 @@ export default function WatchlistPage() {
                 onAddResistanceTemplate={() => emitDrawingAction("addResistanceAtClose")}
                 onAddTagTemplate={() => emitDrawingAction("addTagAtLatest")}
                 onAddBuyEntry={() => emitDrawingAction("addBuyEntry")}
+                rightContent={
+                  <div className="flex items-center gap-1 bg-canvas px-1 py-1 mr-2">
+                    {FREQ_OPTIONS.map((opt) => (
+                      <button
+                        key={opt.value}
+                        onClick={() => setFrequency(opt.value)}
+                        className={cn(
+                          "px-2.5 py-0.5 text-xs rounded transition-colors",
+                          frequency === opt.value
+                            ? "bg-accent/15 text-accent font-medium"
+                            : "text-text-secondary hover:text-text-primary hover:bg-surface-hover",
+                        )}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                }
               />
             </div>
 
@@ -238,6 +288,7 @@ export default function WatchlistPage() {
                 tsCode={selected.tsCode}
                 sectorCode={effectiveSectorCode}
                 stockName={selected.stockName}
+                frequency={frequency}
                 activeTool={drawingTool}
                 onSelectionChange={setSelectedOverlay}
                 onDrawingsChange={setDrawings}
