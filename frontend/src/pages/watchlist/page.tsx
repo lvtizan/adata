@@ -117,7 +117,7 @@ export default function WatchlistPage() {
   }
 
   function emitDrawingAction(
-    action: "deleteSelected" | "clearAll" | "toggleLock" | "addSupportAtClose" | "addResistanceAtClose" | "addTagAtLatest" | "deleteById" | "toggleLockById",
+    action: "deleteSelected" | "clearAll" | "toggleLock" | "addSupportAtClose" | "addResistanceAtClose" | "addTagAtLatest" | "addBuyEntry" | "deleteById" | "toggleLockById",
     detail: Record<string, unknown> = {},
   ) {
     if (!selected) return;

@@ -103,22 +103,32 @@ export function WatchlistChart({ tsCode, sectorCode, stockName, activeTool, onSe
     })));
   }, [tsCode, onDrawingsChange]);
 
-  // 买入模式：点击图表选价位
+  // 买入模式：点击图表选价位（用K线数据的价格范围手动算）
   useEffect(() => {
-    if (!buyMode) return;
+    if (!buyMode || !stockData?.points?.length) return;
     const container = chartContainerRef.current;
     const chart = chartRef.current as any;
     if (!container || !chart) return;
 
     container.style.cursor = "crosshair";
+
+    // 计算可见价格范围
+    const pts = stockData.points;
+    const allHighs = pts.map((p) => p.high);
+    const allLows = pts.map((p) => p.low);
+    const maxPrice = Math.max(...allHighs);
+    const minPrice = Math.min(...allLows);
+
     const onKeyDown = (e: KeyboardEvent) => { if (e.key === "Escape") setBuyMode(false); };
     window.addEventListener("keydown", onKeyDown);
+
     const onClick = (e: MouseEvent) => {
       const rect = container.getBoundingClientRect();
       const y = e.clientY - rect.top;
-      // klinecharts v10: convertFromPixel
-      const price = chart.convertFromPixel?.({ y }, { paneId: "candle_pane" })?.value;
-      if (!price || price <= 0) return;
+      const chartHeight = rect.height * 0.78; // K线主图区域约占78%（剩余是成交量）
+      const ratio = Math.max(0, Math.min(1, y / chartHeight));
+      const price = maxPrice - ratio * (maxPrice - minPrice);
+      if (price <= 0) { setBuyMode(false); return; }
 
       const entry = +price.toFixed(2);
       const supports = patternData?.supports ?? [];
@@ -147,7 +157,7 @@ export function WatchlistChart({ tsCode, sectorCode, stockName, activeTool, onSe
       container.removeEventListener("click", onClick);
       window.removeEventListener("keydown", onKeyDown);
     };
-  }, [buyMode, patternData]);
+  }, [buyMode, stockData, patternData]);
 
   // 画线事件
   useEffect(() => {
