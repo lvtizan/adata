@@ -13,47 +13,12 @@ interface Tool {
   icon: string;
 }
 
-const TOOL_GROUPS: { title: string; tools: Tool[] }[] = [
-  {
-    title: "直线",
-    tools: [
-      { name: "horizontalStraightLine", label: "水平线", icon: "─" },
-      { name: "horizontalSegment", label: "水平线段", icon: "_" },
-      { name: "verticalStraightLine", label: "垂直线", icon: "│" },
-      { name: "verticalSegment", label: "垂直线段", icon: "!" },
-      { name: "straightLine", label: "直线", icon: "╲" },
-      { name: "rayLine", label: "射线", icon: "↗" },
-      { name: "segment", label: "线段", icon: "—" },
-    ],
-  },
-  {
-    title: "定位",
-    tools: [
-      { name: "horizontalRayLine", label: "水平射线", icon: "→" },
-      { name: "verticalRayLine", label: "垂直射线", icon: "I" },
-      { name: "priceLine", label: "价格线", icon: "=" },
-    ],
-  },
-  {
-    title: "通道",
-    tools: [
-      { name: "priceChannelLine", label: "价格通道", icon: "⊏" },
-      { name: "parallelStraightLine", label: "平行线", icon: "∥" },
-    ],
-  },
-  {
-    title: "斐波那契",
-    tools: [
-      { name: "fibonacciLine", label: "斐波那契", icon: "F" },
-    ],
-  },
-  {
-    title: "标注",
-    tools: [
-      { name: "simpleAnnotation", label: "标注", icon: "📌" },
-      { name: "simpleTag", label: "标签", icon: "🏷" },
-    ],
-  },
+const TOOLS: Tool[] = [
+  { name: "horizontalStraightLine", label: "水平线", icon: "直线" },
+  { name: "segment", label: "线段", icon: "线段" },
+  { name: "rayLine", label: "射线", icon: "射线" },
+  { name: "rect", label: "箱体", icon: "箱体" },
+  { name: "simpleAnnotation", label: "标注", icon: "标注" },
 ];
 
 interface DrawingToolbarProps {
@@ -71,6 +36,7 @@ interface DrawingToolbarProps {
   onAddSupportTemplate: () => void;
   onAddResistanceTemplate: () => void;
   onAddTagTemplate: () => void;
+  onAddBuyEntry?: () => void;
 }
 
 export function DrawingToolbar({
@@ -88,72 +54,52 @@ export function DrawingToolbar({
   onAddSupportTemplate,
   onAddResistanceTemplate,
   onAddTagTemplate,
+  onAddBuyEntry,
 }: DrawingToolbarProps) {
   return (
-    <div className="flex items-center gap-0.5 px-1">
+    <div className="flex items-center gap-1 px-2 flex-wrap">
       <>
-        {TOOL_GROUPS.map((group) => (
-          <div key={group.title} className="flex items-center gap-0.5 ml-0.5">
-            <span className="text-[9px] text-text-quaternary px-0.5">{group.title}</span>
-            {group.tools.map((tool) => (
-              <button
-                key={tool.name}
-                onClick={() => onToolSelect(activeTool === tool.name ? null : tool.name)}
-                className={cn(
-                  "w-7 h-7 flex items-center justify-center rounded text-xs transition-colors",
-                  "border hover:bg-surface-hover",
-                  activeTool === tool.name
-                    ? "bg-accent/15 border-accent/40 text-accent"
-                    : "border-transparent text-text-secondary"
-                )}
-                title={tool.label}
-              >
-                {tool.icon}
-              </button>
-            ))}
-          </div>
+        {/* 画线工具 */}
+        {TOOLS.map((tool) => (
+          <button
+            key={tool.name}
+            onClick={() => onToolSelect(activeTool === tool.name ? null : tool.name)}
+            className={cn(
+              "px-2 h-7 text-[11px] rounded border transition-colors whitespace-nowrap",
+              activeTool === tool.name
+                ? "bg-accent/15 border-accent/40 text-accent font-medium"
+                : "border-border-default text-text-secondary hover:bg-surface-hover"
+            )}
+            title={tool.label}
+          >
+            {tool.icon}
+          </button>
         ))}
 
-        <div className="flex items-center gap-0.5 ml-1">
-          <span className="text-[9px] text-text-quaternary px-0.5">模板</span>
-          <button onClick={onAddSupportTemplate} className="px-2 h-7 text-[10px] rounded border border-border-default text-emerald-600 hover:bg-emerald-500/10 transition-colors" title="按最新收盘价添加支撑线">支撑</button>
-          <button onClick={onAddResistanceTemplate} className="px-2 h-7 text-[10px] rounded border border-border-default text-rose-600 hover:bg-rose-500/10 transition-colors" title="按最新收盘价添加阻力线">阻力</button>
-          <button onClick={onAddTagTemplate} className="px-2 h-7 text-[10px] rounded border border-border-default text-text-secondary hover:bg-surface-hover transition-colors" title="按最新K线添加价格标签">标签</button>
-        </div>
+        <div className="w-px h-5 bg-border-default mx-1" />
 
-        <button
-          onClick={() => onToolSelect(null)}
-          className="ml-1 px-2 h-7 text-[10px] rounded border border-border-default text-text-secondary hover:bg-surface-hover transition-colors"
-          title="退出当前画线工具"
-        >
-          取消
-        </button>
-        <button
-          onClick={onToggleLock}
-          className="px-2 h-7 text-[10px] rounded border border-border-default text-text-secondary hover:bg-surface-hover transition-colors"
-          title="锁定或解锁当前选中画线"
-        >
-          {selectedOverlayId ? (selectedOverlayLocked ? "解锁" : "锁定") : "未选中"}
-        </button>
-        <button
-          onClick={onDeleteSelected}
-          className="px-2 h-7 text-[10px] rounded border border-border-default text-text-secondary hover:bg-surface-hover transition-colors"
-          title="删除当前选中画线"
-        >
-          删除
-        </button>
-        <button
-          onClick={onClearAll}
-          className="px-2 h-7 text-[10px] rounded border border-border-default text-state-down hover:bg-state-down/10 transition-colors"
-          title="清空当前股票全部画线"
-        >
-          清空
-        </button>
+        {/* 快捷模板 */}
+        <button onClick={onAddSupportTemplate} className="px-2 h-7 text-[11px] rounded border border-border-default text-emerald-600 hover:bg-emerald-500/10 transition-colors" title="按最新收盘价添加支撑线">支撑</button>
+        <button onClick={onAddResistanceTemplate} className="px-2 h-7 text-[11px] rounded border border-border-default text-rose-600 hover:bg-rose-500/10 transition-colors" title="按最新收盘价添加阻力线">阻力</button>
+        <button onClick={onAddTagTemplate} className="px-2 h-7 text-[11px] rounded border border-border-default text-text-secondary hover:bg-surface-hover transition-colors" title="按最新K线添加价格标签">标签</button>
+        {onAddBuyEntry && (
+          <button onClick={onAddBuyEntry} className="px-2 h-7 text-[11px] rounded border border-amber-500/50 text-amber-600 font-medium hover:bg-amber-500/10 transition-colors" title="画买入线，自动生成止损止盈">买入</button>
+        )}
 
-        <div className="ml-2 flex items-center gap-1 text-[10px] text-text-tertiary">
-          <span>{overlays.length} 条</span>
-          {selectedOverlayName ? <span>已选: {selectedOverlayName}</span> : <span>未选中</span>}
-        </div>
+        <div className="w-px h-5 bg-border-default mx-1" />
+
+        <button onClick={() => onToolSelect(null)} className="px-2 h-7 text-[11px] rounded border border-border-default text-text-secondary hover:bg-surface-hover transition-colors" title="退出当前画线工具">取消</button>
+        {selectedOverlayId && (
+          <>
+            <button onClick={onToggleLock} className="px-2 h-7 text-[11px] rounded border border-border-default text-text-secondary hover:bg-surface-hover transition-colors">
+              {selectedOverlayLocked ? "解锁" : "锁定"}
+            </button>
+            <button onClick={onDeleteSelected} className="px-2 h-7 text-[11px] rounded border border-border-default text-text-secondary hover:bg-surface-hover transition-colors">删除</button>
+          </>
+        )}
+        <button onClick={onClearAll} className="px-2 h-7 text-[11px] rounded border border-border-default text-state-down hover:bg-state-down/10 transition-colors" title="清空全部画线">清空</button>
+
+        <span className="ml-1 text-[10px] text-text-quaternary">{overlays.length} 条{selectedOverlayName ? ` · ${selectedOverlayName}` : ""}</span>
       </>
 
       {overlays.length > 0 && (

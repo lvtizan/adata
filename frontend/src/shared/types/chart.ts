@@ -11,10 +11,36 @@ export interface CandlePoint {
   ma20?: number | null;
 }
 
+// 冯总交易系统信号类型
+// 信号链: 支撑位止跌 → H1(首次反包) → 回调 → H2(W底确认)
+export interface FengSignalPoint {
+  date: string;
+  price: number;
+  label: string;          // "止跌★5", "H1", "H2(W)"
+  type: "stopDecline" | "h1" | "h2_w";
+}
+
+export interface FengBuySignal {
+  type: "buy";
+  date: string;
+  price: number;
+  pattern: string;
+  patternLabel: string;
+  stopLoss: number;
+  takeProfit: number;
+  riskReward: number;
+}
+
+export interface FengSignals {
+  signals: FengSignalPoint[];
+  buySignals: FengBuySignal[];
+}
+
 export interface ChartData {
   code: string;
   name: string;
   points: CandlePoint[];
+  fengSignals?: FengSignals;
 }
 
 export interface RpsSeries {

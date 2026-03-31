@@ -1633,6 +1633,40 @@ class MarketEngine:
             )
         return out
 
+    def stock_kline_ashare(self, ts_code: str, frequency: str = "1d", bars: int = 180) -> dict[str, Any]:
+        """用 Ashare 获取日/周/月线（支持盘中实时）"""
+        try:
+            from ashare import get_price
+        except ImportError:
+            logger.warning("Ashare 未安装")
+            return {"code": ts_code, "name": ts_code, "points": []}
+        # ts_code 格式: 600519.SH → sh600519
+        pure = ts_code.split(".")[0]
+        suffix = ts_code.split(".")[-1] if "." in ts_code else ""
+        prefix = "sh" if suffix == "SH" else "sz" if suffix == "SZ" else ""
+        ashare_code = prefix + pure
+        try:
+            df = get_price(ashare_code, frequency=frequency, count=bars)
+        except Exception as exc:
+            logger.warning(f"Ashare 获取失败: {ts_code} {frequency}, {exc}")
+            return {"code": ts_code, "name": ts_code, "points": []}
+        if df is None or df.empty:
+            return {"code": ts_code, "name": ts_code, "points": []}
+        name = self.stock_name_map().get(ts_code, ts_code)
+        points = []
+        for idx_time, r in df.iterrows():
+            t = idx_time.strftime("%Y%m%d") if hasattr(idx_time, "strftime") else str(idx_time)[:10].replace("-", "")
+            points.append({
+                "time": t,
+                "open": float(r["open"]),
+                "high": float(r["high"]),
+                "low": float(r["low"]),
+                "close": float(r["close"]),
+                "volume": float(r["volume"]),
+                "amount": 0.0,
+            })
+        return {"code": ts_code, "name": name, "points": points, "frequency": frequency}
+
     def stock_kline(self, ts_code: str, trade_date: str, bars: int = 180) -> dict[str, Any]:
         dates = self.trade_dates(trade_date, need=max(bars + 30, 220))
         start = dates[-bars] if len(dates) >= bars else dates[0]
@@ -1671,7 +1705,15 @@ class MarketEngine:
                     "ma20": float(r["ma20"]) if pd.notna(r["ma20"]) else None,
                 }
             )
-        return {"code": ts_code, "name": name, "points": points}
+        # 冯总交易信号检测
+        feng_signals = {}
+        try:
+            from pattern_detector import detect_feng_signals
+            feng_signals = detect_feng_signals(df)
+        except Exception as exc:
+            logger.debug(f"冯总信号检测异常: {exc}")
+
+        return {"code": ts_code, "name": name, "points": points, "fengSignals": feng_signals}
 
     def sector_kline(self, sector_code: str, trade_date: str, bars: int = 180) -> dict[str, Any]:
         dates = self.trade_dates(trade_date, need=max(bars + 30, 220))

@@ -216,8 +216,8 @@ def _analyze_trend(high: np.ndarray, low: np.ndarray, close: np.ndarray,
         "upScore": up_score,
         "downScore": down_score,
         "maAlignment": ma_alignment,
-        "aboveMa20": current > ma20,
-        "aboveMa60": current > ma60,
+        "aboveMa20": bool(current > ma20),
+        "aboveMa60": bool(current > ma60),
     }
 
 

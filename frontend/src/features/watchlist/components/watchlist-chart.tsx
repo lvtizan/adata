@@ -402,9 +402,16 @@ function RsPip({ rsData, stockName, isDark, emptyReason }: RsPipProps) {
 //  主图组件
 // ═══════════════════════════════════════
 
+const FREQ_OPTIONS = [
+  { value: "1d", label: "日" },
+  { value: "1w", label: "周" },
+  { value: "1M", label: "月" },
+] as const;
+
 export function WatchlistChart({ tsCode, sectorCode, stockName, activeTool, onSelectionChange, onDrawingsChange }: WatchlistChartProps) {
   const theme = useAppStore((s) => s.theme);
   const isDark = theme === "dark";
+  const [frequency, setFrequency] = useState<string>("1d");
 
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<Chart | null>(null);
@@ -416,7 +423,8 @@ export function WatchlistChart({ tsCode, sectorCode, stockName, activeTool, onSe
   const selectedOverlayLockedRef = useRef(false);
   const [saveTick, setSaveTick] = useState(0);
 
-  const { data: stockData, isLoading: stockLoading, error: stockError } = useStockChart(tsCode);
+  const barsMap: Record<string, number> = { "1d": 120, "1w": 104, "1M": 60 };
+  const { data: stockData, isLoading: stockLoading, error: stockError } = useStockChart(tsCode, barsMap[frequency] ?? 120, frequency);
   const { data: rsData } = useRelativeStrength(tsCode, sectorCode);
   const { data: patternData } = useStockPatterns(tsCode);
   const { data: drawingsDoc } = useChartDrawings(tsCode, "stock", "1d");
@@ -577,9 +585,9 @@ export function WatchlistChart({ tsCode, sectorCode, stockName, activeTool, onSe
             points: [{ value: sup.price }],
             extendData: {
               text: `支撑 x${sup.count}`,
-              color: "#16a34a",
-              backgroundColor: "rgba(34, 197, 94, 0.12)",
-              borderColor: "rgba(34, 197, 94, 0.35)",
+              color: "#ffffff",
+              backgroundColor: "rgba(34, 197, 94, 0.85)",
+              borderColor: "rgba(34, 197, 94, 0.9)",
             },
             lock: true,
           });
@@ -604,9 +612,9 @@ export function WatchlistChart({ tsCode, sectorCode, stockName, activeTool, onSe
             points: [{ value: res.price }],
             extendData: {
               text: `压力 x${res.count}`,
-              color: "#dc2626",
-              backgroundColor: "rgba(239, 68, 68, 0.12)",
-              borderColor: "rgba(239, 68, 68, 0.35)",
+              color: "#ffffff",
+              backgroundColor: "rgba(239, 68, 68, 0.85)",
+              borderColor: "rgba(239, 68, 68, 0.9)",
             },
             lock: true,
           });
@@ -626,23 +634,6 @@ export function WatchlistChart({ tsCode, sectorCode, stockName, activeTool, onSe
         }
       }
 
-      // ── HH 信号标注 ──
-      if (patternData?.signals) {
-        for (const s of patternData.signals) {
-          if (!s.date) continue;
-          const isBuy = !!s.buySignal;
-          const text = isBuy ? `${s.type}★` : s.type;
-
-          chart.createOverlay({
-            name: "hhMarker",
-            groupId: SYSTEM_OVERLAY_GROUP,
-            points: [{ timestamp: toTs(s.date), value: s.price }],
-            extendData: text,
-            lock: true,
-          });
-        }
-      }
-
       // ── 回撤标注 ──
       if (patternData?.drawdowns) {
         for (const dd of patternData.drawdowns) {
@@ -656,6 +647,35 @@ export function WatchlistChart({ tsCode, sectorCode, stockName, activeTool, onSe
           });
         }
       }
+
+      // ── 冯总交易信号标注（信号链: 止跌→H1→H2(W)）──
+      const feng = stockData.fengSignals;
+      if (feng) {
+        const overlayMap: Record<string, string> = { stopDecline: "fengStopDecline", h1: "hhMarker", h2_w: "fengDoubleBottom" };
+        for (const s of feng.signals ?? []) {
+          const ts = toTs(s.date);
+          if (!ts) continue;
+          if (s.type === "h2_w") {
+            chart.createOverlay({ name: "fengDoubleBottom", groupId: SYSTEM_OVERLAY_GROUP, points: [{ timestamp: ts, value: s.price }], lock: true });
+          } else {
+            const name = overlayMap[s.type] || "fengStopDecline";
+            chart.createOverlay({ name, groupId: SYSTEM_OVERLAY_GROUP, points: [{ timestamp: ts, value: s.price }], extendData: s.label, lock: true });
+          }
+        }
+        // 仅最近一个买入信号画止损止盈线
+        const buys = feng.buySignals ?? [];
+        if (buys.length > 0) {
+          const buy = buys[buys.length - 1];
+          const ts = toTs(buy.date);
+          if (ts) {
+            chart.createOverlay({ name: "fengBuy", groupId: SYSTEM_OVERLAY_GROUP, points: [{ timestamp: ts, value: buy.price }], extendData: `B ${buy.patternLabel}`, lock: true });
+            chart.createOverlay({ name: "horizontalStraightLine", groupId: SYSTEM_OVERLAY_GROUP, points: [{ value: buy.stopLoss }], styles: { line: { color: "#F44336", size: 1, style: "dashed" as const } }, lock: true });
+            chart.createOverlay({ name: "levelTag", groupId: SYSTEM_OVERLAY_GROUP, points: [{ value: buy.stopLoss }], extendData: { text: `止损 ${buy.stopLoss}`, color: "#ffffff", backgroundColor: "rgba(239,68,68,0.85)", borderColor: "rgba(239,68,68,0.9)" }, lock: true });
+            chart.createOverlay({ name: "horizontalStraightLine", groupId: SYSTEM_OVERLAY_GROUP, points: [{ value: buy.takeProfit }], styles: { line: { color: "#4CAF50", size: 1, style: "dashed" as const } }, lock: true });
+            chart.createOverlay({ name: "levelTag", groupId: SYSTEM_OVERLAY_GROUP, points: [{ value: buy.takeProfit }], extendData: { text: `止盈 ${buy.takeProfit} (2R)`, color: "#ffffff", backgroundColor: "rgba(34,197,94,0.85)", borderColor: "rgba(34,197,94,0.9)" }, lock: true });
+          }
+        }
+      }
     }
 
     return () => {
@@ -667,7 +687,7 @@ export function WatchlistChart({ tsCode, sectorCode, stockName, activeTool, onSe
       dispose(el);
       chartRef.current = null;
     };
-  }, [tsCode, stockData, patternData, isDark]);
+  }, [tsCode, stockData, patternData, isDark, frequency]);
 
   useEffect(() => {
     const chart = chartRef.current as any;
@@ -758,6 +778,59 @@ export function WatchlistChart({ tsCode, sectorCode, stockName, activeTool, onSe
         }
         setSaveTick((n) => n + 1);
       }
+      // ── 买入划线：用户点击图表选入场价，自动算止损止盈 ──
+      if (detail.action === "addBuyEntry") {
+        // 创建一条 priceLine，用户点击图上选择价位
+        const buyId = `buy-entry-${Date.now()}`;
+        chart.createOverlay({
+          id: buyId,
+          name: "priceLine",
+          styles: { line: { color: "#3b82f6", size: 1.5, style: "solid" as const } },
+          onComplete: (params: any) => {
+            // 用户点击完成后，读取选择的价格
+            const entryPrice = params?.overlay?.points?.[0]?.value;
+            if (!entryPrice || entryPrice <= 0) return;
+            const entry = +entryPrice.toFixed(2);
+            // 找最近的支撑位作为止损
+            const supports = patternData?.supports ?? [];
+            const belowSupports = supports.filter((s: any) => s.price < entry).sort((a: any, b: any) => b.price - a.price);
+            const slPrice = belowSupports.length > 0 ? +belowSupports[0].price.toFixed(2) : +(entry * 0.95).toFixed(2);
+            const risk = entry - slPrice;
+            if (risk <= 0) return;
+            const tpPrice = +(entry + risk * 2).toFixed(2);
+            // 画止损线
+            chart.createOverlay({
+              id: `buy-sl-${Date.now()}`, name: "horizontalStraightLine", lock: true,
+              points: [{ value: slPrice }],
+              styles: { line: { color: "#ef4444", size: 1, style: "dashed" as const } },
+            });
+            chart.createOverlay({
+              name: "levelTag", lock: true,
+              points: [{ value: slPrice }],
+              extendData: { text: `止损 ${slPrice}`, color: "#ffffff", backgroundColor: "rgba(239,68,68,0.85)", borderColor: "rgba(239,68,68,0.9)" },
+            });
+            // 画止盈线
+            chart.createOverlay({
+              id: `buy-tp-${Date.now()}`, name: "horizontalStraightLine", lock: true,
+              points: [{ value: tpPrice }],
+              styles: { line: { color: "#22c55e", size: 1, style: "dashed" as const } },
+            });
+            chart.createOverlay({
+              name: "levelTag", lock: true,
+              points: [{ value: tpPrice }],
+              extendData: { text: `止盈 ${tpPrice} (2R)`, color: "#ffffff", backgroundColor: "rgba(34,197,94,0.85)", borderColor: "rgba(34,197,94,0.9)" },
+            });
+            // 入场价标签
+            chart.createOverlay({
+              name: "levelTag", lock: true,
+              points: [{ value: entry }],
+              extendData: { text: `入场 ${entry}`, color: "#ffffff", backgroundColor: "rgba(59,130,246,0.85)", borderColor: "rgba(59,130,246,0.9)" },
+            });
+            setSaveTick((n) => n + 1);
+          },
+        });
+      }
+
       if (detail.action === "addSupportAtClose" || detail.action === "addResistanceAtClose" || detail.action === "addTagAtLatest") {
         const latest = stockData?.points?.[stockData.points.length - 1];
         if (!latest) return;
@@ -792,10 +865,30 @@ export function WatchlistChart({ tsCode, sectorCode, stockName, activeTool, onSe
     };
     window.addEventListener(`chart-drawing:${tsCode}`, handler as EventListener);
     return () => window.removeEventListener(`chart-drawing:${tsCode}`, handler as EventListener);
-  }, [snapshotOverlays, tsCode, updateSelection, emitDrawingsChange, stockData, buildOverlayCallbacks]);
+  }, [snapshotOverlays, tsCode, updateSelection, emitDrawingsChange, stockData, patternData, buildOverlayCallbacks]);
 
   return (
     <div className="flex flex-col h-full">
+      {/* 日/周/月切换 */}
+      <div className="flex items-center gap-1 px-2 py-1 border-b border-border-default shrink-0">
+        {FREQ_OPTIONS.map((opt) => (
+          <button
+            key={opt.value}
+            onClick={() => setFrequency(opt.value)}
+            className={`px-2.5 py-0.5 text-xs rounded transition-colors ${
+              frequency === opt.value
+                ? "bg-accent/15 text-accent font-medium"
+                : "text-text-secondary hover:text-text-primary hover:bg-surface-hover"
+            }`}
+          >
+            {opt.label}
+          </button>
+        ))}
+        <span className="text-[10px] text-text-quaternary ml-1">
+          {frequency === "1d" ? "日线" : frequency === "1w" ? "周线" : "月线"}
+          {frequency !== "1d" && " · Ashare实时"}
+        </span>
+      </div>
       <div className="relative flex-1 min-h-0">
         {loading && (
           <div className="absolute inset-0 flex items-center justify-center text-text-tertiary text-sm z-10 bg-canvas/80">

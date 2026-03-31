@@ -6,7 +6,6 @@ import { fmtPct } from "@/shared/utils/format";
 import { WatchlistChart } from "@/features/watchlist/components/watchlist-chart";
 import { AttributionPanel } from "@/features/chart/components/attribution-panel";
 import { StockTagsPanel } from "@/features/chart/components/stock-tags-panel";
-import { HHStatsPanel } from "@/features/chart/components/hh-stats-panel";
 import { DrawingToolbar } from "@/features/chart/components/drawing-toolbar";
 import { DrawingsPanel } from "@/features/chart/components/drawings-panel";
 import { Button } from "@/shared/ui/button";
@@ -228,6 +227,7 @@ export default function WatchlistPage() {
                 onAddSupportTemplate={() => emitDrawingAction("addSupportAtClose")}
                 onAddResistanceTemplate={() => emitDrawingAction("addResistanceAtClose")}
                 onAddTagTemplate={() => emitDrawingAction("addTagAtLatest")}
+                onAddBuyEntry={() => emitDrawingAction("addBuyEntry")}
               />
             </div>
 
@@ -269,12 +269,6 @@ export default function WatchlistPage() {
               key={`attr-${selected.tsCode}`}
               tsCode={selected.tsCode}
             />
-            <div className="border-t border-border-default pt-3">
-              <HHStatsPanel
-                key={`hh-${selected.tsCode}`}
-                tsCode={selected.tsCode}
-              />
-            </div>
             <div className="border-t border-border-default pt-3">
               <StockTagsPanel
                 key={`tags-full-${selected.tsCode}`}

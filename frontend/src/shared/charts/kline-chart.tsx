@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import { init, dispose, registerOverlay, type Chart } from "klinecharts";
 import { useAppStore } from "@/store";
 import { getKLineStyles, dateToTimestamp } from "@/app/theme/chart-theme";
-import type { CandlePoint } from "@/shared/types";
+import type { CandlePoint, FengSignals } from "@/shared/types";
 import type { PatternSignal, DrawdownMarker } from "@/services";
 import type { SupportLevel, ResistanceLevel } from "@/services/stock.service";
 
@@ -17,6 +17,7 @@ interface KlineChartProps {
   drawdowns?: DrawdownMarker[];
   supports?: SupportLevel[];
   resistances?: ResistanceLevel[];
+  fengSignals?: FengSignals;
 }
 
 function toTs(v: string): number {
@@ -160,6 +161,85 @@ function ensureCustomOverlays() {
       ];
     },
   });
+
+  // 冯总系统: W底标记（橙色 W）
+  registerOverlay({
+    name: "fengDoubleBottom",
+    needDefaultPointFigure: false,
+    needDefaultXAxisFigure: false,
+    needDefaultYAxisFigure: false,
+    totalStep: 1,
+    createPointFigures: ({ coordinates }) => {
+      const point = coordinates[0];
+      if (!point) return [];
+      return [{
+        type: "text",
+        attrs: { x: point.x, y: point.y + 10, text: "W", align: "center" as const, baseline: "top" as const },
+        styles: { color: "#FF9800", size: 13, weight: 800 },
+        ignoreEvent: true,
+      }];
+    },
+  });
+
+  // 冯总系统: 阳阴阳（蓝色标注）
+  registerOverlay({
+    name: "fengYYY",
+    needDefaultPointFigure: false,
+    needDefaultXAxisFigure: false,
+    needDefaultYAxisFigure: false,
+    totalStep: 1,
+    createPointFigures: ({ overlay, coordinates }) => {
+      const point = coordinates[0];
+      if (!point) return [];
+      const text = typeof overlay.extendData === "string" ? overlay.extendData : "YYY";
+      return [{
+        type: "text",
+        attrs: { x: point.x, y: point.y + 14, text, align: "center" as const, baseline: "top" as const },
+        styles: { color: "#2196F3", size: 9, weight: 700 },
+        ignoreEvent: true,
+      }];
+    },
+  });
+
+  // 冯总系统: 止跌K线星标（金色）
+  registerOverlay({
+    name: "fengStopDecline",
+    needDefaultPointFigure: false,
+    needDefaultXAxisFigure: false,
+    needDefaultYAxisFigure: false,
+    totalStep: 1,
+    createPointFigures: ({ overlay, coordinates }) => {
+      const point = coordinates[0];
+      if (!point) return [];
+      const text = typeof overlay.extendData === "string" ? overlay.extendData : "";
+      return [{
+        type: "text",
+        attrs: { x: point.x, y: point.y + 12, text, align: "center" as const, baseline: "top" as const },
+        styles: { color: "#FFC107", size: 10, weight: 700 },
+        ignoreEvent: true,
+      }];
+    },
+  });
+
+  // 冯总系统: 买入信号 B（绿色）
+  registerOverlay({
+    name: "fengBuy",
+    needDefaultPointFigure: false,
+    needDefaultXAxisFigure: false,
+    needDefaultYAxisFigure: false,
+    totalStep: 1,
+    createPointFigures: ({ overlay, coordinates }) => {
+      const point = coordinates[0];
+      if (!point) return [];
+      const label = typeof overlay.extendData === "string" ? overlay.extendData : "B";
+      return [{
+        type: "text",
+        attrs: { x: point.x, y: point.y + 16, text: label, align: "center" as const, baseline: "top" as const },
+        styles: { color: "#4CAF50", size: 12, weight: 800 },
+        ignoreEvent: true,
+      }];
+    },
+  });
 }
 
 function loadChartData(chart: Chart, symbol: string, data: Array<{
@@ -187,7 +267,7 @@ function loadChartData(chart: Chart, symbol: string, data: Array<{
   chart.scrollToRealTime();
 }
 
-export function KlineChart({ points, height, showVolume = true, signals, drawdowns, supports, resistances }: KlineChartProps) {
+export function KlineChart({ points, height, showVolume = true, signals, drawdowns, supports, resistances, fengSignals }: KlineChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<Chart | null>(null);
   const theme = useAppStore((s) => s.theme);
@@ -318,12 +398,41 @@ export function KlineChart({ points, height, showVolume = true, signals, drawdow
       }
     }
 
+    // ── 冯总交易信号标注（信号链: 止跌→H1→H2(W)）──
+    if (fengSignals) {
+      const overlayMap: Record<string, string> = { stopDecline: "fengStopDecline", h1: "hhMarker", h2_w: "fengDoubleBottom" };
+      for (const s of fengSignals.signals ?? []) {
+        const ts = toTs(s.date);
+        if (!ts) continue;
+        if (s.type === "h2_w") {
+          // W底：只在K线下方显示一个 W
+          chart.createOverlay({ name: "fengDoubleBottom", points: [{ timestamp: ts, value: s.price }], lock: true });
+        } else {
+          const name = overlayMap[s.type] || "fengStopDecline";
+          chart.createOverlay({ name, points: [{ timestamp: ts, value: s.price }], extendData: s.label, lock: true });
+        }
+      }
+      // 仅最近一个买入信号画止损止盈线
+      const buys = fengSignals.buySignals ?? [];
+      if (buys.length > 0) {
+        const buy = buys[buys.length - 1];
+        const ts = toTs(buy.date);
+        if (ts) {
+          chart.createOverlay({ name: "fengBuy", points: [{ timestamp: ts, value: buy.price }], extendData: `B ${buy.patternLabel}`, lock: true });
+          chart.createOverlay({ name: "horizontalStraightLine", points: [{ value: buy.stopLoss }], styles: { line: { color: "#F44336", size: 1, style: "dashed" as const } }, lock: true });
+          chart.createOverlay({ name: "levelTag", points: [{ value: buy.stopLoss }], extendData: { text: `止损 ${buy.stopLoss}`, color: "#ffffff", backgroundColor: "rgba(239,68,68,0.85)", borderColor: "rgba(239,68,68,0.9)" }, lock: true });
+          chart.createOverlay({ name: "horizontalStraightLine", points: [{ value: buy.takeProfit }], styles: { line: { color: "#4CAF50", size: 1, style: "dashed" as const } }, lock: true });
+          chart.createOverlay({ name: "levelTag", points: [{ value: buy.takeProfit }], extendData: { text: `止盈 ${buy.takeProfit} (2R)`, color: "#ffffff", backgroundColor: "rgba(34,197,94,0.85)", borderColor: "rgba(34,197,94,0.9)" }, lock: true });
+        }
+      }
+    }
+
     return () => {
       observer.disconnect();
       dispose(el);
       chartRef.current = null;
     };
-  }, [points, height, showVolume, isDark, signals, drawdowns, supports, resistances]);
+  }, [points, height, showVolume, isDark, signals, drawdowns, supports, resistances, fengSignals]);
 
   return <div ref={containerRef} className="w-full" style={height ? { height } : { height: "100%" }} />;
 }

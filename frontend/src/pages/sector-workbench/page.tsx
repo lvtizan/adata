@@ -6,7 +6,6 @@ import { fmtPct } from "@/shared/utils/format";
 import { WatchlistChart } from "@/features/watchlist/components/watchlist-chart";
 import { AttributionPanel } from "@/features/chart/components/attribution-panel";
 import { StockTagsPanel } from "@/features/chart/components/stock-tags-panel";
-import { HHStatsPanel } from "@/features/chart/components/hh-stats-panel";
 import { DrawingToolbar } from "@/features/chart/components/drawing-toolbar";
 import { DrawingsPanel } from "@/features/chart/components/drawings-panel";
 import { Button } from "@/shared/ui/button";
@@ -257,7 +256,6 @@ export default function SectorWorkbenchPage() {
                 navigate("/dashboard");
               }}
             />
-            <HHStatsPanel key={`sector-hh-${selected.tsCode}`} tsCode={selected.tsCode} />
           </div>
         ) : (
           <div className="flex-1 flex items-center justify-center text-text-tertiary">选择股票后显示详情</div>

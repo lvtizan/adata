@@ -44,10 +44,25 @@ warmup_thread = threading.Thread(target=engine.warmup, daemon=True, name="Warmup
 warmup_thread.start()
 
 
+class _NumpyEncoder(json.JSONEncoder):
+    """处理 numpy 类型的 JSON 序列化"""
+    def default(self, o):
+        import numpy as np
+        if isinstance(o, (np.integer,)):
+            return int(o)
+        if isinstance(o, (np.floating,)):
+            return float(o)
+        if isinstance(o, (np.bool_,)):
+            return bool(o)
+        if isinstance(o, np.ndarray):
+            return o.tolist()
+        return super().default(o)
+
+
 def json_response(handler: BaseHTTPRequestHandler, obj: Any, code: int = 200) -> None:
     """发送JSON响应"""
     try:
-        payload = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+        payload = json.dumps(obj, ensure_ascii=False, cls=_NumpyEncoder).encode("utf-8")
         handler.send_response(code)
         handler.send_header("Content-Type", "application/json; charset=utf-8")
         handler.send_header("Content-Length", str(len(payload)))
@@ -212,10 +227,14 @@ class Handler(BaseHTTPRequestHandler):
                 {"sectorCode": sector_code, "items": engine.sector_stocks(sector_code, trade_date, sort_by=sort_by)},
             )
 
-        # 个股K线API
+        # 个股K线API（支持 frequency=1d/1w/1M）
         if path.startswith("/api/charts/stock/"):
             ts_code = path.split("/")[4]
             bars = int(q.get("bars", ["180"])[0])
+            frequency = q.get("frequency", ["1d"])[0]
+            if frequency in ("1w", "1M"):
+                logger.debug(f"获取个股K线(Ashare): {ts_code}, freq={frequency}, bars={bars}")
+                return json_response(self, engine.stock_kline_ashare(ts_code, frequency, bars=bars))
             logger.debug(f"获取个股K线: {ts_code}, {trade_date}, bars={bars}")
             return json_response(self, engine.stock_kline(ts_code, trade_date, bars=bars))
 

@@ -1,10 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
 import { getStockChart, getSectorChart, getRelativeStrength } from "@/services";
 
-export function useStockChart(tsCode: string, bars = 120) {
+export function useStockChart(tsCode: string, bars = 120, frequency = "1d") {
   return useQuery({
-    queryKey: ["chart", "stock", tsCode, bars],
-    queryFn: () => getStockChart(tsCode, bars),
+    queryKey: ["chart", "stock", tsCode, bars, frequency],
+    queryFn: () => getStockChart(tsCode, bars, frequency),
     enabled: !!tsCode,
     staleTime: 60_000,
   });
