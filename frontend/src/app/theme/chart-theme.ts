@@ -53,12 +53,12 @@ export function getKLineStyles(isDark: boolean): Record<string, any> {
         high: { show: true, color: p.text, textSize: 10 },
         low: { show: true, color: p.text, textSize: 10 },
         last: {
-          show: true,
+          show: false,
           upColor: "#26a69a",
           downColor: "#ef5350",
           noChangeColor: p.text,
-          line: { show: true, style: "dashed" as const, size: 1 },
-          text: { show: true, size: 10, paddingLeft: 4, paddingRight: 4, paddingTop: 2, paddingBottom: 2, borderRadius: 2 },
+          line: { show: false, style: "dashed" as const, size: 1 },
+          text: { show: false, size: 10, paddingLeft: 4, paddingRight: 4, paddingTop: 2, paddingBottom: 2, borderRadius: 2 },
         },
       },
       tooltip: {

@@ -1214,47 +1214,42 @@ def detect_feng_signals(df: pd.DataFrame) -> dict[str, Any]:
 
     signals: list[dict[str, Any]] = []
     buy_signals: list[dict[str, Any]] = []
+    used_bars: set[int] = set()  # 防止同一根K线被多个swing_high重复标记
 
     # ── Al Brooks 式 H1/H2 数法 ──
     #
     # 逻辑：扫描波段高点，高点之后价格回调到支撑位附近时，
     #        开始数 "今高>昨高" 的次数：
     #        第1次 = H1（第一次尝试反转）
-    #        H1 失败（价格继续跌或横盘）后第2次 = H2 = W底确认
-    #
-    # 波段高点用 swing_high 识别，回调低点必须靠近支撑位
+    #        H1 失败后第2次 = H2 = W底确认
+    #        H2 之后价格必须站稳（后3根不破W低点），否则不算
 
     swing_highs = _find_swing_highs(high_arr, window=5)
 
     for sh_idx, sh_price in swing_highs:
-        # 从每个波段高点开始向后扫描，寻找回调到支撑位的 H1/H2
-        h_count = 0       # 已数到第几个 H
+        h_count = 0
         h1_idx = -1
-        pullback_started = False
         pullback_low_price = sh_price
 
         for i in range(sh_idx + 1, min(sh_idx + 40, n)):
-            # 跟踪回调低点
             if low_arr[i] < pullback_low_price:
                 pullback_low_price = float(low_arr[i])
 
-            # 判断是否在回调中（从高点有任何下跌，但不超过40%）
             drop = (sh_price - low_arr[i]) / sh_price if sh_price > 0 else 0
             if drop > 0.40:
-                break  # 跌太多，不是正常回调
+                break
             if drop < 0.01:
-                continue  # 还没开始回调
+                continue
 
-            # 必须靠近支撑位才开始数
             if not _near_support(pullback_low_price, support_prices, 0.05):
                 continue
 
-            # 检测 "今高 > 昨高" = 一次反转尝试
             if _is_price_breakout(i, high_arr):
                 h_count += 1
 
-                if h_count == 1:
+                if h_count == 1 and i not in used_bars:
                     h1_idx = i
+                    used_bars.add(i)
                     signals.append({
                         "date": str(dates[i]),
                         "price": round(float(high_arr[i]), 2),
@@ -1262,16 +1257,27 @@ def detect_feng_signals(df: pd.DataFrame) -> dict[str, Any]:
                         "type": "h1",
                     })
 
-                elif h_count == 2:
-                    # H2 = W底确认
+                elif h_count == 2 and i not in used_bars:
+                    # 验证 W 底有效：后续 3 根 K 线不能跌破 W 的低点
+                    w_low = float(low_arr[i])
+                    valid_w = True
+                    for j in range(i + 1, min(i + 4, n)):
+                        if low_arr[j] < w_low * 0.99:  # 允许 1% 误差
+                            valid_w = False
+                            break
+                    if not valid_w:
+                        break  # W 失败，这个波段放弃
+
                     sl = round(float(pullback_low_price), 2)
                     entry = round(float(close_arr[i]), 2)
                     risk = entry - sl
                     if risk > 0:
                         tp = round(entry + risk * 2, 2)
+                        used_bars.add(i)
                         signals.append({
                             "date": str(dates[i]),
                             "price": round(float(low_arr[i]), 2),
+                            "highPrice": round(float(high_arr[i]), 2),
                             "label": "W",
                             "type": "h2_w",
                         })

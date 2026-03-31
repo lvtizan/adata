@@ -1,11 +1,58 @@
-import { useEffect, useRef, useCallback, useState } from "react";
-import { init, dispose, registerOverlay, type Chart } from "klinecharts";
+import { useEffect, useRef, useState, useCallback } from "react";
+import { type Chart } from "klinecharts";
 import { useStockChart, useRelativeStrength, useStockPatterns, useChartDrawings } from "@/queries";
-import { getKLineStyles, dateToTimestamp } from "@/app/theme/chart-theme";
 import { useAppStore } from "@/store";
-import { clearLocalDrawings, readLocalDrawings, sanitizeOverlay, writeLocalDrawings } from "@/lib/chart-drawings";
-import { clearChartDrawings, saveChartDrawings } from "@/services";
-import type { ChartDrawingOverlay } from "@/shared/types";
+import { KlineChart } from "@/shared/charts";
+import { clearLocalDrawings, readLocalDrawings, writeLocalDrawings } from "@/lib/chart-drawings";
+import { saveChartDrawings, clearChartDrawings } from "@/services";
+import type { ChartDrawingOverlay, RelativeStrengthData } from "@/shared/types";
+
+// ── RS 迷你双线图 ──
+function RsMiniChart({ rsData, stockName }: { rsData: RelativeStrengthData; stockName?: string }) {
+  const W = 150, H = 60;
+  const stockSeries = rsData.stock.rpsSeries;
+  const sectorSeries = rsData.sector.rpsSeries;
+  if (!stockSeries.length) return null;
+
+  const allValues = [...stockSeries.map((p) => p.value), ...sectorSeries.map((p) => p.value)];
+  const minV = Math.min(...allValues);
+  const maxV = Math.max(...allValues);
+  const range = maxV - minV || 1;
+
+  const toPath = (series: typeof stockSeries) =>
+    series.map((p, i) => {
+      const x = (i / Math.max(series.length - 1, 1)) * W;
+      const y = H - ((p.value - minV) / range) * H;
+      return `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`;
+    }).join(" ");
+
+  const stockPath = toPath(stockSeries);
+  const sectorPath = toPath(sectorSeries);
+  const lastStock = stockSeries[stockSeries.length - 1]?.value ?? 0;
+  const lastSector = sectorSeries[sectorSeries.length - 1]?.value ?? 0;
+
+  return (
+    <div
+      className="absolute z-20 rounded overflow-hidden opacity-70 hover:opacity-100 transition-opacity bg-canvas/90 border border-border-default p-2"
+      style={{ top: 38, left: 8, width: W + 20 }}
+    >
+      <div className="text-[10px] text-text-tertiary mb-0.5">RS 相对强度</div>
+      <svg width={W} height={H} className="block">
+        <path d={sectorPath} fill="none" stroke="#3b82f6" strokeWidth={1.2} opacity={0.6} />
+        <path d={stockPath} fill="none" stroke="#ef4444" strokeWidth={1.5} />
+      </svg>
+      <div className="flex items-center justify-between mt-1 text-[9px]">
+        <span className="text-state-up">{lastStock.toFixed(1)}</span>
+        <span className="text-text-quaternary">{rsData.summary.label}</span>
+        <span className="text-blue-500">{lastSector.toFixed(1)}</span>
+      </div>
+      <div className="flex items-center gap-2 mt-0.5 text-[9px] text-text-quaternary">
+        <span className="flex items-center gap-0.5"><span className="inline-block w-2 h-0.5 bg-red-500 rounded" />{stockName || rsData.stock.name}</span>
+        <span className="flex items-center gap-0.5"><span className="inline-block w-2 h-0.5 bg-blue-500 rounded" />{rsData.sector.name}</span>
+      </div>
+    </div>
+  );
+}
 
 interface WatchlistChartProps {
   tsCode: string;
@@ -16,410 +63,6 @@ interface WatchlistChartProps {
   onDrawingsChange?: (overlays: Array<{ id: string; name: string; lock: boolean; points: number; label?: string }>) => void;
 }
 
-function toTs(v: string): number {
-  return dateToTimestamp(v);
-}
-
-function loadChartData(chart: Chart, symbol: string, data: Array<{
-  timestamp: number;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  volume?: number;
-  turnover?: number;
-}>) {
-  chart.setSymbol({
-    ticker: symbol,
-    pricePrecision: 2,
-    volumePrecision: 0,
-  });
-  chart.setPeriod({ type: "day", span: 1 });
-  chart.setDataLoader({
-    getBars: ({ callback }) => {
-      callback(data, false);
-    },
-  });
-  chart.setOffsetRightDistance(0);
-  chart.setRightMinVisibleBarCount(0);
-  chart.scrollToRealTime();
-}
-
-const SYSTEM_OVERLAY_GROUP = "__system__";
-const USER_OVERLAY_GROUP = "__user__";
-
-// ── 注册自定义 overlay：压力位红色圆圈 ──
-let _circleRegistered = false;
-function ensureOverlaysRegistered() {
-  if (_circleRegistered) return;
-  _circleRegistered = true;
-  registerOverlay<{
-    text: string;
-    color: string;
-    backgroundColor: string;
-    borderColor: string;
-  }>({
-    name: "levelTag",
-    needDefaultPointFigure: false,
-    needDefaultXAxisFigure: false,
-    needDefaultYAxisFigure: false,
-    totalStep: 1,
-    createYAxisFigures: ({ overlay, coordinates, bounding }) => {
-      const point = coordinates[0];
-      const data = overlay.extendData;
-      if (!point || !data || typeof data !== "object") return [];
-      return {
-        type: "text" as const,
-        attrs: {
-          x: bounding.width,
-          y: point.y,
-          text: data.text,
-          align: "right" as const,
-          baseline: "middle" as const,
-        },
-        styles: {
-          backgroundColor: data.backgroundColor,
-          borderColor: data.borderColor,
-          borderSize: 1,
-          borderRadius: 4,
-          color: data.color,
-          size: 10,
-          weight: 600,
-          paddingLeft: 6,
-          paddingRight: 6,
-          paddingTop: 2,
-          paddingBottom: 2,
-        },
-        ignoreEvent: true,
-      };
-    },
-  });
-  registerOverlay({
-    name: "resistanceCircle",
-    needDefaultPointFigure: false,
-    needDefaultXAxisMark: false,
-    needDefaultYAxisMark: false,
-    totalStep: 2,
-    createPointFigures: ({ overlay }) => {
-      const points = overlay.points;
-      if (!points || points.length === 0) return [];
-      const p = points[0];
-      if (p.x == null || p.y == null) return [];
-      return [
-        {
-          type: "circle" as const,
-          attrs: { x: p.x, y: p.y, r: 18 },
-          styles: {
-            style: "stroke_fill" as const,
-            color: "rgba(239, 68, 68, 0.25)",
-            borderColor: "rgba(239, 68, 68, 0.5)",
-            borderSize: 1.5,
-          },
-        },
-      ];
-    },
-  });
-  registerOverlay({
-    name: "hhMarker",
-    needDefaultPointFigure: false,
-    needDefaultXAxisFigure: false,
-    needDefaultYAxisFigure: false,
-    totalStep: 1,
-    createPointFigures: ({ overlay, coordinates }) => {
-      const point = coordinates[0];
-      if (!point) return [];
-      const text = typeof overlay.extendData === "string" ? overlay.extendData : "";
-      const arrowTipY = point.y - 18;
-      const arrowBaseY = point.y - 8;
-      const labelY = point.y - 24;
-      return [
-        {
-          type: "polygon" as const,
-          attrs: {
-            coordinates: [
-              { x: point.x, y: arrowTipY },
-              { x: point.x - 5, y: arrowBaseY },
-              { x: point.x + 5, y: arrowBaseY },
-            ],
-          },
-          styles: {
-            style: "stroke_fill" as const,
-            color: "#f59e0b",
-            borderColor: "#f59e0b",
-            borderSize: 1,
-          },
-          ignoreEvent: true,
-        },
-        {
-          type: "text" as const,
-          attrs: {
-            x: point.x,
-            y: labelY,
-            text,
-            align: "center" as const,
-            baseline: "bottom" as const,
-          },
-          styles: {
-            color: "#f59e0b",
-            size: 10,
-            weight: 700,
-          },
-          ignoreEvent: true,
-        },
-      ];
-    },
-  });
-  registerOverlay({
-    name: "drawdownMarker",
-    needDefaultPointFigure: false,
-    needDefaultXAxisFigure: false,
-    needDefaultYAxisFigure: false,
-    totalStep: 1,
-    createPointFigures: ({ overlay, coordinates }) => {
-      const point = coordinates[0];
-      if (!point) return [];
-      const text = typeof overlay.extendData === "string" ? overlay.extendData : "";
-      return [
-        {
-          type: "circle" as const,
-          attrs: { x: point.x, y: point.y + 10, r: 4 },
-          styles: {
-            style: "stroke_fill" as const,
-            color: "#ef4444",
-            borderColor: "#ef4444",
-            borderSize: 1,
-          },
-          ignoreEvent: true,
-        },
-        {
-          type: "text" as const,
-          attrs: {
-            x: point.x,
-            y: point.y + 20,
-            text,
-            align: "center" as const,
-            baseline: "top" as const,
-          },
-          styles: {
-            color: "#ef4444",
-            size: 10,
-            weight: 600,
-          },
-          ignoreEvent: true,
-        },
-      ];
-    },
-  });
-  // 冯总系统: W底标记（橙色 W）
-  registerOverlay({
-    name: "fengDoubleBottom",
-    needDefaultPointFigure: false,
-    needDefaultXAxisFigure: false,
-    needDefaultYAxisFigure: false,
-    totalStep: 1,
-    createPointFigures: ({ coordinates }) => {
-      const point = coordinates[0];
-      if (!point) return [];
-      return [{
-        type: "text" as const,
-        attrs: { x: point.x, y: point.y + 10, text: "W", align: "center" as const, baseline: "top" as const },
-        styles: { color: "#FF9800", size: 13, weight: 800 },
-        ignoreEvent: true,
-      }];
-    },
-  });
-}
-
-// ═══════════════════════════════════════
-//  Canvas 画中画 — 纯 Canvas 绘制 RS 曲线
-// ═══════════════════════════════════════
-
-interface RsPipProps {
-  rsData: any;
-  stockName?: string;
-  isDark: boolean;
-  emptyReason?: string;
-}
-
-function RsPip({ rsData, stockName, isDark, emptyReason }: RsPipProps) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-
-  const draw = useCallback(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
-    const dpr = window.devicePixelRatio || 1;
-    const w = canvas.clientWidth;
-    const h = canvas.clientHeight;
-    canvas.width = w * dpr;
-    canvas.height = h * dpr;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-    ctx.scale(dpr, dpr);
-
-    // 背景
-    ctx.fillStyle = isDark ? "rgba(15,17,22,0.92)" : "rgba(255,255,255,0.94)";
-    ctx.fillRect(0, 0, w, h);
-
-    const stockPts: number[] = (rsData?.stock?.rpsSeries || []).map((p: any) => p.value);
-    const sectorPts: number[] = (rsData?.sector?.rpsSeries || []).map((p: any) => p.value);
-    const maxLen = Math.max(stockPts.length, sectorPts.length);
-
-    if (maxLen < 2) {
-      ctx.fillStyle = isDark ? "#4b5563" : "#9ca3af";
-      ctx.font = "10px -apple-system, sans-serif";
-      ctx.textAlign = "center";
-      ctx.fillText(emptyReason || "RS 数据加载中...", w / 2, h / 2);
-      return;
-    }
-
-    const allVals = [...stockPts, ...sectorPts].filter((v) => Number.isFinite(v));
-    let minVal = Math.min(...allVals);
-    let maxVal = Math.max(...allVals);
-    if (maxVal - minVal < 5) {
-      const mid = (maxVal + minVal) / 2;
-      minVal = mid - 5;
-      maxVal = mid + 5;
-    }
-    const pad = (maxVal - minVal) * 0.1;
-    minVal -= pad;
-    maxVal += pad;
-
-    const plotTop = 22;
-    const plotBottom = h - 22;
-    const plotLeft = 6;
-    const plotRight = w - 36;
-    const plotW = plotRight - plotLeft;
-    const plotH = plotBottom - plotTop;
-
-    // 网格线
-    ctx.strokeStyle = isDark ? "#1e2130" : "#f0f0f0";
-    ctx.lineWidth = 0.5;
-    for (let i = 0; i <= 4; i++) {
-      const y = plotTop + (plotH / 4) * i;
-      ctx.beginPath();
-      ctx.moveTo(plotLeft, y);
-      ctx.lineTo(plotRight, y);
-      ctx.stroke();
-    }
-
-    // 右侧刻度
-    ctx.fillStyle = isDark ? "#4b5563" : "#9ca3af";
-    ctx.font = "9px SF Mono, Monaco, monospace";
-    ctx.textAlign = "right";
-    for (let i = 0; i <= 4; i++) {
-      const y = plotTop + (plotH / 4) * i;
-      const val = maxVal - ((maxVal - minVal) / 4) * i;
-      ctx.fillText(val.toFixed(0), w - 4, y + 3);
-    }
-
-    const drawLine = (pts: number[], color: string, lineWidth: number) => {
-      if (pts.length < 2) return;
-      ctx.strokeStyle = color;
-      ctx.lineWidth = lineWidth;
-      ctx.lineJoin = "round";
-      ctx.lineCap = "round";
-      ctx.beginPath();
-      for (let i = 0; i < pts.length; i++) {
-        const x = plotLeft + (i / (maxLen - 1)) * plotW;
-        const y = plotTop + ((maxVal - pts[i]) / (maxVal - minVal)) * plotH;
-        if (i === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
-      }
-      ctx.stroke();
-
-      // 末尾圆点
-      const lastX = plotLeft + ((pts.length - 1) / (maxLen - 1)) * plotW;
-      const lastY = plotTop + ((maxVal - pts[pts.length - 1]) / (maxVal - minVal)) * plotH;
-      ctx.fillStyle = color;
-      ctx.beginPath();
-      ctx.arc(lastX, lastY, 2.5, 0, Math.PI * 2);
-      ctx.fill();
-    };
-
-    drawLine(sectorPts, "#2962ff", 1.2);
-    drawLine(stockPts, "#f23645", 1.5);
-
-    // 标题
-    ctx.font = "bold 9px -apple-system, sans-serif";
-    ctx.textAlign = "left";
-    ctx.fillStyle = isDark ? "#6b7280" : "#9ca3af";
-    ctx.fillText("RS 相对强度", plotLeft, 13);
-
-    // 最新值标注
-    const drawLabel = (pts: number[], color: string, yOffset: number) => {
-      if (pts.length === 0) return;
-      const val = pts[pts.length - 1];
-      const x = plotLeft + ((pts.length - 1) / (maxLen - 1)) * plotW + 6;
-      const y = plotTop + ((maxVal - val) / (maxVal - minVal)) * plotH;
-      ctx.fillStyle = color;
-      ctx.font = "bold 10px SF Mono, Monaco, monospace";
-      ctx.textAlign = "left";
-      ctx.fillText(val.toFixed(1), Math.min(x, plotRight - 28), y + yOffset);
-    };
-
-    if (stockPts.length > 0 && sectorPts.length > 0) {
-      const stockLast = stockPts[stockPts.length - 1];
-      const sectorLast = sectorPts[sectorPts.length - 1];
-      const diff = Math.abs(
-        ((maxVal - stockLast) / (maxVal - minVal)) * plotH -
-        ((maxVal - sectorLast) / (maxVal - minVal)) * plotH
-      );
-      if (diff < 14) {
-        drawLabel(stockPts, "#f23645", stockLast > sectorLast ? -4 : 12);
-        drawLabel(sectorPts, "#2962ff", sectorLast > stockLast ? -4 : 12);
-      } else {
-        drawLabel(stockPts, "#f23645", 3);
-        drawLabel(sectorPts, "#2962ff", 3);
-      }
-    } else {
-      drawLabel(stockPts, "#f23645", 3);
-      drawLabel(sectorPts, "#2962ff", 3);
-    }
-
-    // 底部图例
-    const legendY = h - 6;
-    ctx.font = "9px -apple-system, sans-serif";
-    ctx.fillStyle = "#f23645";
-    ctx.beginPath();
-    ctx.arc(plotLeft + 4, legendY - 3, 3, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = isDark ? "#787b86" : "#9aa1ad";
-    ctx.textAlign = "left";
-    ctx.fillText(stockName || "个股", plotLeft + 10, legendY);
-
-    const sectorLabelX = plotLeft + 10 + ctx.measureText(stockName || "个股").width + 12;
-    ctx.fillStyle = "#2962ff";
-    ctx.beginPath();
-    ctx.arc(sectorLabelX, legendY - 3, 3, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = isDark ? "#787b86" : "#9aa1ad";
-    ctx.fillText("板块", sectorLabelX + 6, legendY);
-  }, [rsData, stockName, isDark]);
-
-  useEffect(() => { draw(); }, [draw]);
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const observer = new ResizeObserver(() => draw());
-    observer.observe(canvas);
-    return () => observer.disconnect();
-  }, [draw]);
-
-  return (
-    <canvas
-      ref={canvasRef}
-      style={{ width: "100%", height: "100%", display: "block" }}
-    />
-  );
-}
-
-
-// ═══════════════════════════════════════
-//  主图组件
-// ═══════════════════════════════════════
-
 const FREQ_OPTIONS = [
   { value: "1d", label: "日" },
   { value: "1w", label: "周" },
@@ -427,448 +70,88 @@ const FREQ_OPTIONS = [
 ] as const;
 
 export function WatchlistChart({ tsCode, sectorCode, stockName, activeTool, onSelectionChange, onDrawingsChange }: WatchlistChartProps) {
-  const theme = useAppStore((s) => s.theme);
-  const isDark = theme === "dark";
   const [frequency, setFrequency] = useState<string>("1d");
-
-  const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<Chart | null>(null);
   const saveTimerRef = useRef<number | null>(null);
-  const restoringRef = useRef(false);
-  const restoredSymbolRef = useRef<string | null>(null);
-  const currentSymbolRef = useRef(tsCode);
-  const selectedOverlayIdRef = useRef<string | null>(null);
-  const selectedOverlayLockedRef = useRef(false);
-  const [saveTick, setSaveTick] = useState(0);
 
   const barsMap: Record<string, number> = { "1d": 120, "1w": 104, "1M": 60 };
-  const { data: stockData, isLoading: stockLoading, error: stockError } = useStockChart(tsCode, barsMap[frequency] ?? 120, frequency);
+  const { data: stockData, isLoading, error: stockError } = useStockChart(tsCode, barsMap[frequency] ?? 120, frequency);
   const { data: rsData } = useRelativeStrength(tsCode, sectorCode);
   const { data: patternData } = useStockPatterns(tsCode);
   const { data: drawingsDoc } = useChartDrawings(tsCode, "stock", "1d");
 
-  const loading = stockLoading;
-  const error = stockError ? (stockError as Error).message : "";
-  const rsReady = ((rsData?.stock?.rpsSeries?.length ?? 0) > 1) && ((rsData?.sector?.rpsSeries?.length ?? 0) > 1);
-  const rsEmptyReason = !sectorCode ? "缺少板块映射" : rsReady ? "" : "RS 暂无数据";
-
+  // 读取保存的画线
+  const [savedDrawings, setSavedDrawings] = useState<ChartDrawingOverlay[]>([]);
   useEffect(() => {
-    currentSymbolRef.current = tsCode;
-    restoredSymbolRef.current = null;
-    selectedOverlayIdRef.current = null;
-    selectedOverlayLockedRef.current = false;
-    onSelectionChange?.({ id: null, locked: false, name: null });
-    onDrawingsChange?.([]);
-  }, [tsCode, onSelectionChange, onDrawingsChange]);
+    const local = readLocalDrawings(tsCode, "stock", "1d");
+    const remote = drawingsDoc?.overlays ?? [];
+    setSavedDrawings(local.length > 0 ? local : remote);
+  }, [tsCode, drawingsDoc]);
 
-  useEffect(() => { ensureOverlaysRegistered(); }, []);
-
-  const updateSelection = useCallback((id: string | null, locked = false, name: string | null = null) => {
-    selectedOverlayIdRef.current = id;
-    selectedOverlayLockedRef.current = locked;
-    onSelectionChange?.({ id, locked, name });
-  }, [onSelectionChange]);
-
-  const emitDrawingsChange = useCallback((overlays: ChartDrawingOverlay[]) => {
-    onDrawingsChange?.(
-      overlays.map((overlay) => ({
-        id: overlay.id ?? `${overlay.name}-${Math.random()}`,
-        name: overlay.name,
-        lock: overlay.lock === true,
-        points: Array.isArray(overlay.points) ? overlay.points.length : 0,
-        label: typeof overlay.extendData === "string" && overlay.extendData ? overlay.extendData : undefined,
-      }))
-    );
-  }, [onDrawingsChange]);
-
-  const buildOverlayCallbacks = useCallback((overlay: Partial<ChartDrawingOverlay> = {}) => ({
-    ...overlay,
-    groupId: overlay.groupId ?? USER_OVERLAY_GROUP,
-    onDrawEnd: () => {
-      setSaveTick((n) => n + 1);
-      return true;
-    },
-    onPressedMoveEnd: () => {
-      setSaveTick((n) => n + 1);
-      return true;
-    },
-    onRemoved: () => {
-      if (selectedOverlayIdRef.current === overlay.id) updateSelection(null, false, null);
-      setSaveTick((n) => n + 1);
-      return true;
-    },
-    onSelected: () => {
-      updateSelection(overlay.id ?? null, overlay.lock === true, overlay.name ?? null);
-      return true;
-    },
-    onDeselected: () => {
-      if (selectedOverlayIdRef.current === overlay.id) updateSelection(null, false, null);
-      return true;
-    },
-  }), [updateSelection]);
-
-  const snapshotOverlays = useCallback((): ChartDrawingOverlay[] => {
-    const chart = chartRef.current as any;
-    if (!chart?.getOverlays) return [];
-    const raw = chart.getOverlays();
-    if (!Array.isArray(raw)) return [];
-    return raw
-      .map((item: unknown) => sanitizeOverlay(item))
-      .filter((item: ChartDrawingOverlay | null): item is ChartDrawingOverlay => item != null)
-      .filter((item) => item.groupId !== SYSTEM_OVERLAY_GROUP);
-  }, []);
-
-  const persistOverlaysNow = useCallback(async (overlays: ChartDrawingOverlay[]) => {
-    const symbol = currentSymbolRef.current;
-    if (!symbol) return;
-    emitDrawingsChange(overlays);
-    writeLocalDrawings(symbol, "stock", "1d", overlays);
-    try {
-      if (overlays.length === 0) {
-        await clearChartDrawings(symbol, "stock", "1d");
-      } else {
-        await saveChartDrawings(symbol, overlays, "stock", "1d");
-      }
-    } catch {
-      // Keep local snapshot even if remote save fails.
-    }
-  }, [emitDrawingsChange]);
-
-  const schedulePersist = useCallback(() => {
-    if (restoringRef.current) return;
-    if (saveTimerRef.current != null) window.clearTimeout(saveTimerRef.current);
+  // 画线变更：自动保存
+  const handleDrawingsChange = useCallback((overlays: ChartDrawingOverlay[]) => {
+    writeLocalDrawings(tsCode, "stock", "1d", overlays);
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     saveTimerRef.current = window.setTimeout(() => {
-      const overlays = snapshotOverlays();
-      void persistOverlaysNow(overlays);
-    }, 250);
-  }, [persistOverlaysNow, snapshotOverlays]);
+      void saveChartDrawings(tsCode, overlays, "stock", "1d");
+    }, 2000);
+    // 通知父组件
+    onDrawingsChange?.(overlays.map((o) => ({
+      id: o.id ?? "", name: o.name, lock: o.lock ?? false, points: o.points?.length ?? 0, label: o.name,
+    })));
+  }, [tsCode, onDrawingsChange]);
 
-  useEffect(() => {
-    if (!saveTick) return;
-    schedulePersist();
-  }, [saveTick, schedulePersist]);
-
-  useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-
-    const chart = init(el, {
-      styles: getKLineStyles(isDark),
-      locale: "zh-CN",
-    });
-    if (!chart) return;
-    chartRef.current = chart;
-
-    const observer = new ResizeObserver(() => {
-      chart.resize();
-    });
-    observer.observe(el);
-
-    // 添加成交量子图
-    chart.createIndicator("VOL", false, { id: "pane_vol" });
-
-    // ── 填充 K 线数据 ──
-    if (stockData) {
-      const points = (stockData.points || []).filter(
-        (p) => [p.open, p.high, p.low, p.close].every((v) => Number.isFinite(v) && v > 0)
-      );
-
-      const klineData = points.map((p) => ({
-        timestamp: toTs(p.time),
-        open: p.open,
-        high: p.high,
-        low: p.low,
-        close: p.close,
-        volume: p.amount != null && Number.isFinite(p.amount) ? p.amount : p.volume,
-        turnover: p.amount ?? 0,
-      }));
-
-      loadChartData(chart, tsCode, klineData);
-
-      // ── 支撑位 — 绿色虚线 ──
-      if (patternData?.supports) {
-        for (const sup of patternData.supports) {
-          chart.createOverlay({
-            name: "horizontalStraightLine",
-            groupId: SYSTEM_OVERLAY_GROUP,
-            points: [{ value: sup.price }],
-            styles: {
-              line: { color: "#22c55e", size: 1, style: "dashed" as const },
-            },
-            lock: true,
-          });
-          chart.createOverlay({
-            name: "levelTag",
-            groupId: SYSTEM_OVERLAY_GROUP,
-            points: [{ value: sup.price }],
-            extendData: {
-              text: `支撑 x${sup.count}`,
-              color: "#ffffff",
-              backgroundColor: "rgba(34, 197, 94, 0.85)",
-              borderColor: "rgba(34, 197, 94, 0.9)",
-            },
-            lock: true,
-          });
-        }
-      }
-
-      // ── 压力位 — 红色实线 ──
-      if (patternData?.resistances) {
-        for (const res of patternData.resistances) {
-          chart.createOverlay({
-            name: "horizontalStraightLine",
-            groupId: SYSTEM_OVERLAY_GROUP,
-            points: [{ value: res.price }],
-            styles: {
-              line: { color: "#ef4444", size: 1, style: "solid" as const },
-            },
-            lock: true,
-          });
-          chart.createOverlay({
-            name: "levelTag",
-            groupId: SYSTEM_OVERLAY_GROUP,
-            points: [{ value: res.price }],
-            extendData: {
-              text: `压力 x${res.count}`,
-              color: "#ffffff",
-              backgroundColor: "rgba(239, 68, 68, 0.85)",
-              borderColor: "rgba(239, 68, 68, 0.9)",
-            },
-            lock: true,
-          });
-
-          // 压力顶红圈
-          if (res.touches) {
-            for (const touch of res.touches) {
-              if (!touch.date) continue;
-              chart.createOverlay({
-                name: "resistanceCircle",
-                groupId: SYSTEM_OVERLAY_GROUP,
-                points: [{ timestamp: toTs(touch.date), value: touch.price }],
-                lock: true,
-              });
-            }
-          }
-        }
-      }
-
-      // ── 回撤标注 ──
-      if (patternData?.drawdowns) {
-        for (const dd of patternData.drawdowns) {
-          if (!dd.date) continue;
-          chart.createOverlay({
-            name: "drawdownMarker",
-            groupId: SYSTEM_OVERLAY_GROUP,
-            points: [{ timestamp: toTs(dd.date), value: dd.price }],
-            extendData: `${dd.pct > 0 ? "+" : ""}${dd.pct.toFixed(1)}%`,
-            lock: true,
-          });
-        }
-      }
-
-      // ── 冯总交易信号标注（信号链: 止跌→H1→H2(W)）──
-      const feng = stockData.fengSignals;
-      if (feng) {
-        for (const s of feng.signals ?? []) {
-          const ts = toTs(s.date);
-          if (!ts) continue;
-          if (s.type === "h1") {
-            chart.createOverlay({ name: "hhMarker", groupId: SYSTEM_OVERLAY_GROUP, points: [{ timestamp: ts, value: s.price }], extendData: "H1", lock: true });
-          } else if (s.type === "h2_w") {
-            chart.createOverlay({ name: "fengDoubleBottom", groupId: SYSTEM_OVERLAY_GROUP, points: [{ timestamp: ts, value: s.price }], lock: true });
-          }
-        }
-      }
-    }
-
-    return () => {
-      observer.disconnect();
-      if (saveTimerRef.current != null) {
-        window.clearTimeout(saveTimerRef.current);
-        saveTimerRef.current = null;
-      }
-      dispose(el);
-      chartRef.current = null;
-    };
-  }, [tsCode, stockData, patternData, isDark, frequency]);
-
-  useEffect(() => {
-    const chart = chartRef.current as any;
-    if (!chart?.createOverlay || !stockData) return;
-    if (restoredSymbolRef.current === tsCode) return;
-
-    const restore = async () => {
-      restoringRef.current = true;
-      try {
-        const local = readLocalDrawings(tsCode, "stock", "1d");
-        const remote = drawingsDoc?.overlays ?? [];
-        const source = local.length > 0 ? local : remote;
-        emitDrawingsChange(source);
-        for (const raw of source) {
-          const overlay = sanitizeOverlay(raw);
-          if (!overlay) continue;
-          chart.createOverlay(buildOverlayCallbacks(overlay));
-        }
-        restoredSymbolRef.current = tsCode;
-      } finally {
-        restoringRef.current = false;
-      }
-    };
-
-    void restore();
-  }, [tsCode, stockData, drawingsDoc, buildOverlayCallbacks, emitDrawingsChange]);
-
-  useEffect(() => {
-    const chart = chartRef.current as any;
-    if (!chart?.createOverlay) return;
-
-    if (activeTool) {
-      chart.createOverlay(buildOverlayCallbacks({
-        id: `${activeTool}-${Date.now()}`,
-        name: activeTool,
-      }));
-    }
-  }, [activeTool, buildOverlayCallbacks]);
-
-  useEffect(() => {
-    return () => {
-      if (saveTimerRef.current != null) {
-        window.clearTimeout(saveTimerRef.current);
-      }
-    };
-  }, []);
-
+  // 买入划线事件
   useEffect(() => {
     const handler = (event: Event) => {
-      const detail = (event as CustomEvent<{ action: string; overlayId?: string; nextLocked?: boolean }>).detail;
-      if (!detail || !chartRef.current || detail.action === "") return;
+      const detail = (event as CustomEvent<{ action: string }>).detail;
+      if (!detail || !chartRef.current) return;
       const chart = chartRef.current as any;
-      if (detail.action === "deleteSelected" && selectedOverlayIdRef.current && chart.removeOverlay) {
-        chart.removeOverlay({ id: selectedOverlayIdRef.current });
-        updateSelection(null, false, null);
-        setSaveTick((n) => n + 1);
-      }
-      if (detail.action === "deleteById" && detail.overlayId && chart.removeOverlay) {
-        chart.removeOverlay({ id: detail.overlayId });
-        if (selectedOverlayIdRef.current === detail.overlayId) {
-          updateSelection(null, false, null);
-        }
-        setSaveTick((n) => n + 1);
-      }
-      if (detail.action === "clearAll") {
-        const overlays = snapshotOverlays();
-        for (const overlay of overlays) {
-          if (overlay.id && chart.removeOverlay) {
-            chart.removeOverlay({ id: overlay.id });
-          }
-        }
-        updateSelection(null, false, null);
-        clearLocalDrawings(tsCode, "stock", "1d");
-        void clearChartDrawings(tsCode, "stock", "1d");
-        emitDrawingsChange([]);
-        setSaveTick((n) => n + 1);
-      }
-      if (detail.action === "toggleLock" && selectedOverlayIdRef.current && chart.overrideOverlay) {
-        const nextLocked = !selectedOverlayLockedRef.current;
-        chart.overrideOverlay({ id: selectedOverlayIdRef.current, lock: nextLocked });
-        updateSelection(selectedOverlayIdRef.current, nextLocked, snapshotOverlays().find((o) => o.id === selectedOverlayIdRef.current)?.name ?? null);
-        setSaveTick((n) => n + 1);
-      }
-      if (detail.action === "toggleLockById" && detail.overlayId && chart.overrideOverlay) {
-        chart.overrideOverlay({ id: detail.overlayId, lock: detail.nextLocked === true });
-        if (selectedOverlayIdRef.current === detail.overlayId) {
-          updateSelection(detail.overlayId, detail.nextLocked === true, snapshotOverlays().find((o) => o.id === detail.overlayId)?.name ?? null);
-        }
-        setSaveTick((n) => n + 1);
-      }
-      // ── 买入划线：用户点击图表选入场价，自动算止损止盈 ──
+
       if (detail.action === "addBuyEntry") {
-        // 创建一条 priceLine，用户点击图上选择价位
-        const buyId = `buy-entry-${Date.now()}`;
         chart.createOverlay({
-          id: buyId,
-          name: "priceLine",
-          styles: { line: { color: "#3b82f6", size: 1.5, style: "solid" as const } },
+          id: `buy-entry-${Date.now()}`, name: "priceLine",
+          styles: { line: { color: "#3b82f6", size: 1.5, style: "solid" } },
           onComplete: (params: any) => {
-            // 用户点击完成后，读取选择的价格
             const entryPrice = params?.overlay?.points?.[0]?.value;
             if (!entryPrice || entryPrice <= 0) return;
             const entry = +entryPrice.toFixed(2);
-            // 找最近的支撑位作为止损
             const supports = patternData?.supports ?? [];
-            const belowSupports = supports.filter((s: any) => s.price < entry).sort((a: any, b: any) => b.price - a.price);
-            const slPrice = belowSupports.length > 0 ? +belowSupports[0].price.toFixed(2) : +(entry * 0.95).toFixed(2);
-            const risk = entry - slPrice;
+            const below = supports.filter((s) => s.price < entry).sort((a, b) => b.price - a.price);
+            const sl = below.length > 0 ? +below[0].price.toFixed(2) : +(entry * 0.95).toFixed(2);
+            const risk = entry - sl;
             if (risk <= 0) return;
-            const tpPrice = +(entry + risk * 2).toFixed(2);
-            // 画止损线
-            chart.createOverlay({
-              id: `buy-sl-${Date.now()}`, name: "horizontalStraightLine", lock: true,
-              points: [{ value: slPrice }],
-              styles: { line: { color: "#ef4444", size: 1, style: "dashed" as const } },
-            });
-            chart.createOverlay({
-              name: "levelTag", lock: true,
-              points: [{ value: slPrice }],
-              extendData: { text: `止损 ${slPrice}`, color: "#ffffff", backgroundColor: "rgba(239,68,68,0.85)", borderColor: "rgba(239,68,68,0.9)" },
-            });
-            // 画止盈线
-            chart.createOverlay({
-              id: `buy-tp-${Date.now()}`, name: "horizontalStraightLine", lock: true,
-              points: [{ value: tpPrice }],
-              styles: { line: { color: "#22c55e", size: 1, style: "dashed" as const } },
-            });
-            chart.createOverlay({
-              name: "levelTag", lock: true,
-              points: [{ value: tpPrice }],
-              extendData: { text: `止盈 ${tpPrice} (2R)`, color: "#ffffff", backgroundColor: "rgba(34,197,94,0.85)", borderColor: "rgba(34,197,94,0.9)" },
-            });
-            // 入场价标签
-            chart.createOverlay({
-              name: "levelTag", lock: true,
-              points: [{ value: entry }],
-              extendData: { text: `入场 ${entry}`, color: "#ffffff", backgroundColor: "rgba(59,130,246,0.85)", borderColor: "rgba(59,130,246,0.9)" },
-            });
-            setSaveTick((n) => n + 1);
+            const tp = +(entry + risk * 2).toFixed(2);
+            chart.createOverlay({ name: "horizontalStraightLine", lock: true, points: [{ value: sl }], styles: { line: { color: "#ef4444", size: 1, style: "dashed" } } });
+            chart.createOverlay({ name: "levelTag", lock: true, points: [{ value: sl }], extendData: { text: `止损 ${sl}`, color: "#ffffff", backgroundColor: "rgba(239,68,68,0.85)", borderColor: "rgba(239,68,68,0.9)" } });
+            chart.createOverlay({ name: "horizontalStraightLine", lock: true, points: [{ value: tp }], styles: { line: { color: "#22c55e", size: 1, style: "dashed" } } });
+            chart.createOverlay({ name: "levelTag", lock: true, points: [{ value: tp }], extendData: { text: `止盈 ${tp} (2R)`, color: "#ffffff", backgroundColor: "rgba(34,197,94,0.85)", borderColor: "rgba(34,197,94,0.9)" } });
+            chart.createOverlay({ name: "levelTag", lock: true, points: [{ value: entry }], extendData: { text: `入场 ${entry}`, color: "#ffffff", backgroundColor: "rgba(59,130,246,0.85)", borderColor: "rgba(59,130,246,0.9)" } });
           },
         });
       }
 
-      if (detail.action === "addSupportAtClose" || detail.action === "addResistanceAtClose" || detail.action === "addTagAtLatest") {
+      if (detail.action === "addSupportAtClose" || detail.action === "addResistanceAtClose") {
         const latest = stockData?.points?.[stockData.points.length - 1];
         if (!latest) return;
-        if (detail.action === "addSupportAtClose") {
-          chart.createOverlay(buildOverlayCallbacks({
-            id: `support-${Date.now()}`,
-            name: "horizontalStraightLine",
-            styles: { line: { color: "#22c55e", size: 1, style: "dashed" as const } },
-            points: [{ timestamp: toTs(latest.time), value: latest.close }],
-            extendData: `支撑 ${latest.close.toFixed(2)}`,
-          }));
-        }
-        if (detail.action === "addResistanceAtClose") {
-          chart.createOverlay(buildOverlayCallbacks({
-            id: `resistance-${Date.now()}`,
-            name: "horizontalStraightLine",
-            styles: { line: { color: "#ef4444", size: 1, style: "solid" as const } },
-            points: [{ timestamp: toTs(latest.time), value: latest.close }],
-            extendData: `阻力 ${latest.close.toFixed(2)}`,
-          }));
-        }
-        if (detail.action === "addTagAtLatest") {
-          chart.createOverlay(buildOverlayCallbacks({
-            id: `tag-${Date.now()}`,
-            name: "simpleTag",
-            points: [{ timestamp: toTs(latest.time), value: latest.close }],
-            extendData: `${latest.close.toFixed(2)}`,
-          }));
-        }
-        setSaveTick((n) => n + 1);
+        const isSup = detail.action === "addSupportAtClose";
+        chart.createOverlay({
+          id: `${isSup ? "support" : "resistance"}-${Date.now()}`, name: "horizontalStraightLine",
+          styles: { line: { color: isSup ? "#22c55e" : "#ef4444", size: 1, style: isSup ? "dashed" : "solid" } },
+          points: [{ value: latest.close }],
+        });
+      }
+
+      if (detail.action === "clearAll") {
+        clearLocalDrawings(tsCode, "stock", "1d");
+        void clearChartDrawings(tsCode, "stock", "1d");
       }
     };
     window.addEventListener(`chart-drawing:${tsCode}`, handler as EventListener);
     return () => window.removeEventListener(`chart-drawing:${tsCode}`, handler as EventListener);
-  }, [snapshotOverlays, tsCode, updateSelection, emitDrawingsChange, stockData, patternData, buildOverlayCallbacks]);
+  }, [tsCode, stockData, patternData]);
+
+  const error = stockError?.message;
 
   return (
     <div className="flex flex-col h-full">
@@ -889,34 +172,34 @@ export function WatchlistChart({ tsCode, sectorCode, stockName, activeTool, onSe
         ))}
         <span className="text-[10px] text-text-quaternary ml-1">
           {frequency === "1d" ? "日线" : frequency === "1w" ? "周线" : "月线"}
-          {frequency !== "1d" && " · Ashare实时"}
         </span>
       </div>
+
       <div className="relative flex-1 min-h-0">
-        {loading && (
-          <div className="absolute inset-0 flex items-center justify-center text-text-tertiary text-sm z-10 bg-canvas/80">
-            加载中...
-          </div>
+        {isLoading && (
+          <div className="absolute inset-0 flex items-center justify-center text-text-tertiary text-sm z-10 bg-canvas/80">加载中...</div>
         )}
         {error && (
-          <div className="absolute inset-0 flex items-center justify-center text-state-up text-sm z-10 bg-canvas/80">
-            {error}
-          </div>
+          <div className="absolute inset-0 flex items-center justify-center text-state-up text-sm z-10 bg-canvas/80">{error}</div>
         )}
-        <div ref={containerRef} className="w-full h-full" />
+        {stockData?.points && (
+          <KlineChart
+            points={stockData.points}
+            signals={patternData?.signals}
+            drawdowns={patternData?.drawdowns}
+            supports={patternData?.supports}
+            resistances={patternData?.resistances}
+            fengSignals={stockData.fengSignals}
+            enableDrawing
+            activeTool={activeTool}
+            initialDrawings={savedDrawings}
+            onDrawingsChange={handleDrawingsChange}
+            chartRef={chartRef}
+          />
+        )}
 
-        <div
-          className="absolute z-20 rounded overflow-hidden opacity-70 hover:opacity-100 transition-opacity"
-          style={{
-            top: 38,
-            left: 8,
-            width: 150,
-            height: 88,
-            border: `1px solid ${isDark ? "rgba(42,46,58,0.6)" : "rgba(215,220,228,0.6)"}`,
-          }}
-        >
-          <RsPip rsData={rsData} stockName={stockName} isDark={isDark} emptyReason={rsEmptyReason} />
-        </div>
+        {/* RS 相对强弱迷你图 */}
+        {rsData && <RsMiniChart rsData={rsData} stockName={stockName} />}
       </div>
     </div>
   );
