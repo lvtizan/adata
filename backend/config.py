@@ -29,6 +29,7 @@ class Rules:
     stock_rps_min: float = 80.0
     require_sector_above_ma30: bool = False
     require_above_ma20: bool = True
+    intraday_sector_min_stocks: int = 5  # 盘中观察：板块最少成分股数
     excluded_sector_keywords: list[str] = field(
         default_factory=lambda: [
             "ST",

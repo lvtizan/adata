@@ -325,7 +325,7 @@ class Handler(BaseHTTPRequestHandler):
             ts_code = path.split("/")[4]
             bars = int(q.get("bars", ["180"])[0])
             frequency = q.get("frequency", ["1d"])[0]
-            if frequency in ("1w", "1M"):
+            if frequency in ("1d", "1w", "1M"):
                 logger.debug(f"获取个股K线(Ashare): {ts_code}, freq={frequency}, bars={bars}")
                 return json_response(self, engine.stock_kline_ashare(ts_code, frequency, bars=bars))
             logger.debug(f"获取个股K线: {ts_code}, {trade_date}, bars={bars}")

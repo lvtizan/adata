@@ -1777,7 +1777,7 @@ class MarketEngine:
                 if not name:
                     continue  # 跳过没有名称的板块
                 pcts = [quotes[c] for c in stock_codes if c in quotes]
-                if not pcts:
+                if len(pcts) < self.rules.intraday_sector_min_stocks:
                     continue
                 avg_pct = sum(pcts) / len(pcts)
                 up_count = sum(1 for p in pcts if p > 0)
@@ -1955,7 +1955,70 @@ class MarketEngine:
                 "volume": float(r["volume"]),
                 "amount": 0.0,
             })
+
+        # 日线：追加今天的实时 bar（新浪行情）
+        if frequency == "1d" and points:
+            today_bar = self._fetch_today_bar(ts_code)
+            if today_bar:
+                last_date = points[-1]["time"]
+                if today_bar["time"] > last_date:
+                    points.append(today_bar)
+                elif today_bar["time"] == last_date:
+                    # 更新最后一根 bar 为实时数据
+                    points[-1] = today_bar
+
         return {"code": ts_code, "name": name, "points": points, "frequency": frequency}
+
+    def _fetch_today_bar(self, ts_code: str) -> dict[str, Any] | None:
+        """从新浪获取今日实时 OHLCV bar"""
+        quotes = self._fetch_sina_quotes([ts_code])
+        if not quotes:
+            return None
+        q = quotes[0]
+        # 新浪字段需要完整的 OHLCV，用 _fetch_sina_quotes 只有 price/pctChange
+        # 需要单独解析完整字段
+        import ssl
+        import urllib.request
+        parts = ts_code.split(".")
+        pure, suffix = parts[0], (parts[1] if len(parts) > 1 else "")
+        prefix = "sh" if suffix == "SH" else "sz"
+        sina_code = prefix + pure
+
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        url = f"https://hq.sinajs.cn/list={sina_code}"
+        req = urllib.request.Request(url, headers={"Referer": "https://finance.sina.com.cn"})
+        try:
+            resp = urllib.request.urlopen(req, timeout=5, context=ctx)
+            data = resp.read().decode("gb2312", errors="replace")
+        except Exception:
+            return None
+
+        fields = data.split('"')[1].split(",") if '"' in data else []
+        if len(fields) < 31:
+            return None
+        try:
+            open_p = float(fields[1])
+            close_p = float(fields[3])
+            high_p = float(fields[4])
+            low_p = float(fields[5])
+            volume = float(fields[8])
+            amount = float(fields[9])
+            date_str = fields[30].replace("-", "")
+        except (ValueError, IndexError):
+            return None
+        if open_p <= 0 or close_p <= 0:
+            return None
+        return {
+            "time": date_str,
+            "open": round(open_p, 2),
+            "high": round(high_p, 2),
+            "low": round(low_p, 2),
+            "close": round(close_p, 2),
+            "volume": volume,
+            "amount": amount,
+        }
 
     def stock_kline(self, ts_code: str, trade_date: str, bars: int = 180) -> dict[str, Any]:
         dates = self.trade_dates(trade_date, need=max(bars + 30, 220))
