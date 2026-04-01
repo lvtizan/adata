@@ -1,13 +1,12 @@
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
-import { AppShell, TopBar, BottomBar } from "@/shared/layout";
+import { AppShell, TopBar, BottomBar, LeftRail } from "@/shared/layout";
 import { AiChatWidget } from "@/shared/layout/ai-chat-widget";
 import { useMarketOverview, useBullCamp, useWatchlist } from "@/queries";
-import { Activity, BarChart3, Eye, Flame, Settings, Crosshair, FileText } from "lucide-react";
-import { cn } from "@/lib/utils";
-import { Button } from "@/shared/ui/button";
+import { Activity, BarChart3, Eye, Flame, Settings, Crosshair, FileText, TrendingUp } from "lucide-react";
 
 const navItems = [
   { path: "/dashboard", label: "板块分析", icon: BarChart3 },
+  { path: "/intraday", label: "盘中观察", icon: TrendingUp },
   { path: "/index-radar", label: "指数雷达", icon: Activity },
   { path: "/watchlist", label: "自选股", icon: Eye },
   { path: "/bullcamp", label: "牛股集中营", icon: Flame },
@@ -35,23 +34,17 @@ export function RootLayout() {
   return (
     <AppShell
       topBar={
-        <TopBar title={overview?.tradeDate || ""}>
-          {navItems.map((item) => (
-            <Button
-              key={item.path}
-              variant="ghost"
-              size="sm"
-              className={cn(
-                "h-8 px-3 text-sm text-text-secondary hover:text-text-primary",
-                isActive(item.path) && "bg-surface-active text-text-primary font-medium"
-              )}
-              onClick={() => navigate(item.path)}
-            >
-              <item.icon className="w-4 h-4 mr-1.5" />
-              {item.label}
-            </Button>
-          ))}
-        </TopBar>
+        <TopBar title={overview?.tradeDate || ""} />
+      }
+      leftRail={
+        <LeftRail
+          items={navItems.map((item) => ({
+            label: item.label,
+            icon: <item.icon className="w-4 h-4" />,
+            active: isActive(item.path),
+            onClick: () => navigate(item.path),
+          }))}
+        />
       }
       bottomBar={
         <BottomBar>

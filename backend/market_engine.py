@@ -856,7 +856,7 @@ class MarketEngine:
         df = df[df["amount_est"] >= self.rules.sector_amount_min].copy()
         if keyword:
             df = df[df["sector_name"].str.contains(keyword, na=False)].copy()
-        sort_col = {"5d": "ret5", "10d": "ret10", "rps": "rps10", "rps10": "rps10"}.get(sort_by, "rps10")
+        sort_col = {"1d": "ret1", "5d": "ret5", "10d": "ret10", "rps": "rps10", "rps10": "rps10"}.get(sort_by, "rps10")
         df = df.sort_values(sort_col, ascending=False).reset_index(drop=True)
         display_limit = 30
         limit_count_scope = 30
@@ -1069,7 +1069,7 @@ class MarketEngine:
         if df.empty:
             return self._fallback_sector_stocks(stock_codes, trade_date, sort_by)
 
-        sort_col = {"5d": "ret5", "10d": "ret10", "rps": "rps20", "rps10": "rps10"}.get(sort_by, "rps20")
+        sort_col = {"1d": "pct_chg", "5d": "ret5", "10d": "ret10", "rps": "rps20", "rps10": "rps10"}.get(sort_by, "rps20")
         df = df.sort_values(sort_col, ascending=False).head(120)
         out: list[dict[str, Any]] = []
         for _, r in df.iterrows():
@@ -1635,6 +1635,294 @@ class MarketEngine:
             )
         return out
 
+    def _ensure_ths_member_cache(self) -> tuple[dict[str, list[str]], dict[str, str]]:
+        """确保同花顺概念板块成分股映射已缓存到 SQLite，返回 (sector→[stocks], sector→name)"""
+        # 先查内存缓存
+        cached = self._cache.get("_ths_members")
+        if cached and time.time() - cached[0] < 86400:  # 24 小时
+            return cached[1]
+
+        # 查 SQLite
+        stored = self._data_store.get_json("ths_members", "all", max_age_hours=24)
+        if stored:
+            mapping = stored["mapping"]  # {sector_code: [stock_codes]}
+            names = stored["names"]      # {sector_code: name}
+            result = (mapping, names)
+            self._cache["_ths_members"] = (time.time(), result)
+            logger.info(f"同花顺成分股映射从缓存加载: {len(mapping)} 个板块")
+            return result
+
+        # 全量拉取
+        logger.info("拉取同花顺概念板块成分股映射（首次约 55 秒）...")
+        names: dict[str, str] = {}
+        for idx_type in ["N", "I", "S", "R"]:  # 概念、行业、风格、地域
+            try:
+                idx = self.pro.ths_index(exchange="A", type=idx_type)
+                if idx is not None and not idx.empty:
+                    names.update(dict(zip(idx["ts_code"], idx["name"])))
+            except Exception:
+                pass
+        logger.info(f"同花顺板块名称: {len(names)} 个")
+
+        frames = []
+        offset = 0
+        while True:
+            try:
+                df = self.pro.ths_member(offset=offset, limit=6000)
+            except Exception:
+                break
+            if df is None or df.empty:
+                break
+            frames.append(df)
+            offset += len(df)
+            if len(df) < 6000:
+                break
+
+        mapping: dict[str, list[str]] = {}
+        if frames:
+            all_df = pd.concat(frames, ignore_index=True)
+            for sector_code, group in all_df.groupby("ts_code"):
+                mapping[str(sector_code)] = group["con_code"].dropna().unique().tolist()
+            logger.info(f"同花顺成分股映射拉取完成: {len(mapping)} 个板块, {len(all_df)} 行")
+
+        # 存入 SQLite
+        self._data_store.set_json("ths_members", "all", {"mapping": mapping, "names": names})
+        result = (mapping, names)
+        self._cache["_ths_members"] = (time.time(), result)
+        return result
+
+    def _fetch_all_realtime_quotes(self) -> dict[str, float]:
+        """新浪 API 并发拉全市场实时涨跌幅，返回 {ts_code: pct_change}，缓存 30 秒"""
+        cached = self._cache.get("_all_realtime")
+        if cached and time.time() - cached[0] < 30:
+            return cached[1]
+
+        import ssl
+        import urllib.request
+        from concurrent.futures import ThreadPoolExecutor
+
+        # 获取所有 A 股代码
+        try:
+            basic = self.pro.stock_basic(exchange="", list_status="L", fields="ts_code")
+            all_codes = basic["ts_code"].tolist()
+        except Exception:
+            all_codes = []
+
+        sina_codes: list[str] = []
+        code_map: dict[str, str] = {}
+        for tc in all_codes:
+            parts = tc.split(".")
+            pure, suffix = parts[0], (parts[1] if len(parts) > 1 else "")
+            prefix = "sh" if suffix == "SH" else "sz"
+            sc = prefix + pure
+            sina_codes.append(sc)
+            code_map[sc] = tc
+
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+
+        def _fetch_batch(batch: list[str]) -> str:
+            url = f"https://hq.sinajs.cn/list={','.join(batch)}"
+            req = urllib.request.Request(url, headers={"Referer": "https://finance.sina.com.cn"})
+            try:
+                return urllib.request.urlopen(req, timeout=10, context=ctx).read().decode("gb2312", errors="replace")
+            except Exception:
+                return ""
+
+        batches = [sina_codes[i:i + 80] for i in range(0, len(sina_codes), 80)]
+        result: dict[str, float] = {}
+
+        with ThreadPoolExecutor(max_workers=15) as pool:
+            raw_list = list(pool.map(_fetch_batch, batches))
+
+        for raw in raw_list:
+            for line in raw.strip().split("\n"):
+                if "=" not in line or '"' not in line:
+                    continue
+                sina_code = line.split("=")[0].split("_")[-1]
+                fields = line.split('"')[1].split(",")
+                if len(fields) < 4:
+                    continue
+                try:
+                    price = float(fields[3])
+                    prev_close = float(fields[2])
+                except (ValueError, IndexError):
+                    continue
+                if price <= 0 or prev_close <= 0:
+                    continue
+                ts_code = code_map.get(sina_code)
+                if ts_code:
+                    result[ts_code] = round((price - prev_close) / prev_close * 100, 2)
+
+        self._cache["_all_realtime"] = (time.time(), result)
+        logger.info(f"全市场实时行情: {len(result)} 只股票")
+        return result
+
+    def intraday_sector_rankings(self, trade_date: str) -> dict[str, Any]:
+        """同花顺概念板块实时涨跌排行（盘中观察用）"""
+        def _load():
+            mapping, names = self._ensure_ths_member_cache()
+            if not mapping:
+                return {"tradeDate": trade_date, "items": []}
+
+            quotes = self._fetch_all_realtime_quotes()
+            if not quotes:
+                return {"tradeDate": trade_date, "items": []}
+
+            # 聚合：每个板块的成分股平均涨跌幅
+            sectors: list[dict[str, Any]] = []
+            for sector_code, stock_codes in mapping.items():
+                name = names.get(sector_code)
+                if not name:
+                    continue  # 跳过没有名称的板块
+                pcts = [quotes[c] for c in stock_codes if c in quotes]
+                if not pcts:
+                    continue
+                avg_pct = sum(pcts) / len(pcts)
+                up_count = sum(1 for p in pcts if p > 0)
+                sectors.append({
+                    "sectorCode": sector_code,
+                    "sectorName": name,
+                    "pctChange1d": round(avg_pct, 2),
+                    "stockCount": len(pcts),
+                    "upCount": up_count,
+                    "downCount": len(pcts) - up_count,
+                })
+
+            sectors.sort(key=lambda x: x["pctChange1d"], reverse=True)
+            items = []
+            for i, s in enumerate(sectors):
+                items.append({
+                    "rank": i + 1,
+                    "rankChange": None,
+                    "prevRank": None,
+                    "sectorCode": s["sectorCode"],
+                    "sectorName": s["sectorName"],
+                    "pctChange1d": s["pctChange1d"],
+                    "pctChange5d": 0,
+                    "pctChange10d": 0,
+                    "rps10": 0,
+                    "amount": s["stockCount"],
+                    "limitUpCount": s["upCount"],
+                })
+            return {"tradeDate": trade_date, "items": items}
+
+        return self._cached(f"intraday_sectors:{trade_date}", 30, _load)
+
+    def intraday_sector_stocks(self, sector_code: str, trade_date: str) -> list[dict[str, Any]]:
+        """同花顺概念板块成分股 + 实时行情"""
+        def _load():
+            mapping, _ = self._ensure_ths_member_cache()
+            stock_codes = mapping.get(sector_code, [])
+            if not stock_codes:
+                # fallback: 单独查
+                try:
+                    members = self.pro.ths_member(ts_code=sector_code)
+                    if members is not None and not members.empty:
+                        stock_codes = members["con_code"].dropna().unique().tolist()
+                except Exception:
+                    pass
+            if not stock_codes:
+                return []
+
+            quotes = {q["tsCode"]: q for q in self._fetch_sina_quotes(stock_codes)}
+            items: list[dict[str, Any]] = []
+            for code in stock_codes:
+                q = quotes.get(code, {})
+                if not q:
+                    continue
+                items.append({
+                    "tsCode": code,
+                    "stockName": q.get("name", code),
+                    "close": q.get("price", 0),
+                    "pctChange1d": q.get("pctChange", 0),
+                    "pctChange5d": 0,
+                    "pctChange10d": 0,
+                    "rps5": 0,
+                    "rps10": 0,
+                    "rps20": 0,
+                    "amount": q.get("amount", 0),
+                    "ma20": 0,
+                    "dataMode": "realtime",
+                })
+            items.sort(key=lambda x: x["pctChange1d"], reverse=True)
+            return items
+
+        return self._cached(f"intraday_stocks:{sector_code}:{trade_date}", 30, _load)
+
+    def realtime_quotes(self, ts_codes: list[str] | None = None) -> dict[str, Any]:
+        """用新浪财经 API 获取实时行情，返回 {items: [{tsCode, name, price, pctChange, ...}]}"""
+        def _load():
+            if not ts_codes:
+                return {"items": []}
+            return {"items": self._fetch_sina_quotes(ts_codes)}
+
+        cache_key = ",".join(sorted(ts_codes)) if ts_codes else "__none__"
+        return self._cached(f"realtime_quotes:{cache_key}", 15, _load)
+
+    @staticmethod
+    def _fetch_sina_quotes(ts_codes: list[str]) -> list[dict[str, Any]]:
+        """通过新浪财经 hq API 批量获取实时行情（无需认证，延迟 <1s）"""
+        import ssl
+        import urllib.request
+
+        # ts_code 600519.SH → sh600519
+        sina_codes: list[str] = []
+        sina_to_ts: dict[str, str] = {}
+        for tc in ts_codes:
+            parts = tc.split(".")
+            pure = parts[0]
+            suffix = parts[1] if len(parts) > 1 else ""
+            prefix = "sh" if suffix == "SH" else "sz" if suffix == "SZ" else ("sh" if pure.startswith(("6", "9")) else "sz")
+            sina_code = prefix + pure
+            sina_codes.append(sina_code)
+            sina_to_ts[sina_code] = tc
+
+        # 每批最多 80 个（避免 URL 过长）
+        items: list[dict[str, Any]] = []
+        for i in range(0, len(sina_codes), 80):
+            batch = sina_codes[i:i + 80]
+            url = f"https://hq.sinajs.cn/list={','.join(batch)}"
+            req = urllib.request.Request(url, headers={"Referer": "https://finance.sina.com.cn"})
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            try:
+                resp = urllib.request.urlopen(req, timeout=10, context=ctx)
+                data = resp.read().decode("gb2312", errors="replace")
+            except Exception as exc:
+                logger.warning(f"新浪实时行情获取失败: {exc}")
+                continue
+
+            for line in data.strip().split("\n"):
+                if "=" not in line or '"' not in line:
+                    continue
+                var_part = line.split("=")[0]  # var hq_str_sh600519
+                sina_code = var_part.split("_")[-1]
+                fields = line.split('"')[1].split(",")
+                if len(fields) < 4:
+                    continue
+                ts_code = sina_to_ts.get(sina_code, sina_code)
+                try:
+                    price = float(fields[3])
+                    prev_close = float(fields[2])
+                except (ValueError, IndexError):
+                    continue
+                if price <= 0 or prev_close <= 0:
+                    continue
+                pct = round((price - prev_close) / prev_close * 100, 2)
+                items.append({
+                    "tsCode": ts_code,
+                    "name": fields[0],
+                    "price": round(price, 2),
+                    "pctChange": pct,
+                    "change": round(price - prev_close, 2),
+                    "volume": float(fields[8]) if len(fields) > 8 else 0,
+                    "amount": float(fields[9]) if len(fields) > 9 else 0,
+                })
+        return items
+
     def stock_kline_ashare(self, ts_code: str, frequency: str = "1d", bars: int = 180) -> dict[str, Any]:
         """用 Ashare 获取日/周/月线（支持盘中实时）"""
         try:
@@ -1840,6 +2128,11 @@ class MarketEngine:
 
     def stock_financials(self, ts_code: str, periods: int = 8) -> dict[str, Any]:
         """获取个股最近 N 个季度的核心财务数据（营收、净利润、毛利率等）"""
+        # ── SQLite 缓存（24 小时有效）──
+        cached = self._data_store.get_json("financials", ts_code, max_age_hours=24)
+        if cached and len(cached.get("periods", [])) >= periods:
+            return cached
+
         name = self.stock_name_map().get(ts_code, ts_code)
 
         # 利润表：营收、净利润
@@ -1909,7 +2202,11 @@ class MarketEngine:
             if prev and item.get("netIncome") and prev.get("netIncome") and prev["netIncome"] != 0:
                 item["netIncomeYoY"] = round((item["netIncome"] / prev["netIncome"] - 1) * 100, 2)
 
-        return {"code": ts_code, "name": name, "periods": results}
+        result = {"code": ts_code, "name": name, "periods": results}
+        # 有数据时写入缓存
+        if results:
+            self._data_store.set_json("financials", ts_code, result)
+        return result
 
     def stock_rise_attribution(self, ts_code: str, trade_date: str) -> dict[str, Any]:
         """

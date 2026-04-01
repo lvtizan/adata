@@ -262,8 +262,23 @@ class Handler(BaseHTTPRequestHandler):
         if method != "GET":
             return json_response(self, {"error": "method not allowed"}, 405)
 
+        # 实时行情API（不依赖 trade_date，独立于其他 GET 路由）
+        if path == "/api/realtime/quotes":
+            codes_str = q.get("codes", [""])[0]
+            ts_codes = [c.strip() for c in codes_str.split(",") if c.strip()] if codes_str else []
+            return json_response(self, engine.realtime_quotes(ts_codes))
+
         # 获取交易日
         trade_date = q.get("tradeDate", [engine.latest_data_trade_date()])[0]
+
+        # 盘中观察 - 同花顺概念板块排行
+        if path == "/api/intraday/sectors":
+            return json_response(self, engine.intraday_sector_rankings(trade_date))
+
+        # 盘中观察 - 概念板块成分股（实时行情）
+        if path.startswith("/api/intraday/sectors/") and path.endswith("/stocks"):
+            sector_code = path.split("/")[4]
+            return json_response(self, {"items": engine.intraday_sector_stocks(sector_code, trade_date)})
 
         # 配置规则API
         if path == "/api/config/rules":

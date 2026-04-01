@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { useWatchlist, useUpdateWatchlist, useRemoveFromWatchlist, useStockSector, useStockFinancials } from "@/queries";
+import { useWatchlist, useUpdateWatchlist, useRemoveFromWatchlist, useStockSector, useStockFinancials, useRealtimeQuotes } from "@/queries";
 import { DataTable, NumericCell, type Column } from "@/shared/table";
 import { fmtPct, fmtQuarter } from "@/shared/utils/format";
 import { WatchlistChart } from "@/features/watchlist/components/watchlist-chart";
@@ -47,6 +47,8 @@ export default function WatchlistPage() {
   const needSectorLookup = !!selected && !selected.sectorCode;
   const { data: sectorLookup } = useStockSector(needSectorLookup ? selected.tsCode : "");
   const { data: financials } = useStockFinancials(selected?.tsCode ?? "");
+  const realtimeCodes = items.map((i) => i.tsCode);
+  const { data: realtimeMap } = useRealtimeQuotes(realtimeCodes);
   const effectiveSectorCode = selected?.sectorCode || sectorLookup?.sectorCode || "";
 
   useEffect(() => {
@@ -65,6 +67,17 @@ export default function WatchlistPage() {
           <span className="block text-[10px] text-text-tertiary font-mono">{item.tsCode.replace(/\.\w+$/, "")}</span>
         </div>
       ),
+    },
+    {
+      key: "pctChange1d",
+      label: "今日",
+      width: "56px",
+      align: "right",
+      render: (item) => {
+        const rt = realtimeMap?.get(item.tsCode);
+        const val = rt ?? item.pctChange1d;
+        return <NumericCell value={val} format={fmtPct} />;
+      },
     },
     {
       key: "pctChange5d",

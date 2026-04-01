@@ -4,6 +4,7 @@ export interface SectorRanking {
   prevRank: number | null;
   sectorCode: string;
   sectorName: string;
+  pctChange1d: number;
   pctChange5d: number;
   pctChange10d: number;
   rps10: number;

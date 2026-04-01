@@ -62,6 +62,16 @@ export interface MarketRisk {
   factors: RiskFactor[];
 }
 
+export interface RealtimeQuote {
+  tsCode: string;
+  name: string;
+  price: number;
+  pctChange: number | null;
+  change: number | null;
+  volume: number;
+  amount: number;
+}
+
 export interface MarketOverview {
   tradeDate: string;
   marketState: MarketState;

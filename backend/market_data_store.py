@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import gzip
+import json
 import sqlite3
 from datetime import datetime
 from io import StringIO
@@ -31,6 +32,17 @@ class MarketDataStore:
                     cache_key TEXT NOT NULL,
                     payload BLOB NOT NULL,
                     row_count INTEGER NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (kind, cache_key)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS json_cache (
+                    kind TEXT NOT NULL,
+                    cache_key TEXT NOT NULL,
+                    payload TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY (kind, cache_key)
                 )
@@ -76,3 +88,33 @@ class MarketDataStore:
                 (kind,),
             ).fetchall()
         return [str(row["cache_key"]) for row in rows]
+
+    # ── JSON 缓存（财务数据等）──
+
+    def get_json(self, kind: str, cache_key: str, max_age_hours: float = 24) -> dict | list | None:
+        """读取 JSON 缓存，超过 max_age_hours 则返回 None"""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT payload, updated_at FROM json_cache WHERE kind = ? AND cache_key = ?",
+                (kind, cache_key),
+            ).fetchone()
+        if row is None:
+            return None
+        age = (datetime.now() - datetime.fromisoformat(row["updated_at"])).total_seconds() / 3600
+        if age > max_age_hours:
+            return None
+        return json.loads(row["payload"])
+
+    def set_json(self, kind: str, cache_key: str, data: dict | list) -> None:
+        payload = json.dumps(data, ensure_ascii=False)
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO json_cache (kind, cache_key, payload, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(kind, cache_key) DO UPDATE SET
+                    payload = excluded.payload,
+                    updated_at = excluded.updated_at
+                """,
+                (kind, cache_key, payload, self._now()),
+            )
