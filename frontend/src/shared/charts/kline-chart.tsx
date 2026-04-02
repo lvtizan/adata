@@ -115,6 +115,36 @@ function ensureOverlays() {
     },
   });
 
+  // 左侧突破"突"标记（红色圆底白字）
+  registerOverlay({
+    name: "breakoutMarker",
+    needDefaultPointFigure: false, needDefaultXAxisFigure: false, needDefaultYAxisFigure: false,
+    totalStep: 1,
+    createPointFigures: ({ coordinates }) => {
+      const point = coordinates[0];
+      if (!point) return [];
+      return [
+        { type: "circle", attrs: { x: point.x, y: point.y - 18, r: 10 }, styles: { style: "stroke_fill" as const, color: "#ef4444", borderColor: "#dc2626", borderSize: 1 }, ignoreEvent: true },
+        { type: "text", attrs: { x: point.x, y: point.y - 18, text: "突", align: "center" as const, baseline: "middle" as const }, styles: { color: "#ffffff", size: 10, weight: 800 }, ignoreEvent: true },
+      ];
+    },
+  });
+
+  // LL 新低标记（绿色圆底白字）
+  registerOverlay({
+    name: "llMarker",
+    needDefaultPointFigure: false, needDefaultXAxisFigure: false, needDefaultYAxisFigure: false,
+    totalStep: 1,
+    createPointFigures: ({ coordinates }) => {
+      const point = coordinates[0];
+      if (!point) return [];
+      return [
+        { type: "circle", attrs: { x: point.x, y: point.y + 18, r: 10 }, styles: { style: "stroke_fill" as const, color: "#22c55e", borderColor: "#16a34a", borderSize: 1 }, ignoreEvent: true },
+        { type: "text", attrs: { x: point.x, y: point.y + 18, text: "LL", align: "center" as const, baseline: "middle" as const }, styles: { color: "#ffffff", size: 9, weight: 800 }, ignoreEvent: true },
+      ];
+    },
+  });
+
   // 左侧价格标签（贴左边缘）
   registerOverlay<{ text: string; color: string; bg: string }>({
     name: "leftTag",
@@ -258,6 +288,45 @@ export function KlineChart({
           chart.createOverlay({ name: "hhMarker", groupId: SYSTEM_GROUP, points: [{ timestamp: ts, value: hp }], extendData: "H2", lock: true });
           chart.createOverlay({ name: "fengDoubleBottom", groupId: SYSTEM_GROUP, points: [{ timestamp: ts, value: s.price }], lock: true });
         }
+      }
+    }
+
+    // ── 左侧突破"突"+ 新低"LL"标记（只显示最新一个）──
+    if (validPoints.length > 20) {
+      const lookback = 60;
+      let lastBreakout: { time: string; high: number } | null = null;
+      let lastLL: { time: string; low: number } | null = null;
+
+      for (let i = Math.max(lookback, 20); i < validPoints.length; i++) {
+        const bar = validPoints[i];
+        const start = Math.max(0, i - lookback);
+
+        // 突破检测：阳线 high 超过左侧所有 high
+        let leftMaxHigh = -Infinity;
+        for (let j = start; j < i; j++) {
+          if (validPoints[j].high > leftMaxHigh) leftMaxHigh = validPoints[j].high;
+        }
+        if (bar.high > leftMaxHigh && bar.close > bar.open) {
+          lastBreakout = { time: bar.time, high: bar.high };
+        }
+
+        // LL 检测：low 低于左侧所有 low
+        let leftMinLow = Infinity;
+        for (let j = start; j < i; j++) {
+          if (validPoints[j].low < leftMinLow) leftMinLow = validPoints[j].low;
+        }
+        if (bar.low < leftMinLow && bar.close < bar.open) {
+          lastLL = { time: bar.time, low: bar.low };
+        }
+      }
+
+      if (lastBreakout) {
+        const ts = toTs(lastBreakout.time);
+        if (ts) chart.createOverlay({ name: "breakoutMarker", groupId: SYSTEM_GROUP, points: [{ timestamp: ts, value: lastBreakout.high }], lock: true });
+      }
+      if (lastLL) {
+        const ts = toTs(lastLL.time);
+        if (ts) chart.createOverlay({ name: "llMarker", groupId: SYSTEM_GROUP, points: [{ timestamp: ts, value: lastLL.low }], lock: true });
       }
     }
 

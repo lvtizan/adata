@@ -15,7 +15,7 @@ export const router = createBrowserRouter([
     path: "/",
     element: <RootLayout />,
     children: [
-      { index: true, element: <Navigate to="/dashboard" replace /> },
+      { index: true, element: <Navigate to="/intraday" replace /> },
       { path: "dashboard", element: <DashboardPage /> },
       { path: "index-radar", element: <IndexRadarPage /> },
       { path: "sector-workbench", element: <SectorWorkbenchPage /> },

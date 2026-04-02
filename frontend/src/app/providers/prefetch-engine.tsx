@@ -72,8 +72,8 @@ export function PrefetchEngine() {
           const code = item.tsCode;
           return [
             qc.prefetchQuery({
-              queryKey: ["chart", "stock", code, 120],
-              queryFn: () => getStockChart(code, 120),
+              queryKey: ["chart", "stock", code, 120, "1d"],
+              queryFn: () => getStockChart(code, 120, "1d"),
               staleTime: 60_000,
             }),
             qc.prefetchQuery({
@@ -159,8 +159,8 @@ export function PrefetchEngine() {
           const code = item.tsCode;
           return [
             qc.prefetchQuery({
-              queryKey: ["chart", "stock", code, 120],
-              queryFn: () => getStockChart(code, 120),
+              queryKey: ["chart", "stock", code, 120, "1d"],
+              queryFn: () => getStockChart(code, 120, "1d"),
               staleTime: 60_000,
             }),
             qc.prefetchQuery({

@@ -1701,12 +1701,19 @@ class MarketEngine:
         import urllib.request
         from concurrent.futures import ThreadPoolExecutor
 
-        # 获取所有 A 股代码
-        try:
-            basic = self.pro.stock_basic(exchange="", list_status="L", fields="ts_code")
-            all_codes = basic["ts_code"].tolist()
-        except Exception:
-            all_codes = []
+        # 从成分股映射中提取所有股票代码（不依赖 Tushare stock_basic）
+        mapping, _ = self._ensure_ths_member_cache()
+        code_set: set[str] = set()
+        for codes in mapping.values():
+            code_set.update(codes)
+        if not code_set:
+            # fallback: 尝试 Tushare
+            try:
+                basic = self.pro.stock_basic(exchange="", list_status="L", fields="ts_code")
+                code_set = set(basic["ts_code"].tolist())
+            except Exception:
+                pass
+        all_codes = list(code_set)
 
         sina_codes: list[str] = []
         code_map: dict[str, str] = {}

@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { useSectorStocks } from "@/queries";
+import { useSectorStocks, useStockFinancials } from "@/queries";
 import { DataTable, NumericCell, type Column } from "@/shared/table";
-import { fmtPct } from "@/shared/utils/format";
+import { fmtPct, fmtQuarter } from "@/shared/utils/format";
 import { WatchlistChart } from "@/features/watchlist/components/watchlist-chart";
 import { AttributionPanel } from "@/features/chart/components/attribution-panel";
 import { StockTagsPanel } from "@/features/chart/components/stock-tags-panel";
@@ -22,7 +22,6 @@ export default function SectorWorkbenchPage() {
   const initialStockCode = searchParams.get("stockCode") || "";
 
   const { data: items = [], isLoading, error } = useSectorStocks(sectorCode);
-
   const [selectedCode, setSelectedCode] = useState("");
   const [drawingTool, setDrawingTool] = useState<string | null>(null);
   const [selectedOverlay, setSelectedOverlay] = useState<{ id: string | null; locked: boolean; name: string | null }>({ id: null, locked: false, name: null });
@@ -33,6 +32,7 @@ export default function SectorWorkbenchPage() {
   const draggingRight = useRef(false);
 
   const selected = items.find((i) => i.tsCode === selectedCode) || items.find((i) => i.tsCode === initialStockCode) || items[0];
+  const { data: financials } = useStockFinancials(selected?.tsCode ?? "");
   const sectorName = items[0]?.sectorName || sectorNameFromQuery || "细分板块";
 
   useEffect(() => {
@@ -172,6 +172,24 @@ export default function SectorWorkbenchPage() {
                     </div>
                   ))}
                 </div>
+                {financials?.periods && financials.periods.length > 0 && (
+                  <div className="flex items-start shrink-0">
+                    <div className="text-[10px] text-text-tertiary leading-none pt-1">营收同比</div>
+                    <div className="flex items-stretch border border-border-default rounded text-xs overflow-hidden ml-2">
+                      {financials.periods.slice(0, 4).map((period) => (
+                        <div key={period.endDate} className="px-2 py-1 border-r border-border-default last:border-r-0 min-w-[72px]">
+                          <span className="block text-[10px] text-text-tertiary">{fmtQuarter(period.endDate)}</span>
+                          <strong className={cn(
+                            "text-xs font-semibold font-mono",
+                            period.revenueYoY == null ? "text-text-quaternary" : period.revenueYoY >= 0 ? "text-state-up" : "text-state-down",
+                          )}>
+                            {period.revenueYoY != null ? fmtPct(period.revenueYoY) : "-"}
+                          </strong>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 <div className="ml-auto flex items-center gap-1 shrink-0">
                   <Button
                     size="sm"

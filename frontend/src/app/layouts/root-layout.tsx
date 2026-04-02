@@ -5,8 +5,8 @@ import { useMarketOverview, useBullCamp, useWatchlist } from "@/queries";
 import { Activity, BarChart3, Eye, Flame, Settings, Crosshair, FileText, TrendingUp } from "lucide-react";
 
 const navItems = [
-  { path: "/dashboard", label: "板块分析", icon: BarChart3 },
   { path: "/intraday", label: "盘中观察", icon: TrendingUp },
+  { path: "/dashboard", label: "板块分析", icon: BarChart3 },
   { path: "/index-radar", label: "指数雷达", icon: Activity },
   { path: "/watchlist", label: "自选股", icon: Eye },
   { path: "/bullcamp", label: "牛股集中营", icon: Flame },
