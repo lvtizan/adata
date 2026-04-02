@@ -18,6 +18,7 @@ backend/.env
 
 # 后端缓存数据（SQLite 等）
 backend/data/
+backend/logs/
 
 # 旧版输出目录
 output/
@@ -27,6 +28,13 @@ output/
 *.log
 Thumbs.db
 .pids/
+
+# Rust / Tauri build artifacts
+frontend/src-tauri/target/
+frontend/src-tauri/target 2/
+
+# Finder duplicate remnants
+frontend/src-tauri/* 2
 
 # IDE
 .vscode/

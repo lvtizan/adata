@@ -1,0 +1,24 @@
+#!/bin/bash
+# Tauri sidecar 启动器 — 启动 Python 后端
+# 文件名带架构后缀是 Tauri sidecar 的约定
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# 开发模式下，后端在项目根目录
+if [ -f "$SCRIPT_DIR/../../../../backend/api_app.py" ]; then
+    BACKEND_DIR="$SCRIPT_DIR/../../../../backend"
+elif [ -f "$SCRIPT_DIR/../backend/api_app.py" ]; then
+    BACKEND_DIR="$SCRIPT_DIR/../backend"
+else
+    echo "Error: Cannot find backend/api_app.py"
+    exit 1
+fi
+
+cd "$BACKEND_DIR"
+
+# 加载 .env
+if [ -f .env ]; then
+    export $(cat .env | grep -v '^#' | xargs)
+fi
+
+exec python3 server.py
