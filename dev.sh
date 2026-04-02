@@ -16,7 +16,7 @@ NC='\033[0m'
 
 # ── 停止所有服务 ──
 stop_all() {
-    for p in 5174 8088 8082 2024 8001 3000; do
+    for p in 5174 8088 8082 2024 8001 3000 5173 8080; do
         lsof -ti :$p 2>/dev/null | xargs kill -9 2>/dev/null
     done
     # 停止调度器

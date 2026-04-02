@@ -7,6 +7,7 @@ import WatchlistPage from "@/pages/watchlist/page";
 import BullcampPage from "@/pages/bullcamp/page";
 import HHScanPage from "@/pages/hh-scan/page";
 import IntradayPage from "@/pages/intraday/page";
+import MarketOverviewPage from "@/pages/market-overview/page";
 import MarketRecapPage from "@/pages/market-recap/page";
 import SettingsPage from "@/pages/settings/page";
 
@@ -20,6 +21,7 @@ export const router = createBrowserRouter([
       { path: "index-radar", element: <IndexRadarPage /> },
       { path: "sector-workbench", element: <SectorWorkbenchPage /> },
       { path: "intraday", element: <IntradayPage /> },
+      { path: "market-overview", element: <MarketOverviewPage /> },
       { path: "watchlist", element: <WatchlistPage /> },
       { path: "bullcamp", element: <BullcampPage /> },
       { path: "hh-scan", element: <HHScanPage /> },
