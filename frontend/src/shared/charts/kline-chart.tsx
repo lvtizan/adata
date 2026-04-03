@@ -2,19 +2,20 @@ import { useEffect, useRef, useCallback } from "react";
 import { init, dispose, registerOverlay, type Chart } from "klinecharts";
 import { useAppStore } from "@/store";
 import { getKLineStyles, dateToTimestamp } from "@/app/theme/chart-theme";
-import type { CandlePoint, FengSignals, ChartDrawingOverlay } from "@/shared/types";
-import type { PatternSignal, DrawdownMarker } from "@/services";
+import type { CandlePoint, FengSignals, ChartDrawingOverlay, ChartSignal } from "@/shared/types";
+import type { DrawdownMarker } from "@/services";
 import type { SupportLevel, ResistanceLevel } from "@/services/stock.service";
 
 interface KlineChartProps {
   points: CandlePoint[];
   height?: number;
   showVolume?: boolean;
-  signals?: PatternSignal[];
+  signals?: ChartSignal[];
   drawdowns?: DrawdownMarker[];
   supports?: SupportLevel[];
   resistances?: ResistanceLevel[];
   fengSignals?: FengSignals;
+  frequency?: string;
   /** 画线工具相关 */
   enableDrawing?: boolean;
   activeTool?: string | null;
@@ -26,6 +27,33 @@ interface KlineChartProps {
 
 function toTs(v: string): number {
   return dateToTimestamp(v);
+}
+
+function resolvePeriod(frequency?: string) {
+  if (!frequency || frequency === "1d") {
+    return { type: "day" as const, span: 1 };
+  }
+  if (frequency === "1w") {
+    return { type: "week" as const, span: 1 };
+  }
+  if (frequency === "1M") {
+    return { type: "month" as const, span: 1 };
+  }
+  const minuteMatch = frequency.match(/^(\d+)m$/);
+  if (minuteMatch) {
+    return { type: "minute" as const, span: Number(minuteMatch[1]) };
+  }
+  return { type: "day" as const, span: 1 };
+}
+
+function getSignalAnchorValue(signal: ChartSignal) {
+  if (signal.type === "doubleBottom" || signal.type === "h2_w") {
+    return signal.lowPrice ?? signal.price;
+  }
+  if (signal.type === "doubleTop" || signal.type === "breakout") {
+    return signal.highPrice ?? signal.price;
+  }
+  return signal.price;
 }
 
 // ── 全局注册自定义 overlay（只注册一次）──
@@ -115,17 +143,50 @@ function ensureOverlays() {
     },
   });
 
-  // 左侧突破"突"标记（红色圆底白字）
+  // 双顶标记
   registerOverlay({
-    name: "breakoutMarker",
+    name: "doubleTopMarker",
     needDefaultPointFigure: false, needDefaultXAxisFigure: false, needDefaultYAxisFigure: false,
     totalStep: 1,
-    createPointFigures: ({ coordinates }) => {
+    createPointFigures: ({ overlay, coordinates }) => {
       const point = coordinates[0];
       if (!point) return [];
+      const text = typeof overlay.extendData === "string" && overlay.extendData ? overlay.extendData : "双顶";
       return [
-        { type: "circle", attrs: { x: point.x, y: point.y - 18, r: 10 }, styles: { style: "stroke_fill" as const, color: "#ef4444", borderColor: "#dc2626", borderSize: 1 }, ignoreEvent: true },
-        { type: "text", attrs: { x: point.x, y: point.y - 18, text: "突", align: "center" as const, baseline: "middle" as const }, styles: { color: "#ffffff", size: 10, weight: 800 }, ignoreEvent: true },
+        { type: "text", attrs: { x: point.x, y: point.y - 24, text, align: "center" as const, baseline: "bottom" as const }, styles: { color: "#16a34a", size: 12, weight: 800 }, ignoreEvent: true },
+        { type: "text", attrs: { x: point.x, y: point.y - 12, text: "↓", align: "center" as const, baseline: "middle" as const }, styles: { color: "#16a34a", size: 12, weight: 900 }, ignoreEvent: true },
+      ];
+    },
+  });
+
+  // 突破标记：改成胶囊标签，避免继续显示旧的红色小圆点“突”
+  registerOverlay({
+    name: "breakoutBadgeMarker",
+    needDefaultPointFigure: false, needDefaultXAxisFigure: false, needDefaultYAxisFigure: false,
+    totalStep: 1,
+    createPointFigures: ({ overlay, coordinates }) => {
+      const point = coordinates[0];
+      if (!point) return [];
+      const text = typeof overlay.extendData === "string" && overlay.extendData ? overlay.extendData : "突破";
+      return [
+        {
+          type: "text",
+          attrs: { x: point.x, y: point.y - 18, text, align: "center" as const, baseline: "middle" as const },
+          styles: {
+            backgroundColor: "rgba(239,68,68,0.92)",
+            borderColor: "rgba(220,38,38,0.96)",
+            borderSize: 1,
+            borderRadius: 10,
+            color: "#ffffff",
+            size: 10,
+            weight: 700,
+            paddingLeft: 7,
+            paddingRight: 7,
+            paddingTop: 3,
+            paddingBottom: 3,
+          },
+          ignoreEvent: true,
+        },
       ];
     },
   });
@@ -170,9 +231,9 @@ function ensureOverlays() {
 
 function loadChartData(chart: Chart, symbol: string, data: Array<{
   timestamp: number; open: number; high: number; low: number; close: number; volume?: number; turnover?: number;
-}>) {
+}>, frequency?: string) {
   chart.setSymbol({ ticker: symbol, pricePrecision: 2, volumePrecision: 0 });
-  chart.setPeriod({ type: "day", span: 1 });
+  chart.setPeriod(resolvePeriod(frequency));
   chart.setDataLoader({ getBars: ({ callback }) => { callback(data, false); } });
   chart.setOffsetRightDistance(0);
   chart.setRightMinVisibleBarCount(0);
@@ -182,7 +243,7 @@ function loadChartData(chart: Chart, symbol: string, data: Array<{
 const SYSTEM_GROUP = "__system__";
 
 export function KlineChart({
-  points, height, showVolume = true, signals, drawdowns, supports, resistances, fengSignals,
+  points, height, showVolume = true, signals, drawdowns, supports, resistances, fengSignals, frequency,
   enableDrawing, activeTool, initialDrawings, onDrawingsChange, chartRef: externalChartRef,
 }: KlineChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -232,7 +293,7 @@ export function KlineChart({
       timestamp: toTs(p.time), open: p.open, high: p.high, low: p.low, close: p.close,
       volume: p.volume, turnover: p.amount ?? 0,
     }));
-    loadChartData(chart, "chart", klineData);
+    loadChartData(chart, "chart", klineData, frequency);
 
     // ── 系统overlay：支撑线（只画最接近当前价的一条）──
     if (supports?.length && validPoints.length) {
@@ -291,8 +352,61 @@ export function KlineChart({
       }
     }
 
+    // ── 通用信号：双顶 / 双底 / 突 / HH ──
+    if (signals?.length) {
+      for (const signal of signals) {
+        const ts = toTs(signal.date);
+        if (!ts) continue;
+        const type = String(signal.type || "").toLowerCase();
+        const label = signal.label || signal.type || "";
+
+        if (type === "doublebottom" || type === "h2_w" || label === "W") {
+          chart.createOverlay({
+            name: "fengDoubleBottom",
+            groupId: SYSTEM_GROUP,
+            points: [{ timestamp: ts, value: getSignalAnchorValue(signal) }],
+            extendData: "W",
+            lock: true,
+          });
+          continue;
+        }
+
+        if (type === "doubletop" || label === "双顶" || label === "m") {
+          chart.createOverlay({
+            name: "doubleTopMarker",
+            groupId: SYSTEM_GROUP,
+            points: [{ timestamp: ts, value: getSignalAnchorValue(signal) }],
+            extendData: "双顶",
+            lock: true,
+          });
+          continue;
+        }
+
+        if (type === "breakout" || label === "突" || label === "突破") {
+          chart.createOverlay({
+            name: "breakoutBadgeMarker",
+            groupId: SYSTEM_GROUP,
+            points: [{ timestamp: ts, value: getSignalAnchorValue(signal) }],
+            extendData: "突破",
+            lock: true,
+          });
+          continue;
+        }
+
+        if (type === "hh" || type === "h1" || type === "h2" || type === "h3") {
+          chart.createOverlay({
+            name: "hhMarker",
+            groupId: SYSTEM_GROUP,
+            points: [{ timestamp: ts, value: signal.price }],
+            extendData: label.toUpperCase(),
+            lock: true,
+          });
+        }
+      }
+    }
+
     // ── 左侧突破"突"+ 新低"LL"标记（只显示最新一个）──
-    if (validPoints.length > 20) {
+    if (!signals?.length && validPoints.length > 20) {
       const lookback = 60;
       let lastBreakout: { time: string; high: number } | null = null;
       let lastLL: { time: string; low: number } | null = null;
@@ -322,7 +436,7 @@ export function KlineChart({
 
       if (lastBreakout) {
         const ts = toTs(lastBreakout.time);
-        if (ts) chart.createOverlay({ name: "breakoutMarker", groupId: SYSTEM_GROUP, points: [{ timestamp: ts, value: lastBreakout.high }], lock: true });
+        if (ts) chart.createOverlay({ name: "breakoutBadgeMarker", groupId: SYSTEM_GROUP, points: [{ timestamp: ts, value: lastBreakout.high }], extendData: "突破", lock: true });
       }
       if (lastLL) {
         const ts = toTs(lastLL.time);

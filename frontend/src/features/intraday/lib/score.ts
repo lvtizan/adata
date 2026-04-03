@@ -6,6 +6,7 @@ import type {
   IntradayStockScoringInput,
   IntradayScoringTag,
 } from "../types";
+import { normalizePercentInput } from "../utils";
 
 function clamp(value: number, min = 0, max = 100): number {
   if (Number.isNaN(value)) return min;
@@ -33,6 +34,19 @@ function invert(value: number): number {
 
 function scoreTrend(change: number, scale = 1): number {
   return clamp(50 + change * scale);
+}
+
+function normalizeRanking(rank: number | null | undefined, maxRank = 60): number {
+  if (!Number.isFinite(rank)) return 50;
+  return clamp(100 - (((rank as number) - 1) / Math.max(1, maxRank - 1)) * 100);
+}
+
+function normalizeLogAmount(amount: number, baseline = 1_000_000_000, cap = 15_000_000_000): number {
+  if (!Number.isFinite(amount) || amount <= 0) return 0;
+  const low = Math.log10(baseline);
+  const high = Math.log10(cap);
+  const value = Math.log10(Math.max(amount, 1));
+  return clamp(((value - low) / Math.max(0.0001, high - low)) * 100);
 }
 
 function scoreRatio(ratio: number, low: number, high: number): number {
@@ -108,26 +122,34 @@ function marketScore(input: IntradayStockScoringInput | IntradaySectorScoringInp
   const risk = invert(market.marketRisk?.score ?? 50);
 
   const breadth = market.breadth;
+  const ma20 = normalizePercentInput(breadth.aboveMa20Ratio);
+  const ma60 = normalizePercentInput(breadth.aboveMa60Ratio);
   const breadthScore = avg([
     scoreRatio((breadth.upCount || 0) - (breadth.downCount || 0), -2000, 2000),
     scoreRatio((breadth.limitUpCount || 0) - (breadth.limitDownCount || 0), -80, 80),
     scoreRatio((breadth.newHighCount || 0) - (breadth.newLowCount || 0), -200, 200),
-    clamp((((breadth.aboveMa20Ratio || 0) + (breadth.aboveMa60Ratio || 0)) / 2) * 100),
+    avg([ma20, ma60]),
   ]);
 
-  return round(state * 0.28 + emotion * 0.22 + risk * 0.22 + breadthScore * 0.28);
+  return round(state * 0.3 + emotion * 0.18 + risk * 0.22 + breadthScore * 0.3);
 }
 
 function sectorContextScore(input: IntradayStockScoringInput | IntradaySectorScoringInput): number {
   const sector = input.sector;
   if (!sector) return 50;
 
-  const rankMomentum = sector.rankChange == null ? 50 : clamp(50 + sector.rankChange * 10);
-  const pct = clamp(50 + sector.pctChange1d * 4 + sector.pctChange5d * 2 + sector.pctChange10d * 1.5);
+  const rankScore = normalizeRanking(sector.rank);
+  const rankMomentum = sector.rankChange == null ? 50 : clamp(50 + sector.rankChange * 12);
+  const pct = avg([
+    scoreTrend(sector.pctChange1d, 7),
+    scoreTrend(sector.pctChange5d, 3),
+    scoreTrend(sector.pctChange10d, 2.2),
+  ]);
   const rps = clamp(sector.rps10);
   const leadership = clamp(50 + Math.min(sector.limitUpCount || 0, 8) * 6);
+  const amount = normalizeLogAmount(sector.amount || 0, 2_000_000_000, 30_000_000_000);
 
-  return round(rps * 0.32 + pct * 0.3 + rankMomentum * 0.18 + leadership * 0.2);
+  return round(rps * 0.28 + pct * 0.24 + rankScore * 0.18 + rankMomentum * 0.1 + leadership * 0.12 + amount * 0.08);
 }
 
 function stockPatternScore(input: IntradayStockScoringInput): number {
@@ -146,10 +168,18 @@ function stockPatternScore(input: IntradayStockScoringInput): number {
     clamp(stock.rps20),
   ]);
 
-  const maBonus = stock.ma20 > 0 ? (stock.close >= stock.ma20 ? 12 : -10) : 0;
-  const sectorRelative = sector ? clamp(50 + (stock.pctChange1d - sector.pctChange1d) * 8) : 50;
+  const maSignal = stock.ma20 > 0
+    ? clamp(50 + ((stock.close - stock.ma20) / stock.ma20) * 400)
+    : 50;
+  const sectorRelative = sector
+    ? avg([
+        clamp(50 + (stock.pctChange1d - sector.pctChange1d) * 8),
+        clamp(50 + (stock.pctChange5d - sector.pctChange5d) * 4),
+        clamp(50 + (stock.pctChange10d - sector.pctChange10d) * 2.8),
+      ])
+    : 50;
 
-  return round(momentum * 0.35 + strength * 0.35 + sectorRelative * 0.2 + clamp(50 + maBonus) * 0.1);
+  return round(momentum * 0.32 + strength * 0.32 + sectorRelative * 0.24 + maSignal * 0.12);
 }
 
 function stockFlowScore(input: IntradayStockScoringInput): number {
@@ -158,24 +188,70 @@ function stockFlowScore(input: IntradayStockScoringInput): number {
 
   const amountQuality = sector?.amount && sector.amount > 0
     ? scoreRatio(pctShare(stock.amount || 0, sector.amount || 0), 0.1, 8)
-    : clamp(50 + Math.log10((stock.amount || 1) + 1) * 10);
+    : normalizeLogAmount(stock.amount || 0, 300_000_000, 6_000_000_000);
 
   const dataModeBonus = stock.dataMode === "full" ? 8 : -8;
-  const activity = clamp(50 + Math.min(Math.max(stock.pctChange1d, -5), 5) * 6);
+  const activity = avg([
+    clamp(50 + Math.min(Math.max(stock.pctChange1d, -6), 6) * 6),
+    clamp(50 + Math.min(Math.max(stock.pctChange5d, -12), 12) * 2.8),
+  ]);
+  const absoluteAmount = normalizeLogAmount(stock.amount || 0, 300_000_000, 8_000_000_000);
 
-  return round(amountQuality * 0.5 + activity * 0.3 + clamp(50 + dataModeBonus) * 0.2);
+  return round(amountQuality * 0.4 + absoluteAmount * 0.25 + activity * 0.2 + clamp(50 + dataModeBonus) * 0.15);
 }
 
 function stockRiskPenalty(input: IntradayStockScoringInput): number {
-  const penalties: number[] = [];
+  let penalty = 0;
+  const isTrendLeader =
+    input.stock.rps20 >= 85 &&
+    input.stock.pctChange10d > 0 &&
+    input.stock.ma20 > 0 &&
+    input.stock.close >= input.stock.ma20;
 
-  if (input.stock.dataMode === "fallback") penalties.push(8);
-  if (input.stock.ma20 > 0 && input.stock.close < input.stock.ma20) penalties.push(6);
-  if (input.sector && input.stock.pctChange1d < input.sector.pctChange1d - 1.5) penalties.push(5);
-  if (input.market?.marketRisk?.score != null && input.market.marketRisk.score >= 70) penalties.push(6);
-  if (input.market?.emotionState?.score != null && input.market.emotionState.score <= 35) penalties.push(5);
+  if (input.stock.dataMode === "fallback") penalty += 8;
+  if (input.stock.ma20 > 0 && input.stock.close < input.stock.ma20) penalty += 6;
+  if (input.stock.pctChange1d < 0) penalty += isTrendLeader ? 1 : 4;
+  if (input.stock.pctChange5d < 0) penalty += isTrendLeader ? 1 : 3;
+  if (input.sector && input.stock.pctChange1d < input.sector.pctChange1d - 1.5) penalty += 5;
+  if (input.market?.marketRisk?.score != null && input.market.marketRisk.score >= 70) penalty += 5;
+  if (input.market?.emotionState?.score != null && input.market.emotionState.score <= 35) penalty += 4;
 
-  return round(avg(penalties));
+  return round(clamp(penalty, 0, 20));
+}
+
+function applyStockConvictionBonus(
+  result: IntradayScoreResult,
+  input: IntradayStockScoringInput,
+): IntradayScoreResult {
+  const { stock, sector } = input;
+  let bonus = 0;
+
+  if (stock.rps20 >= 90) bonus += 8;
+  else if (stock.rps20 >= 85) bonus += 6;
+  else if (stock.rps20 >= 80) bonus += 4;
+
+  if (stock.rps10 >= 85) bonus += 3;
+  else if (stock.rps10 >= 75) bonus += 2;
+
+  if (stock.pctChange10d >= 12) bonus += 5;
+  else if (stock.pctChange10d >= 6) bonus += 3;
+  else if (stock.pctChange10d >= 3) bonus += 1;
+
+  if (stock.pctChange5d >= 5) bonus += 2;
+  if (stock.ma20 > 0 && stock.close >= stock.ma20) bonus += 3;
+  if (sector.rank <= 10) bonus += 2;
+  if (stock.amount >= 1_000_000_000) bonus += 2;
+
+  const adjustedScore = clamp(result.total + bonus);
+  const grade = gradeFromScore(adjustedScore);
+
+  return {
+    ...result,
+    totalScore: round(adjustedScore),
+    total: round(adjustedScore),
+    grade,
+    verdict: verdictFromScore(adjustedScore, result.tags),
+  };
 }
 
 function sectorPatternScore(input: IntradaySectorScoringInput): number {
@@ -301,5 +377,6 @@ export function scoreIntradayStock(input: IntradayStockScoringInput): IntradaySc
     riskPenalty: stockRiskPenalty(input),
   };
 
-  return buildResult(breakdown, stockTags(input));
+  const result = buildResult(breakdown, stockTags(input));
+  return applyStockConvictionBonus(result, input);
 }

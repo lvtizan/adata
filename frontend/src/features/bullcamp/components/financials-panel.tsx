@@ -102,8 +102,8 @@ export function FinancialsPanel({ tsCode }: { tsCode: string }) {
         <table className="w-full border-collapse text-sm">
           <thead>
             <tr>
-              {["报告期", "营收", "同比", "净利润", "同比", "毛利率", "ROE"].map((h) => (
-                <th key={h} className="sticky top-0 bg-surface px-3 py-2 text-xs font-semibold text-text-secondary border-b border-border-default text-right first:text-left">{h}</th>
+              {["报告期", "营收", "同比", "净利润", "同比", "毛利率", "ROE"].map((h, index) => (
+                <th key={`${h}-${index}`} className="sticky top-0 bg-surface px-3 py-2 text-xs font-semibold text-text-secondary border-b border-border-default text-right first:text-left">{h}</th>
               ))}
             </tr>
           </thead>

@@ -3,6 +3,12 @@ export function formatScore(value: number | null | undefined): string {
   return `${Math.round(value)}`;
 }
 
+export function normalizePercentInput(value: number | null | undefined): number {
+  if (value == null || Number.isNaN(value)) return 0;
+  if (value <= 1 && value >= 0) return value * 100;
+  return Math.max(0, Math.min(100, value));
+}
+
 export function clampScore(value: number | null | undefined): number {
   if (value == null || Number.isNaN(value)) return 0;
   return Math.max(0, Math.min(100, value));
