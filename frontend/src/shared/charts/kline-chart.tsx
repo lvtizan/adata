@@ -405,42 +405,54 @@ export function KlineChart({
       }
     }
 
-    // ── 左侧突破"突"+ 新低"LL"标记（只显示最新一个）──
+    // ── 左侧突破"突"标记（只显示最新一个）──
     if (!signals?.length && validPoints.length > 20) {
       const lookback = 60;
       let lastBreakout: { time: string; high: number } | null = null;
-      let lastLL: { time: string; low: number } | null = null;
+      let lastPeakHigh: number | null = null; // 记录左峰的最高价
 
       for (let i = Math.max(lookback, 20); i < validPoints.length; i++) {
         const bar = validPoints[i];
         const start = Math.max(0, i - lookback);
 
-        // 突破检测：阳线 high 超过左侧所有 high
-        let leftMaxHigh = -Infinity;
+        // 找到左峰K线：左侧最高价最高的那根K线
+        let leftPeakHigh = -Infinity;
+        let leftPeakIndex = -1;
         for (let j = start; j < i; j++) {
-          if (validPoints[j].high > leftMaxHigh) leftMaxHigh = validPoints[j].high;
-        }
-        if (bar.high > leftMaxHigh && bar.close > bar.open) {
-          lastBreakout = { time: bar.time, high: bar.high };
+          if (validPoints[j].high > leftPeakHigh) {
+            leftPeakHigh = validPoints[j].high;
+            leftPeakIndex = j;
+          }
         }
 
-        // LL 检测：low 低于左侧所有 low
-        let leftMinLow = Infinity;
-        for (let j = start; j < i; j++) {
-          if (validPoints[j].low < leftMinLow) leftMinLow = validPoints[j].low;
+        // 突破检测：当前K线最高价突破左峰K线的最高价
+        if (leftPeakIndex >= 0 && bar.high > leftPeakHigh && bar.close > bar.open) {
+          lastBreakout = { time: bar.time, high: bar.high };
+          lastPeakHigh = leftPeakHigh; // 记录左峰最高价
         }
-        if (bar.low < leftMinLow && bar.close < bar.open) {
-          lastLL = { time: bar.time, low: bar.low };
-        }
+      }
+
+      // 画出左峰线
+      if (lastPeakHigh !== null) {
+        chart.createOverlay({ 
+          name: "horizontalStraightLine", 
+          groupId: SYSTEM_GROUP, 
+          points: [{ value: lastPeakHigh }], 
+          styles: { line: { color: "#f59e0b", size: 1.5, style: "dashed" as const } }, 
+          lock: true 
+        });
+        chart.createOverlay({ 
+          name: "levelTag", 
+          groupId: SYSTEM_GROUP, 
+          points: [{ value: lastPeakHigh }], 
+          extendData: { text: "左峰", color: "#ffffff", backgroundColor: "rgba(245,158,11,0.85)", borderColor: "rgba(245,158,11,0.9)" }, 
+          lock: true 
+        });
       }
 
       if (lastBreakout) {
         const ts = toTs(lastBreakout.time);
-        if (ts) chart.createOverlay({ name: "breakoutBadgeMarker", groupId: SYSTEM_GROUP, points: [{ timestamp: ts, value: lastBreakout.high }], extendData: "突破", lock: true });
-      }
-      if (lastLL) {
-        const ts = toTs(lastLL.time);
-        if (ts) chart.createOverlay({ name: "llMarker", groupId: SYSTEM_GROUP, points: [{ timestamp: ts, value: lastLL.low }], lock: true });
+        if (ts) chart.createOverlay({ name: "breakoutBadgeMarker", groupId: SYSTEM_GROUP, points: [{ timestamp: ts, value: lastBreakout.high }], extendData: "突", lock: true });
       }
     }
 

@@ -173,11 +173,41 @@ export function WatchlistChart({ tsCode, sectorCode, stockName, activeTool, freq
       },
     });
     chart.createOverlay({ id: `${groupId}-entry-tag`, name: "leftTag", lock: true, points: [{ value: entry }], extendData: { text: `入场 ${entry}`, color: "#ffffff", bg: "rgba(59,130,246,0.85)" } });
-    // 止损线（红色）
-    chart.createOverlay({ id: `${groupId}-sl`, name: "horizontalStraightLine", lock: true, points: [{ value: sl }], styles: { line: { color: "#ef4444", size: 1, style: "dashed" } } });
+    // 止损线（红色，可拖动）
+    chart.createOverlay({
+      id: `${groupId}-sl`,
+      name: "horizontalStraightLine",
+      lock: false,
+      points: [{ value: sl }],
+      styles: { line: { color: "#ef4444", size: 1, style: "dashed" } },
+      onPressedMoveEnd: (event: any) => {
+        const newPrice = event.overlay?.points?.[0]?.value;
+        if (!newPrice || newPrice <= 0) return;
+        const newSl = +newPrice.toFixed(2);
+        const risk = entry - newSl;
+        const newTp = risk > 0 ? +(entry + risk * 2).toFixed(2) : tp;
+        updateSlTpOverlays(chart, groupId, entry, newSl, newTp);
+        void createPriceAlert({ tsCode, stockName: stockName ?? tsCode, entryPrice: entry, stopLoss: newSl, takeProfit: newTp });
+      },
+    });
     chart.createOverlay({ id: `${groupId}-sl-tag`, name: "leftTag", lock: true, points: [{ value: sl }], extendData: { text: `止损 ${sl}`, color: "#ffffff", bg: "rgba(239,68,68,0.85)" } });
-    // 止盈线（绿色）
-    chart.createOverlay({ id: `${groupId}-tp`, name: "horizontalStraightLine", lock: true, points: [{ value: tp }], styles: { line: { color: "#22c55e", size: 1, style: "dashed" } } });
+    // 止盈线（绿色，可拖动）
+    chart.createOverlay({
+      id: `${groupId}-tp`,
+      name: "horizontalStraightLine",
+      lock: false,
+      points: [{ value: tp }],
+      styles: { line: { color: "#22c55e", size: 1, style: "dashed" } },
+      onPressedMoveEnd: (event: any) => {
+        const newPrice = event.overlay?.points?.[0]?.value;
+        if (!newPrice || newPrice <= 0) return;
+        const newTp = +newPrice.toFixed(2);
+        const risk = (newTp - entry) / 2;
+        const newSl = risk > 0 ? +(entry - risk).toFixed(2) : sl;
+        updateSlTpOverlays(chart, groupId, entry, newSl, newTp);
+        void createPriceAlert({ tsCode, stockName: stockName ?? tsCode, entryPrice: entry, stopLoss: newSl, takeProfit: newTp });
+      },
+    });
     chart.createOverlay({ id: `${groupId}-tp-tag`, name: "leftTag", lock: true, points: [{ value: tp }], extendData: { text: `止盈 ${tp} (2R)`, color: "#ffffff", bg: "rgba(34,197,94,0.85)" } });
 
     // 创建价格预警

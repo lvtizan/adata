@@ -6,8 +6,8 @@ import { useEffect, useState } from "react";
  */
 export function ServerReadyGate({ children }: { children: React.ReactNode }) {
   const [reachable, setReachable] = useState(false);
-  const [dots, setDots] = useState(0);
-  const [elapsed, setElapsed] = useState(0);
+  const [progress, setProgress] = useState(0);
+  const [statusText, setStatusText] = useState("正在连接数据服务");
 
   useEffect(() => {
     let cancelled = false;
@@ -31,29 +31,23 @@ export function ServerReadyGate({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  // 动画点
+  // 监听预加载进度
   useEffect(() => {
     if (reachable) return;
-    const t = setInterval(() => setDots((d) => (d + 1) % 4), 500);
-    return () => clearInterval(t);
-  }, [reachable]);
 
-  // 计时器
-  useEffect(() => {
-    if (reachable) return;
-    const t = setInterval(() => setElapsed((e) => e + 1), 1000);
-    return () => clearInterval(t);
+    const handleProgress = (e: CustomEvent) => {
+      const { progress, stage } = e.detail;
+      setProgress(progress);
+      setStatusText(stage);
+    };
+
+    window.addEventListener('prefetch-progress', handleProgress as EventListener);
+    return () => {
+      window.removeEventListener('prefetch-progress', handleProgress as EventListener);
+    };
   }, [reachable]);
 
   if (reachable) return <>{children}</>;
-
-  const tips = [
-    "正在连接数据服务",
-    "正在加载市场引擎",
-    "正在初始化缓存",
-    "数据预热中，请稍候",
-  ];
-  const tipIndex = Math.min(Math.floor(elapsed / 4), tips.length - 1);
 
   return (
     <div
@@ -109,57 +103,50 @@ export function ServerReadyGate({ children }: { children: React.ReactNode }) {
           display: "flex",
           flexDirection: "column",
           alignItems: "center",
-          gap: 28,
+          gap: 32,
           position: "relative",
           zIndex: 1,
         }}
       >
-        {/* Logo / 品牌 */}
-        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 8 }}>
-          <svg width="36" height="36" viewBox="0 0 36 36" fill="none">
-            <rect width="36" height="36" rx="8" fill="rgba(59,130,246,0.15)" />
-            <path
-              d="M10 24L14 12L18 20L22 14L26 24"
-              stroke="#3b82f6"
-              strokeWidth="2.5"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          </svg>
-          <span
-            style={{
-              fontSize: 22,
-              fontWeight: 700,
-              color: "#e2e8f0",
-              letterSpacing: 1,
-            }}
-          >
-            板块强度选股系统
-          </span>
-        </div>
-
-        {/* 加载动画 */}
-        <div style={{ position: "relative", width: 48, height: 48 }}>
-          <svg width="48" height="48" viewBox="0 0 48 48" style={{ animation: "spin 1.2s linear infinite" }}>
+        {/* 只保留一个大的转圈动画 */}
+        <div style={{ position: "relative", width: 80, height: 80 }}>
+          <svg width="80" height="80" viewBox="0 0 80 80" style={{ animation: "spin 1.2s linear infinite" }}>
             <circle
-              cx="24"
-              cy="24"
-              r="20"
+              cx="40"
+              cy="40"
+              r="36"
               fill="none"
               stroke="rgba(59,130,246,0.15)"
-              strokeWidth="3"
+              strokeWidth="4"
             />
             <circle
-              cx="24"
-              cy="24"
-              r="20"
+              cx="40"
+              cy="40"
+              r="36"
               fill="none"
               stroke="#3b82f6"
-              strokeWidth="3"
+              strokeWidth="4"
               strokeLinecap="round"
-              strokeDasharray="80 50"
+              strokeDasharray={`${progress * 2.26} ${226 - progress * 2.26}`}
+              style={{
+                transition: "stroke-dasharray 0.3s ease"
+              }}
             />
           </svg>
+          {/* 中心显示进度百分比 */}
+          <div
+            style={{
+              position: "absolute",
+              top: "50%",
+              left: "50%",
+              transform: "translate(-50%, -50%)",
+              fontSize: 20,
+              fontWeight: 700,
+              color: "#e2e8f0",
+            }}
+          >
+            {Math.round(progress)}%
+          </div>
         </div>
 
         {/* 状态文字 */}
@@ -168,51 +155,42 @@ export function ServerReadyGate({ children }: { children: React.ReactNode }) {
             display: "flex",
             flexDirection: "column",
             alignItems: "center",
-            gap: 8,
+            gap: 12,
           }}
         >
           <p
             style={{
               color: "#94a3b8",
-              fontSize: 14,
+              fontSize: 15,
               margin: 0,
-              minWidth: 180,
+              minWidth: 200,
               textAlign: "center",
+              fontWeight: 500,
             }}
           >
-            {tips[tipIndex]}{".".repeat(dots)}
+            {statusText}
           </p>
-          {elapsed > 6 && (
-            <p
-              style={{
-                color: "#475569",
-                fontSize: 12,
-                margin: 0,
-              }}
-            >
-              首次启动需要加载数据，约 15-30 秒
-            </p>
-          )}
-        </div>
-
-        {/* 进度条 */}
-        <div
-          style={{
-            width: 200,
-            height: 3,
-            borderRadius: 2,
-            background: "rgba(59,130,246,0.1)",
-            overflow: "hidden",
-          }}
-        >
+          
+          {/* 进度条 */}
           <div
             style={{
-              height: "100%",
+              width: 240,
+              height: 4,
               borderRadius: 2,
-              background: "linear-gradient(90deg, #3b82f6, #6366f1)",
-              animation: "loading-bar 2s ease-in-out infinite",
+              background: "rgba(59,130,246,0.1)",
+              overflow: "hidden",
             }}
-          />
+          >
+            <div
+              style={{
+                height: "100%",
+                width: `${progress}%`,
+                borderRadius: 2,
+                background: "linear-gradient(90deg, #3b82f6, #6366f1)",
+                transition: "width 0.3s ease",
+              }}
+            />
+          </div>
         </div>
       </div>
 
@@ -220,11 +198,6 @@ export function ServerReadyGate({ children }: { children: React.ReactNode }) {
         @keyframes spin {
           from { transform: rotate(0deg); }
           to { transform: rotate(360deg); }
-        }
-        @keyframes loading-bar {
-          0% { width: 0%; margin-left: 0; }
-          50% { width: 60%; margin-left: 20%; }
-          100% { width: 0%; margin-left: 100%; }
         }
       `}</style>
     </div>
