@@ -132,15 +132,11 @@ export function IntradayStockResearchPanel({ score, stock, sector, className }: 
 
       <div className="grid gap-3 xl:grid-cols-2">
         <Section title="财务快照" subtitle="最近季度">
-          <div className="max-h-[460px] overflow-y-auto">
-            <FinancialsPanel tsCode={tsCode} />
-          </div>
+          <FinancialsPanel tsCode={tsCode} />
         </Section>
 
         <Section title="公告与新闻" subtitle="最新信息">
-          <div className="max-h-[460px] overflow-y-auto">
-            <NewsPanel tsCode={tsCode} />
-          </div>
+          <NewsPanel tsCode={tsCode} />
         </Section>
       </div>
 

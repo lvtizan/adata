@@ -11,7 +11,7 @@ import type {
 } from "@/shared/types";
 
 export function getWatchlist() {
-  return api<ListResponse<WatchlistItem>>("/watchlist");
+  return api<ListResponse<WatchlistItem>>("/watchlist", { cacheTTL: 60_000 });
 }
 
 export function addToWatchlist(item: Partial<WatchlistItem>) {
@@ -33,11 +33,14 @@ export function removeFromWatchlist(tsCode: string) {
 }
 
 export function getBullCamp() {
-  return api<ListResponse<BullCampItem>>("/bullcamp");
+  return api<ListResponse<BullCampItem>>("/bullcamp", { cacheTTL: 60_000 });
 }
 
 export function searchMarket(query: string, limit = 12) {
-  return api<MarketSearchResult>(`/search?q=${encodeURIComponent(query)}&limit=${limit}`);
+  return api<MarketSearchResult>(
+    `/search?q=${encodeURIComponent(query)}&limit=${limit}`,
+    { cacheTTL: 120_000 }  // 2 分钟本地缓存，秒级返回
+  );
 }
 
 export function getStockFinancials(tsCode: string, periods = 8) {

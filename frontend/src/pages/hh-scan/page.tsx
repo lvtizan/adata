@@ -1,10 +1,10 @@
 import { useState, useRef, useMemo } from "react";
-import { useHHScan } from "@/queries";
+import { useDoubleBottomScan } from "@/queries";
 import { useAppStore } from "@/store";
 import { DataTable, NumericCell, type Column } from "@/shared/table";
 import { fmtPct, fmtAmount } from "@/shared/utils/format";
 import { CandlestickPanel } from "@/features/chart/components/candlestick-panel";
-import type { HHScanStock, HHScanSector } from "@/services/hh-scan.service";
+import type { DoubleBottomStock, DoubleBottomSector } from "@/services/hh-scan.service";
 import { cn } from "@/lib/utils";
 
 function compareValues(a: any, b: any, key: string, dir: "asc" | "desc"): number {
@@ -16,20 +16,14 @@ function compareValues(a: any, b: any, key: string, dir: "asc" | "desc"): number
   return dir === "asc" ? va - vb : vb - va;
 }
 
-function getSignalTypeColor(signalType: string): string {
-  if (signalType === "H3" || signalType?.includes("H3+")) return "text-state-down";
-  if (signalType === "H2") return "text-accent-warning";
+function getSignalCountColor(count: number): string {
+  if (count >= 3) return "text-state-up font-semibold";
+  if (count >= 2) return "text-accent-warning";
   return "text-text-secondary";
 }
 
-function getSignalTypeBg(signalType: string): string {
-  if (signalType === "H3" || signalType?.includes("H3+")) return "bg-state-down/10";
-  if (signalType === "H2") return "bg-accent-warning/10";
-  return "bg-surface";
-}
-
-export default function HHScanPage() {
-  const { data: scanData, isLoading, error } = useHHScan();
+export default function DoubleBottomScanPage() {
+  const { data: scanData, isLoading, error } = useDoubleBottomScan();
   const { stealthMode } = useAppStore();
   const [selectedSectorCode, setSelectedSectorCode] = useState<string>("");
   const [selectedStockCode, setSelectedStockCode] = useState<string>("");
@@ -102,7 +96,7 @@ export default function HHScanPage() {
   }
 
   // Sector list columns
-  const sectorColumns: Column<HHScanSector>[] = [
+  const sectorColumns: Column<DoubleBottomSector>[] = [
     {
       key: "sectorName",
       label: "板块",
@@ -133,7 +127,7 @@ export default function HHScanPage() {
   ];
 
   // Stock table columns
-  const stockColumns: Column<HHScanStock>[] = [
+  const stockColumns: Column<DoubleBottomStock>[] = [
     {
       key: "stockName",
       label: "股票",
@@ -146,27 +140,21 @@ export default function HHScanPage() {
       ),
     },
     {
-      key: "signalType",
-      label: "信号类型",
-      width: "64px",
+      key: "signalCount",
+      label: "W底数",
+      width: "56px",
       align: "center",
       sortable: true,
       render: (item) => (
-        <span
-          className={cn(
-            "inline-block px-2 py-1 rounded text-xs font-semibold",
-            getSignalTypeBg(item.signalType),
-            getSignalTypeColor(item.signalType)
-          )}
-        >
-          {item.signalType}
+        <span className={cn("text-sm font-mono", getSignalCountColor(item.signalCount))}>
+          {item.signalCount}
         </span>
       ),
     },
     {
       key: "signalDate",
-      label: "日期",
-      width: "72px",
+      label: "信号日",
+      width: "80px",
       align: "center",
       sortable: true,
       render: (item) => <span className="text-xs text-text-secondary">{item.signalDate}</span>,
@@ -211,12 +199,36 @@ export default function HHScanPage() {
       sortable: true,
       render: (item) => <span className="text-sm text-text-secondary">{fmtAmount(item.amount)}</span>,
     },
+    {
+      key: "stopLoss",
+      label: "止损",
+      width: "60px",
+      align: "right",
+      sortable: false,
+      render: (item) => (
+        <span className="text-xs text-state-down font-mono">
+          {item.stopLoss?.toFixed(2) ?? "-"}
+        </span>
+      ),
+    },
+    {
+      key: "takeProfit",
+      label: "目标",
+      width: "60px",
+      align: "right",
+      sortable: false,
+      render: (item) => (
+        <span className="text-xs text-state-up font-mono">
+          {item.takeProfit?.toFixed(2) ?? "-"}
+        </span>
+      ),
+    },
   ];
 
   if (isLoading) {
     return (
       <div className="flex items-center justify-center h-full text-text-tertiary">
-        HH 筛选加载中...
+        双底扫描加载中...
       </div>
     );
   }
@@ -235,9 +247,9 @@ export default function HHScanPage() {
       <div className="px-4 py-3 border-b border-border-default bg-surface">
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-lg font-semibold text-text-primary">HH 信号筛选</h1>
+            <h1 className="text-lg font-semibold text-text-primary">双底扫描</h1>
             <p className="text-xs text-text-secondary mt-1">
-              共 <span className="font-mono font-semibold text-accent">{scanData?.totalSignals ?? 0}</span> 个信号 · 覆盖{" "}
+              共 <span className="font-mono font-semibold text-accent">{scanData?.totalSignals ?? 0}</span> 只股票 · 覆盖{" "}
               <span className="font-mono font-semibold">{sortedSectors.length}</span> 个板块
               {scanData?.tradeDate && (
                 <>
@@ -291,7 +303,7 @@ export default function HHScanPage() {
                   <div>
                     <h2 className="text-sm font-semibold text-text-primary">{activeSector.sectorName}</h2>
                     <p className="text-xs text-text-tertiary">
-                      {sectorStocks.length} 只股票
+                      {sectorStocks.length} 只股票形成双底
                     </p>
                   </div>
                 </div>
@@ -306,7 +318,7 @@ export default function HHScanPage() {
                   selectedKey={selectedStock?.tsCode}
                   onRowClick={(s) => setSelectedStockCode(s.tsCode)}
                   sortFn={compareValues}
-                  defaultSort={{ key: "signalDate", dir: "desc" }}
+                  defaultSort={{ key: "signalCount", dir: "desc" }}
                   compact
                 />
               </div>

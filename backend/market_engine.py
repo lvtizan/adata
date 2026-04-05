@@ -1103,18 +1103,35 @@ class MarketEngine:
         safe_limit = max(1, min(int(limit), 50))
         lower = keyword.lower()
 
-        # 板块搜索：用缓存的 sector_rankings
-        sectors_raw = self.sector_rankings(trade_date, sort_by="rps10", keyword=keyword)
-        sectors = [
-            {
-                "type": "sector",
-                "sectorCode": item.get("sectorCode", ""),
-                "sectorName": item.get("sectorName", ""),
-                "rps10": item.get("rps10"),
-                "pctChange5d": item.get("pctChange5d"),
-            }
-            for item in sectors_raw[:safe_limit]
-        ]
+        # 板块搜索：直接从内存缓存匹配板块名，不走 sector_rankings 的重计算
+        sectors: list[dict[str, Any]] = []
+        try:
+            _, sector_names = self._ensure_ths_member_cache()
+            matched_sectors = [
+                (code, name) for code, name in sector_names.items()
+                if lower in name.lower() or lower in code.lower()
+            ]
+            # 按 RPS 排序（如果已缓存则用，否则跳过）
+            sector_rps: dict[str, float] = {}
+            rps_cached = self._cache.get(f"sector_metrics::{trade_date}")
+            if rps_cached and rps_cached[1] is not None:
+                try:
+                    sdf = rps_cached[1]
+                    for _, r in sdf.iterrows():
+                        sector_rps[str(r["ts_code"])] = float(r.get("rps10", 0))
+                except Exception:
+                    pass
+            matched_sectors.sort(key=lambda x: sector_rps.get(x[0], 0), reverse=True)
+            for code, name in matched_sectors[:safe_limit]:
+                sectors.append({
+                    "type": "sector",
+                    "sectorCode": code,
+                    "sectorName": name,
+                    "rps10": sector_rps.get(code),
+                    "pctChange5d": None,
+                })
+        except Exception:
+            pass
 
         # 股票搜索：优先走预计算快照（毫秒级），降级到实时计算
         stocks: list[dict[str, Any]] = []
@@ -3372,9 +3389,9 @@ class MarketEngine:
                                 "stockName": row.get("name", row["ts_code"]),
                                 "close": round(float(row["close"]), 2) if pd.notna(row["close"]) else 0,
                                 "pctChg": round(float(row["pct_chg"]), 2) if pd.notna(row["pct_chg"]) else 0,
-                                "buyAmount": round(float(row["buy"]), 2),
-                                "sellAmount": round(float(row["sell"]), 2),
-                                "netAmount": round(float(row["net_buy"]), 2)
+                                "buyAmount": round(float(row["buy"] or 0), 2),
+                                "sellAmount": round(float(row["sell"] or 0), 2),
+                                "netAmount": round(float(row["net_buy"] or 0), 2)
                             }
                             for _, row in buy_list.iterrows()
                         ]
@@ -3385,9 +3402,9 @@ class MarketEngine:
                                 "stockName": row.get("name", row["ts_code"]),
                                 "close": round(float(row["close"]), 2) if pd.notna(row["close"]) else 0,
                                 "pctChg": round(float(row["pct_chg"]), 2) if pd.notna(row["pct_chg"]) else 0,
-                                "buyAmount": round(float(row["buy"]), 2),
-                                "sellAmount": round(float(row["sell"]), 2),
-                                "netAmount": round(float(row["net_buy"]), 2)
+                                "buyAmount": round(float(row["buy"] or 0), 2),
+                                "sellAmount": round(float(row["sell"] or 0), 2),
+                                "netAmount": round(float(row["net_buy"] or 0), 2)
                             }
                             for _, row in sell_list.iterrows()
                         ]
@@ -3410,9 +3427,9 @@ class MarketEngine:
                         "pctChg": round(float(row["pct_chg"]), 2) if pd.notna(row["pct_chg"]) else 0,
                         "buyCount": 1,
                         "sellCount": 0,
-                        "buyAmount": round(float(row["buy"]), 2),
-                        "sellAmount": round(float(row["sell"]), 2),
-                        "netAmount": round(float(row["net_buy"]), 2)
+                        "buyAmount": round(float(row["buy"] or 0), 2),
+                        "sellAmount": round(float(row["sell"] or 0), 2),
+                        "netAmount": round(float(row["net_buy"] or 0), 2)
                     }
                     for _, row in buy_df.iterrows()
                 ]
@@ -3425,9 +3442,9 @@ class MarketEngine:
                         "pctChg": round(float(row["pct_chg"]), 2) if pd.notna(row["pct_chg"]) else 0,
                         "buyCount": 0,
                         "sellCount": 1,
-                        "buyAmount": round(float(row["buy"]), 2),
-                        "sellAmount": round(float(row["sell"]), 2),
-                        "netAmount": round(float(row["net_buy"]), 2)
+                        "buyAmount": round(float(row["buy"] or 0), 2),
+                        "sellAmount": round(float(row["sell"] or 0), 2),
+                        "netAmount": round(float(row["net_buy"] or 0), 2)
                     }
                     for _, row in sell_df.iterrows()
                 ]
@@ -3473,8 +3490,8 @@ class MarketEngine:
                             if desk not in desk_data:
                                 desk_data[desk] = {"buy": 0, "sell": 0, "stocks": {}}
 
-                            buy_amt = float(row.get("buy", 0))
-                            sell_amt = float(row.get("sell", 0))
+                            buy_amt = float(row.get("buy", 0) or 0)
+                            sell_amt = float(row.get("sell", 0) or 0)
                             net_amt = buy_amt - sell_amt
 
                             desk_data[desk]["buy"] += buy_amt
@@ -3717,7 +3734,7 @@ class MarketEngine:
                 alert_stocks = alert_stocks.sort_values("deviation", ascending=False)
 
                 for _, row in alert_stocks.iterrows():
-                    deviation = float(row["deviation"])
+                    deviation = float(row["deviation"] or 0)
                     alert_type = f"30天涨幅偏离值{abs(deviation):.0f}%" if abs(deviation) > 0 else "30天平均线偏离"
 
                     alerts.append({

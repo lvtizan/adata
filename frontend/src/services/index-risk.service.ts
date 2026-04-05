@@ -98,5 +98,5 @@ export interface IndexRiskResult {
 }
 
 export function getIndexRisk() {
-  return api<IndexRiskResult>("/index-risk");
+  return api<IndexRiskResult>("/index-risk", { cacheTTL: 120_000 });
 }

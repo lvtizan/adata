@@ -129,6 +129,12 @@ async def get_hh_scan():
     return engine.hh_scan(date)
 
 
+@app.get("/api/double-bottom-scan")
+async def get_double_bottom_scan():
+    date = engine.latest_data_trade_date()
+    return engine.double_bottom_scan(date)
+
+
 @app.get("/api/camp/bull-stocks/history")
 async def get_bull_stocks_history(days: int = 20):
     date = engine.latest_data_trade_date()

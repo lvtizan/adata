@@ -103,7 +103,6 @@ export function StockTable({ data, selectedCode, onSelect, onNameClick, loading,
       sortFn={stockSortFn}
       compact
       emptyText="选择板块后加载"
-      className="max-h-[calc(100vh-180px)]"
-    />
+          />
   );
 }

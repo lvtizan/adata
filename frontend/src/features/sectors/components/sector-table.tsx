@@ -66,7 +66,6 @@ export function SectorTable({ data, selectedCode, onSelect }: SectorTableProps) 
       onRowClick={(item) => onSelect(item.sectorCode)}
       sortFn={sectorSortFn}
       compact
-      className="max-h-[calc(100vh-180px)]"
-    />
+          />
   );
 }

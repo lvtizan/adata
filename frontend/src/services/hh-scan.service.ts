@@ -1,32 +1,34 @@
 import { api } from "./api-client";
 
-export interface HHScanStock {
+export interface DoubleBottomStock {
   tsCode: string;
   stockName: string;
   close: number;
   pctChange1d: number;
   pctChange5d: number;
   rps20: number;
-  campScore: number;
   amount: number;
   signalDate: string;
   signalType: string;
   signalPrice: number;
+  signalCount: number;
+  stopLoss: number | null;
+  takeProfit: number | null;
 }
 
-export interface HHScanSector {
+export interface DoubleBottomSector {
   sectorCode: string;
   sectorName: string;
   signalCount: number;
-  stocks: HHScanStock[];
+  stocks: DoubleBottomStock[];
 }
 
-export interface HHScanResult {
+export interface DoubleBottomScanResult {
   tradeDate: string;
   totalSignals: number;
-  sectors: HHScanSector[];
+  sectors: DoubleBottomSector[];
 }
 
-export async function getHHScan(): Promise<HHScanResult> {
-  return api<HHScanResult>("/hh-scan");
+export async function getDoubleBottomScan(): Promise<DoubleBottomScanResult> {
+  return api<DoubleBottomScanResult>("/double-bottom-scan", { cacheTTL: 600_000 });
 }

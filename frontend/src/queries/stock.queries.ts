@@ -66,7 +66,8 @@ export function useMarketSearch(query: string, limit = 12) {
     queryKey: ["market-search", query, limit],
     queryFn: () => searchMarket(query, limit),
     enabled: query.trim().length >= 2,
-    staleTime: 30_000,
+    staleTime: 120_000,
+    placeholderData: (prev) => prev,
   });
 }
 

@@ -2,7 +2,7 @@ import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import { AppShell, TopBar, BottomBar, LeftRail } from "@/shared/layout";
 import { AiChatWidget } from "@/shared/layout/ai-chat-widget";
 import { useMarketOverview, useBullCamp, useWatchlist } from "@/queries";
-import { Activity, BarChart3, Eye, Flame, Settings, Crosshair, FileText, TrendingUp, LayoutPanelTop } from "lucide-react";
+import { Activity, BarChart3, Eye, Flame, Settings, Crosshair, FileText, TrendingUp, LayoutPanelTop, GitCommit } from "lucide-react";
 
 const navItems = [
   { path: "/intraday", label: "盘中观察", icon: TrendingUp },
@@ -11,8 +11,9 @@ const navItems = [
   { path: "/index-radar", label: "指数雷达", icon: Activity },
   { path: "/watchlist", label: "自选股", icon: Eye },
   { path: "/bullcamp", label: "牛股集中营", icon: Flame },
-  { path: "/hh-scan", label: "HH筛选", icon: Crosshair },
+  { path: "/hh-scan", label: "双底扫描", icon: Crosshair },
   { path: "/market-recap", label: "盘前纪要", icon: FileText },
+  { path: "/stock-compare", label: "股票对比", icon: GitCommit },
   { path: "/settings", label: "设置", icon: Settings },
 ];
 
