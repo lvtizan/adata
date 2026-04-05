@@ -72,6 +72,14 @@ def init_db(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_tags_date ON stock_tags(trade_date);
         CREATE INDEX IF NOT EXISTS idx_attr_date ON stock_attribution(trade_date);
         CREATE INDEX IF NOT EXISTS idx_rs_date ON stock_rs(trade_date);
+
+        CREATE TABLE IF NOT EXISTS search_snapshot (
+            trade_date TEXT NOT NULL,
+            payload    TEXT NOT NULL,         -- JSON: [{tsCode, stockName, sectorCode, sectorName, close, pctChange1d, pctChange5d, pctChange10d, rps20, amount}, ...]
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (trade_date)
+        );
+        CREATE INDEX IF NOT EXISTS idx_search_date ON search_snapshot(trade_date);
     """)
 
 
@@ -413,6 +421,17 @@ class PrecomputedStore:
             return json.loads(row["payload"])
         return None
 
+    def get_search_snapshot(self, trade_date: str) -> list[dict] | None:
+        """获取搜索快照（全市场股票指标+板块映射），预计算后 <1ms"""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT payload FROM search_snapshot WHERE trade_date = ?",
+                (trade_date,),
+            ).fetchone()
+        if row:
+            return json.loads(row["payload"])
+        return None
+
     def latest_date(self) -> str | None:
         with self._connect() as conn:
             row = conn.execute(
@@ -525,6 +544,49 @@ def run(trade_date: str | None = None):
             logger.debug(f"RS 计算失败: {code}, {exc}")
     conn.commit()
     logger.info(f"stock_rs 写入 {rs_count} 条")
+
+    # Step 5: 搜索快照（全市场股票指标 + 板块映射，搜索时直接查内存）
+    logger.info("构建搜索快照...")
+    try:
+        if metrics is not None and not metrics.empty:
+            # 构建 stock→sector 映射
+            sector_map: dict[str, dict[str, str]] = {}
+            for sector_code, stock_codes in concept_index.items():
+                # concept_index 格式: {ts_code: [{code, name, rps10}, ...]}
+                pass
+
+            # 用 engine 的反向映射
+            stock_to_sector = engine._get_stock_sector_map(trade_date)
+
+            snapshot_rows = []
+            for _, row in metrics.iterrows():
+                ts_code = str(row.get("ts_code", ""))
+                name = str(row.get("name", ts_code)) if pd.notna(row.get("name")) else ts_code
+                sector = stock_to_sector.get(ts_code, {"sectorCode": "", "sectorName": ""})
+                snapshot_rows.append({
+                    "tsCode": ts_code,
+                    "stockName": name,
+                    "sectorCode": sector.get("sectorCode", ""),
+                    "sectorName": sector.get("sectorName", ""),
+                    "close": round(float(row.get("close", 0) or 0), 2),
+                    "pctChange1d": round(float(row.get("pct_chg", 0) or 0), 2),
+                    "pctChange5d": round(float(row.get("ret5", 0) or 0), 2),
+                    "pctChange10d": round(float(row.get("ret10", 0) or 0), 2),
+                    "rps20": round(float(row.get("rps20", 0) or 0), 1),
+                    "amount": round(float(row.get("amount_yuan", 0) or 0), 2),
+                })
+
+            ts = now_iso()
+            conn.execute(
+                "INSERT OR REPLACE INTO search_snapshot (trade_date, payload, updated_at) VALUES (?,?,?)",
+                (trade_date, json.dumps(snapshot_rows, ensure_ascii=False), ts),
+            )
+            conn.commit()
+            logger.info(f"search_snapshot 写入 {len(snapshot_rows)} 条")
+        else:
+            logger.warning("无 metrics 数据，跳过搜索快照")
+    except Exception as exc:
+        logger.warning(f"搜索快照构建失败: {exc}")
 
     conn.close()
     elapsed = time.time() - t0

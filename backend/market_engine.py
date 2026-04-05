@@ -42,6 +42,7 @@ class MarketEngine:
         self._sector_name_map: dict[str, str] = {}
         self._sw_l3_map: dict[str, str] = {}
         self._snapshot_batch_cache: dict[str, dict[str, pd.DataFrame]] = {}
+        self._stock_sector_map: dict[str, dict[str, str]] = {}  # {ts_code: {sectorCode, sectorName}}
         self._data_store = MarketDataStore(Path(__file__).parent / "data" / "market_cache.db")
         self._precomputed = PrecomputedStore()
         self._warmed = False
@@ -318,6 +319,9 @@ class MarketEngine:
         return self._sw_l3_map
 
     def compute_stock_metrics(self, trade_date: str) -> pd.DataFrame:
+        return self._cached(f"stock_metrics::{trade_date}", 300, lambda: self._compute_stock_metrics(trade_date))
+
+    def _compute_stock_metrics(self, trade_date: str) -> pd.DataFrame:
         dates = self.trade_dates(trade_date, need=260)
         pos = dates.index(trade_date)
         d5, d10, d20 = dates[pos - 5], dates[pos - 10], dates[pos - 20]
@@ -1099,6 +1103,7 @@ class MarketEngine:
         safe_limit = max(1, min(int(limit), 50))
         lower = keyword.lower()
 
+        # 板块搜索：用缓存的 sector_rankings
         sectors_raw = self.sector_rankings(trade_date, sort_by="rps10", keyword=keyword)
         sectors = [
             {
@@ -1111,40 +1116,76 @@ class MarketEngine:
             for item in sectors_raw[:safe_limit]
         ]
 
+        # 股票搜索：优先走预计算快照（毫秒级），降级到实时计算
         stocks: list[dict[str, Any]] = []
-        try:
-            snapshot = self.compute_stock_metrics(trade_date)
-        except Exception as exc:
-            logger.warning(f"搜索股票时计算快照失败: {exc}")
-            snapshot = pd.DataFrame()
+        precomputed = self._precomputed.get_search_snapshot(trade_date)
 
-        if snapshot is not None and not snapshot.empty:
-            df = snapshot.copy()
-            df["name"] = df["name"].fillna(df["ts_code"]).astype(str)
-            df["ts_code"] = df["ts_code"].astype(str)
-            mask = df["name"].str.lower().str.contains(lower, na=False) | df["ts_code"].str.lower().str.contains(lower, na=False)
-            matches = df.loc[mask].copy()
+        if precomputed:
+            # 预计算路径：纯内存匹配，零计算零网络
+            matches = [
+                s for s in precomputed
+                if lower in s.get("stockName", "").lower() or lower in s.get("tsCode", "").lower()
+            ]
+            # 按前缀匹配 + rps20 + 成交额排序
+            matches.sort(
+                key=lambda s: (
+                    s.get("stockName", "").lower().startswith(lower) or s.get("tsCode", "").lower().startswith(lower),
+                    s.get("rps20", 0),
+                    s.get("amount", 0),
+                ),
+                reverse=True,
+            )
+            for s in matches[:safe_limit]:
+                stocks.append({
+                    "type": "stock",
+                    "tsCode": s["tsCode"],
+                    "stockName": s["stockName"],
+                    "sectorCode": s.get("sectorCode", ""),
+                    "sectorName": s.get("sectorName", ""),
+                    "close": s.get("close", 0),
+                    "pctChange1d": s.get("pctChange1d", 0),
+                    "pctChange5d": s.get("pctChange5d", 0),
+                    "pctChange10d": s.get("pctChange10d", 0),
+                    "rps20": s.get("rps20", 0),
+                    "amount": s.get("amount", 0),
+                })
+        else:
+            # 降级路径：实时计算（首次或预计算未完成时）
+            try:
+                snapshot = self.compute_stock_metrics(trade_date)
+            except Exception as exc:
+                logger.warning(f"搜索股票时计算快照失败: {exc}")
+                snapshot = pd.DataFrame()
 
-            if not matches.empty:
-                matches["_starts"] = matches["name"].str.lower().str.startswith(lower) | matches["ts_code"].str.lower().str.startswith(lower)
-                matches = matches.sort_values(by=["_starts", "rps20", "amount_yuan"], ascending=[False, False, False]).head(safe_limit)
+            if snapshot is not None and not snapshot.empty:
+                sector_map = self._get_stock_sector_map(trade_date)
 
-                for _, row in matches.iterrows():
-                    ts_code = str(row.get("ts_code", ""))
-                    sector = self.stock_sector(ts_code, trade_date)
-                    stocks.append({
-                        "type": "stock",
-                        "tsCode": ts_code,
-                        "stockName": str(row.get("name", ts_code)),
-                        "sectorCode": sector.get("sectorCode", ""),
-                        "sectorName": sector.get("sectorName", ""),
-                        "close": round(float(row.get("close", 0) or 0), 2),
-                        "pctChange1d": round(float(row.get("pct_chg", 0) or 0), 2),
-                        "pctChange5d": round(float(row.get("ret5", 0) or 0), 2),
-                        "pctChange10d": round(float(row.get("ret10", 0) or 0), 2),
-                        "rps20": round(float(row.get("rps20", 0) or 0), 1),
-                        "amount": round(float(row.get("amount_yuan", 0) or 0), 2),
-                    })
+                df = snapshot.copy()
+                df["name"] = df["name"].fillna(df["ts_code"]).astype(str)
+                df["ts_code"] = df["ts_code"].astype(str)
+                mask = df["name"].str.lower().str.contains(lower, na=False) | df["ts_code"].str.lower().str.contains(lower, na=False)
+                matches_df = df.loc[mask].copy()
+
+                if not matches_df.empty:
+                    matches_df["_starts"] = matches_df["name"].str.lower().str.startswith(lower) | matches_df["ts_code"].str.lower().str.startswith(lower)
+                    matches_df = matches_df.sort_values(by=["_starts", "rps20", "amount_yuan"], ascending=[False, False, False]).head(safe_limit)
+
+                    for _, row in matches_df.iterrows():
+                        ts_code = str(row.get("ts_code", ""))
+                        sector = sector_map.get(ts_code, {"sectorCode": "", "sectorName": ""})
+                        stocks.append({
+                            "type": "stock",
+                            "tsCode": ts_code,
+                            "stockName": str(row.get("name", ts_code)),
+                            "sectorCode": sector.get("sectorCode", ""),
+                            "sectorName": sector.get("sectorName", ""),
+                            "close": round(float(row.get("close", 0) or 0), 2),
+                            "pctChange1d": round(float(row.get("pct_chg", 0) or 0), 2),
+                            "pctChange5d": round(float(row.get("ret5", 0) or 0), 2),
+                            "pctChange10d": round(float(row.get("ret10", 0) or 0), 2),
+                            "rps20": round(float(row.get("rps20", 0) or 0), 1),
+                            "amount": round(float(row.get("amount_yuan", 0) or 0), 2),
+                        })
 
         return {"stocks": stocks[:safe_limit], "sectors": sectors[:safe_limit]}
 
@@ -1600,6 +1641,156 @@ class MarketEngine:
 
         return self._cached(f"hh_scan:{trade_date}", 900, _load)
 
+    def double_bottom_scan(self, trade_date: str) -> dict[str, Any]:
+        """扫描全市场双底（W底）形态，按板块分组返回"""
+        def _load() -> dict[str, Any]:
+            from pattern_detector import detect_feng_signals
+
+            # 获取当日有成交的股票快照
+            snapshot = self.compute_stock_metrics(trade_date)
+            if snapshot is None or snapshot.empty:
+                return {"tradeDate": trade_date, "totalSignals": 0, "sectors": []}
+
+            df = snapshot.copy()
+            df["name"] = df["name"].fillna(df["ts_code"]).astype(str)
+            df["ts_code"] = df["ts_code"].astype(str)
+            # 只扫描成交额 >= 3 亿的股票（减少噪音）
+            df = df[df["amount_yuan"] >= 3_0000_0000]
+            # 按 RPS20 降序，优先扫描强势股
+            df = df.sort_values("rps20", ascending=False)
+
+            ts_codes = df["ts_code"].tolist()
+            if not ts_codes:
+                return {"tradeDate": trade_date, "totalSignals": 0, "sectors": []}
+
+            dates = self.trade_dates(trade_date, need=260)
+            start = dates[-120] if len(dates) >= 120 else dates[0]
+
+            # 快照中名字和成交额的映射
+            name_map = dict(zip(df["ts_code"], df["name"]))
+            close_map = dict(zip(df["ts_code"], df["close"]))
+            pct1d_map = dict(zip(df["ts_code"], df["pct_chg"]))
+            amount_map = dict(zip(df["ts_code"], df["amount_yuan"]))
+
+            # 计算 5 日涨幅
+            ret5_map: dict[str, float] = {}
+            if "ret5" in df.columns:
+                ret5_map = dict(zip(df["ts_code"], df["ret5"].astype(float)))
+
+            rps20_map: dict[str, float] = {}
+            if "rps20" in df.columns:
+                rps20_map = dict(zip(df["ts_code"], df["rps20"].astype(float)))
+
+            def _scan_one(ts_code: str) -> dict[str, Any] | None:
+                try:
+                    kdf = ts.pro_bar(
+                        pro_api=self.pro,
+                        ts_code=ts_code,
+                        adj="qfq",
+                        start_date=start,
+                        end_date=trade_date,
+                        asset="E",
+                    )
+                    if kdf is None or len(kdf) < 30:
+                        return None
+
+                    result = detect_feng_signals(kdf)
+                    buy_signals = result.get("buySignals", [])
+                    signals = result.get("signals", [])
+
+                    # 必须有 W 底信号（h2_w 类型）或买入信号
+                    w_signals = [s for s in signals if s.get("type") == "h2_w"]
+                    if not w_signals and not buy_signals:
+                        return None
+
+                    # 取最近的 W 底信号
+                    latest_w = w_signals[-1] if w_signals else None
+                    latest_buy = buy_signals[-1] if buy_signals else None
+
+                    signal_date = ""
+                    signal_type = "W底"
+                    signal_price = 0.0
+                    stop_loss = None
+                    take_profit = None
+
+                    if latest_buy:
+                        signal_date = latest_buy.get("date", "")
+                        signal_price = latest_buy.get("price", 0)
+                        stop_loss = latest_buy.get("stopLoss")
+                        take_profit = latest_buy.get("takeProfit")
+                    elif latest_w:
+                        signal_date = latest_w.get("date", "")
+                        signal_price = latest_w.get("price", 0)
+
+                    if not signal_date:
+                        return None
+
+                    return {
+                        "tsCode": ts_code,
+                        "stockName": name_map.get(ts_code, ts_code),
+                        "close": float(close_map.get(ts_code, 0)),
+                        "pctChange1d": float(pct1d_map.get(ts_code, 0)),
+                        "pctChange5d": float(ret5_map.get(ts_code, 0)),
+                        "rps20": float(rps20_map.get(ts_code, 0)),
+                        "amount": float(amount_map.get(ts_code, 0)),
+                        "signalDate": signal_date,
+                        "signalType": signal_type,
+                        "signalPrice": round(signal_price, 2),
+                        "stopLoss": stop_loss,
+                        "takeProfit": take_profit,
+                        "signalCount": len(w_signals),
+                    }
+                except Exception as exc:
+                    logger.debug(f"双底扫描失败 {ts_code}: {exc}")
+                    return None
+
+            # 并发扫描（最多 6 线程）
+            found_stocks: list[dict[str, Any]] = []
+            with ThreadPoolExecutor(max_workers=6) as pool:
+                futures = {pool.submit(_scan_one, code): code for code in ts_codes}
+                for future in as_completed(futures):
+                    try:
+                        result = future.result(timeout=30)
+                        if result:
+                            found_stocks.append(result)
+                    except Exception:
+                        pass
+
+            if not found_stocks:
+                return {"tradeDate": trade_date, "totalSignals": 0, "sectors": []}
+
+            # 按板块分组
+            sector_groups: dict[str, dict[str, Any]] = {}
+            for stock in found_stocks:
+                sector_info = self.stock_sector_lookup(stock["tsCode"], trade_date)
+                sector_code = sector_info.get("sectorCode", "") or "未分类"
+                sector_name = sector_info.get("sectorName", "") or "未分类"
+
+                if sector_code not in sector_groups:
+                    sector_groups[sector_code] = {
+                        "sectorCode": sector_code,
+                        "sectorName": sector_name,
+                        "stocks": [],
+                    }
+                sector_groups[sector_code]["stocks"].append(stock)
+
+            # 排序：板块内按 signalCount 降序，板块间按信号数降序
+            result_sectors = []
+            for sector_data in sector_groups.values():
+                stocks = sorted(sector_data["stocks"], key=lambda x: x.get("signalCount", 0), reverse=True)
+                result_sectors.append({
+                    "sectorCode": sector_data["sectorCode"],
+                    "sectorName": sector_data["sectorName"],
+                    "signalCount": len(stocks),
+                    "stocks": stocks,
+                })
+            result_sectors.sort(key=lambda x: x["signalCount"], reverse=True)
+
+            total = sum(s["signalCount"] for s in result_sectors)
+            return {"tradeDate": trade_date, "totalSignals": total, "sectors": result_sectors}
+
+        return self._cached(f"double_bottom_scan:{trade_date}", 600, _load)
+
     def _fallback_sector_stocks(self, stock_codes: list[str], trade_date: str, sort_by: str = "rps10") -> list[dict[str, Any]]:
         """RPS/MA链路失败时，至少返回板块当日成分股列表"""
         snap = self.stock_snapshot(trade_date)
@@ -1689,6 +1880,48 @@ class MarketEngine:
         self._data_store.set_json("ths_members", "all", {"mapping": mapping, "names": names})
         result = (mapping, names)
         self._cache["_ths_members"] = (time.time(), result)
+        return result
+
+    def _get_stock_sector_map(self, trade_date: str) -> dict[str, dict[str, str]]:
+        """构建 stock→sector 反向映射（基于板块 RPS 选最强板块），缓存到内存"""
+        cache_key = f"_stock_sector_map:{trade_date}"
+        cached = self._cache.get(cache_key)
+        if cached and time.time() - cached[0] < 3600:
+            return cached[1]
+
+        mapping, names = self._ensure_ths_member_cache()
+
+        # 计算每个板块的 RPS10，用于选最强板块
+        sector_rps: dict[str, float] = {}
+        try:
+            sector_df = self.compute_sector_metrics(trade_date)
+            if sector_df is not None and not sector_df.empty:
+                for _, row in sector_df.iterrows():
+                    sector_rps[str(row["ts_code"])] = float(row.get("rps10", 0))
+        except Exception:
+            pass
+
+        # 反转：stock → (sectorCode, sectorName, rps10)
+        stock_best: dict[str, dict[str, str]] = {}
+        for sector_code, stock_codes in mapping.items():
+            rps = sector_rps.get(sector_code, 0)
+            sector_name = names.get(sector_code, "")
+            for ts_code in stock_codes:
+                existing = stock_best.get(ts_code)
+                if existing is None or rps > float(existing.get("_rps", 0)):
+                    stock_best[ts_code] = {
+                        "sectorCode": sector_code,
+                        "sectorName": sector_name,
+                        "_rps": str(rps),
+                    }
+
+        # 清理内部字段
+        result = {
+            k: {"sectorCode": v["sectorCode"], "sectorName": v["sectorName"]}
+            for k, v in stock_best.items()
+        }
+        self._cache[cache_key] = (time.time(), result)
+        logger.info(f"stock→sector 反向映射构建完成: {len(result)} 只股票")
         return result
 
     def _fetch_all_realtime_quotes(self) -> dict[str, float]:

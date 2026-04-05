@@ -56,5 +56,5 @@ export interface MarketRecapResult {
 
 export function getMarketRecap(tradeDate?: string): Promise<MarketRecapResult> {
   const qs = tradeDate ? `?tradeDate=${tradeDate}` : "";
-  return api<MarketRecapResult>(`/market/recap${qs}`);
+  return api<MarketRecapResult>(`/market-recap${qs}`, { cacheTTL: 300_000 });
 }
