@@ -1,5 +1,7 @@
 // 错误追踪和记录系统
 
+import { useCallback } from "react";
+
 interface ErrorRecord {
   timestamp: string;
   component: string;
