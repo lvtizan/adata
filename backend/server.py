@@ -362,6 +362,11 @@ class Handler(BaseHTTPRequestHandler):
             logger.debug(f"HH扫描: {trade_date}")
             return json_response(self, engine.hh_scan(trade_date))
 
+        # 双底扫描API
+        if path == "/api/double-bottom-scan":
+            logger.debug(f"双底扫描: {trade_date}")
+            return json_response(self, engine.double_bottom_scan(trade_date))
+
         # 盘前纪要API - 涨停热点 / 机构买卖 / 游资动向 / 新高股票 / 异动预警
         if path == "/api/market-recap":
             logger.debug(f"获取盘前纪要: {trade_date}")
