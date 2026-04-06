@@ -71,11 +71,12 @@ interface WatchlistChartProps {
   activeTool?: string | null;
   drawingColor?: string;
   frequency?: string;
+  onChangeOverlayColor?: (chart: any, overlayId: string, color: string) => void;
   onSelectionChange?: (selection: { id: string | null; locked: boolean; name: string | null }) => void;
   onDrawingsChange?: (overlays: Array<{ id: string; name: string; lock: boolean; points: number; label?: string }>) => void;
 }
 
-export function WatchlistChart({ tsCode, sectorCode, stockName, activeTool, drawingColor, frequency = "1d", onSelectionChange, onDrawingsChange }: WatchlistChartProps) {
+export function WatchlistChart({ tsCode, sectorCode, stockName, activeTool, drawingColor, frequency = "1d", onChangeOverlayColor, onSelectionChange, onDrawingsChange }: WatchlistChartProps) {
   const [buyMode, setBuyMode] = useState(false);
   const chartRef = useRef<Chart | null>(null);
   const chartContainerRef = useRef<HTMLDivElement>(null);
