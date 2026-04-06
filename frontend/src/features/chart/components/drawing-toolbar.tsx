@@ -2,6 +2,11 @@ import { cn } from "@/lib/utils";
 import { Minus, PenLine, MoveUpRight, Square, StickyNote, ShieldCheck, ShieldAlert, Tag, DollarSign, X, Trash2 } from "lucide-react";
 import type { ReactNode } from "react";
 
+const DRAW_COLORS = [
+  "#ef4444", "#f59e0b", "#22c55e", "#3b82f6", "#a855f7",
+  "#ec4899", "#06b6d4", "#f97316", "#6366f1", "#ffffff",
+];
+
 interface Tool {
   name: string;
   label: string;
@@ -18,6 +23,8 @@ const TOOLS: Tool[] = [
 
 interface DrawingToolbarProps {
   activeTool: string | null;
+  drawingColor?: string;
+  onColorChange?: (color: string) => void;
   selectedOverlayId?: string | null;
   selectedOverlayName?: string | null;
   selectedOverlayLocked?: boolean;
@@ -55,6 +62,8 @@ function ToolBtn({ active, title, onClick, children, className = "" }: {
 
 export function DrawingToolbar({
   activeTool,
+  drawingColor = "#3b82f6",
+  onColorChange,
   selectedOverlayId = null,
   selectedOverlayLocked = false,
   overlays = [],
@@ -81,6 +90,24 @@ export function DrawingToolbar({
           {tool.icon}
         </ToolBtn>
       ))}
+
+      <div className="w-px h-5 bg-border-default mx-0.5" />
+
+      {/* 颜色选择 */}
+      <div className="flex items-center gap-0.5 mx-0.5">
+        {DRAW_COLORS.map((c) => (
+          <button
+            key={c}
+            title={`颜色 ${c}`}
+            onClick={() => onColorChange?.(c)}
+            className={cn(
+              "w-5 h-5 rounded-full border-2 transition-transform",
+              drawingColor === c ? "border-text-primary scale-110" : "border-transparent hover:scale-105",
+            )}
+            style={{ backgroundColor: c }}
+          />
+        ))}
+      </div>
 
       <div className="w-px h-5 bg-border-default mx-0.5" />
 

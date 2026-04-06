@@ -31,6 +31,7 @@ export default function WatchlistPage() {
   const [editingSubgroup, setEditingSubgroup] = useState(false);
   const [subgroupValue, setSubgroupValue] = useState("");
   const [drawingTool, setDrawingTool] = useState<string | null>(null);
+  const [drawingColor, setDrawingColor] = useState("#3b82f6");
   const [frequency, setFrequency] = useState<string>("1d");
   const [selectedOverlay, setSelectedOverlay] = useState<{ id: string | null; locked: boolean; name: string | null }>({ id: null, locked: false, name: null });
   const [drawings, setDrawings] = useState<Array<{ id: string; name: string; lock: boolean; points: number; label?: string }>>([]);
@@ -259,6 +260,8 @@ export default function WatchlistPage() {
             <div className="border-b border-border-default py-1">
               <DrawingToolbar
                 activeTool={drawingTool}
+                drawingColor={drawingColor}
+                onColorChange={setDrawingColor}
                 selectedOverlayId={selectedOverlay.id}
                 selectedOverlayName={selectedOverlay.name}
                 selectedOverlayLocked={selectedOverlay.locked}
@@ -303,6 +306,7 @@ export default function WatchlistPage() {
                 stockName={selected.stockName}
                 frequency={frequency}
                 activeTool={drawingTool}
+                drawingColor={drawingColor}
                 onSelectionChange={setSelectedOverlay}
                 onDrawingsChange={setDrawings}
               />

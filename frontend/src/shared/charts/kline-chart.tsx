@@ -19,6 +19,7 @@ interface KlineChartProps {
   /** 画线工具相关 */
   enableDrawing?: boolean;
   activeTool?: string | null;
+  drawingColor?: string;
   initialDrawings?: ChartDrawingOverlay[];
   onDrawingsChange?: (overlays: ChartDrawingOverlay[]) => void;
   /** 暴露 chart 实例给父组件 */
@@ -244,7 +245,7 @@ const SYSTEM_GROUP = "__system__";
 
 export function KlineChart({
   points, height, showVolume = true, signals, drawdowns, supports, resistances, fengSignals, frequency,
-  enableDrawing, activeTool, initialDrawings, onDrawingsChange, chartRef: externalChartRef,
+  enableDrawing, activeTool, drawingColor, initialDrawings, onDrawingsChange, chartRef: externalChartRef,
 }: KlineChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<Chart | null>(null);
@@ -489,9 +490,13 @@ export function KlineChart({
     const chart = chartRef.current as any;
     if (!chart?.createOverlay || !enableDrawing) return;
     if (activeTool) {
-      chart.createOverlay({ id: `${activeTool}-${Date.now()}`, name: activeTool });
+      chart.createOverlay({
+        id: `${activeTool}-${Date.now()}`,
+        name: activeTool,
+        styles: { line: { color: drawingColor || "#3b82f6" } },
+      });
     }
-  }, [activeTool, enableDrawing]);
+  }, [activeTool, enableDrawing, drawingColor]);
 
   return <div ref={containerRef} className="w-full" style={height ? { height } : { height: "100%" }} />;
 }
