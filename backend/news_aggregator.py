@@ -48,11 +48,17 @@ def init_db() -> None:
             published   TEXT NOT NULL,
             fetched_at  TEXT NOT NULL,
             raw_data    TEXT,
+            stock_mentions TEXT DEFAULT '[]',
             UNIQUE(source, title, published)
         );
         CREATE INDEX IF NOT EXISTS idx_news_date ON news_items(published);
         CREATE INDEX IF NOT EXISTS idx_news_source ON news_items(source);
     """)
+    # 兼容旧表：加 stock_mentions 列
+    try:
+        conn.execute("ALTER TABLE news_items ADD COLUMN stock_mentions TEXT DEFAULT '[]'")
+    except Exception:
+        pass
     conn.close()
 
 
@@ -64,10 +70,12 @@ def save_items(items: list[dict[str, Any]]) -> int:
     saved = 0
     for item in items:
         try:
+            text = f"{item['title']} {item.get('summary', '')}"
+            mentions = _extract_stock_mentions(text)
             conn.execute(
                 """INSERT OR IGNORE INTO news_items
-                   (source, title, summary, url, category, published, fetched_at, raw_data)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                   (source, title, summary, url, category, published, fetched_at, raw_data, stock_mentions)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     item["source"],
                     item["title"],
@@ -77,6 +85,7 @@ def save_items(items: list[dict[str, Any]]) -> int:
                     item.get("published", now),
                     now,
                     json.dumps(item.get("raw_data"), ensure_ascii=False) if item.get("raw_data") else None,
+                    json.dumps(mentions, ensure_ascii=False),
                 ),
             )
             saved += conn.total_changes
@@ -110,7 +119,15 @@ def query_news(
     params.append(limit)
     rows = conn.execute(sql, params).fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+    result = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["stock_mentions"] = json.loads(d.get("stock_mentions") or "[]")
+        except (json.JSONDecodeError, TypeError):
+            d["stock_mentions"] = []
+        result.append(d)
+    return result
 
 
 # ── 财联社电报 ──────────────────────────────────
@@ -237,60 +254,407 @@ def fetch_sina(limit: int = 50) -> list[dict[str, Any]]:
 
 # ── 知识星球 ──────────────────────────────────
 ZSXQ_COOKIE_FILE = COOKIE_DIR / "zsxq_cookies.json"
+ZSXQ_DB_PATH = Path(__file__).parent / "data" / "zsxq.db"
+ZSXQ_IMG_DIR = Path(__file__).parent / "data" / "zsxq_images"
+ZSXQ_GROUP_ID = "15522414228522"  # 默认群组
+
+_ZSXQ_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+    "Origin": "https://wx.zsxq.com",
+    "Referer": "https://wx.zsxq.com/",
+    "Accept": "application/json",
+}
+
+# 股票代码正则: 6位数字
+_STOCK_CODE_RE = re.compile(r"(?<!\d)(\d{6})(?!\d)")
+# 中文股票名: 常见后缀模式
+_STOCK_NAME_RE = re.compile(
+    r"([\u4e00-\u9fa5]{2,6}(?:股份|集团|科技|电子|医药|能源|材料|通信|光电|半导体|新材|智能|生物|环保|机械|化工|控股|电气|汽车|银行|证券|保险|地产|传媒|食品|医疗|制药|软件|芯片|光伏|锂电|储能|算力))"
+)
 
 
-def fetch_zsxq(group_id: str = "", limit: int = 20) -> list[dict[str, Any]]:
-    """
-    知识星球内容抓取（需要预先登录保存 cookie）。
-    group_id: 知识星球群组ID，从 URL 获取
-    """
-    items: list[dict[str, Any]] = []
+def init_zsxq_db() -> None:
+    ZSXQ_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(ZSXQ_DB_PATH)
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS zsxq_topics (
+            topic_id    TEXT PRIMARY KEY,
+            author      TEXT NOT NULL DEFAULT '',
+            content     TEXT NOT NULL,
+            images      TEXT DEFAULT '[]',
+            likes_count INTEGER DEFAULT 0,
+            comments_count INTEGER DEFAULT 0,
+            published   TEXT NOT NULL,
+            fetched_at  TEXT NOT NULL,
+            stock_mentions TEXT DEFAULT '[]'
+        );
+        CREATE INDEX IF NOT EXISTS idx_zsxq_pub ON zsxq_topics(published);
+
+        CREATE TABLE IF NOT EXISTS zsxq_stock_stats (
+            stock_name  TEXT NOT NULL,
+            mention_count INTEGER DEFAULT 0,
+            last_mentioned TEXT,
+            topic_ids   TEXT DEFAULT '[]',
+            updated_at  TEXT NOT NULL,
+            PRIMARY KEY (stock_name)
+        );
+    """)
+    conn.close()
+
+
+def fetch_zsxq(group_id: str = "", limit: int = 200) -> list[dict[str, Any]]:
+    """完整抓取知识星球近2个月内容，支持翻页。"""
     if not group_id:
-        logger.debug("知识星球: 未配置 group_id，跳过")
-        return items
+        group_id = ZSXQ_GROUP_ID
+    items: list[dict[str, Any]] = []
 
     cookies = _load_zsxq_cookies()
     if not cookies:
         logger.info("知识星球: 未找到 cookie，请先运行 --login-zsxq 登录")
         return items
 
+    cutoff = (datetime.now() - timedelta(days=60)).isoformat(timespec="seconds")
+
     try:
-        url = f"https://api.zsxq.com/v2/groups/{group_id}/topics"
-        params = {
-            "scope": "all",
-            "count": str(limit),
-        }
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-            "Origin": "https://wx.zsxq.com",
-            "Referer": "https://wx.zsxq.com/",
-        }
-        resp = requests.get(url, params=params, headers=headers, cookies=cookies, timeout=15)
-        if resp.status_code == 401:
-            logger.warning("知识星球: cookie 已过期，请重新运行 --login-zsxq 登录")
-            return items
-        data = resp.json()
-        for topic in data.get("resp_data", {}).get("topics", []):
-            talk = topic.get("talk", {})
-            text = talk.get("text", "").strip()
-            if not text:
-                continue
-            title = text[:80] + ("..." if len(text) > 80 else "")
-            owner = talk.get("owner", {}).get("name", "")
-            pub_time = topic.get("create_time", "")
-            items.append({
-                "source": "zsxq",
-                "title": title,
-                "summary": text[:500],
-                "url": f"https://wx.zsxq.com/group/{group_id}",
-                "category": "insight",
-                "published": pub_time,
-                "raw_data": {"author": owner},
-            })
+        end_time = ""
+        fetched = 0
+        page = 0
+        max_pages = 10  # 最多翻10页覆盖2个月
+
+        while fetched < limit and page < max_pages:
+            url = f"https://api.zsxq.com/v2/groups/{group_id}/topics"
+            params: dict[str, str] = {"scope": "all", "count": "30"}
+            if end_time:
+                params["end_time"] = end_time
+
+            resp = requests.get(url, params=params, headers=_ZSXQ_HEADERS, cookies=cookies, timeout=15)
+
+            if resp.status_code == 401:
+                logger.warning("知识星球: cookie 已过期，请重新运行 --login-zsxq 登录")
+                return items
+            if resp.status_code != 200:
+                logger.warning(f"知识星球: HTTP {resp.status_code}")
+                break
+
+            data = resp.json()
+            topics = data.get("resp_data", {}).get("topics", [])
+            if not topics:
+                break
+
+            hit_cutoff = False
+            for topic in topics:
+                pub = topic.get("create_time", "")
+                if pub and pub < cutoff:
+                    hit_cutoff = True
+                    break
+                item = _parse_zsxq_topic(topic, group_id)
+                if item:
+                    items.append(item)
+                    fetched += 1
+
+            if hit_cutoff:
+                break
+
+            # 翻页: 用最后一条的时间作为 end_time
+            last_time = topics[-1].get("create_time", "")
+            if last_time and last_time != end_time:
+                end_time = last_time
+            else:
+                break
+            page += 1
+            time.sleep(0.5)  # 礼貌延迟
+
         logger.info(f"知识星球: 获取 {len(items)} 条")
     except Exception as e:
         logger.warning(f"知识星球采集失败: {e}")
     return items
+
+
+def _clean_zsxq_text(text: str) -> str:
+    """清理知识星球文本中的标签，提取可读内容。"""
+    from urllib.parse import unquote
+    # 解析 <e type="hashtag" title="..." /> 为 #标签#
+    text = re.sub(
+        r'<e\s+type="hashtag"[^>]*title="([^"]*)"[^/]*/\s*>',
+        lambda m: unquote(m.group(1)),
+        text,
+    )
+    # 解析 <e type="mention" ... title="..." /> 为 @人名
+    text = re.sub(
+        r'<e\s+type="mention"[^>]*title="([^"]*)"[^/]*/\s*>',
+        lambda m: "@" + unquote(m.group(1)),
+        text,
+    )
+    # 移除其他未知 <e .../> 标签
+    text = re.sub(r'<e\s+[^/]*/\s*>', '', text)
+    return text.strip()
+
+
+def _parse_zsxq_topic(topic: dict, group_id: str) -> dict[str, Any] | None:
+    """解析单条知识星球话题，提取完整内容 + 图片 + 股票提及。"""
+    topic_id = str(topic.get("topic_id", ""))
+    create_time = topic.get("create_time", "")
+
+    # 内容可能在 talk / question / answer 中
+    talk = topic.get("talk", {})
+    question = topic.get("question", {})
+    answer = topic.get("answer", {})
+
+    # 提取文本
+    text_parts = []
+    author = ""
+
+    if talk:
+        text_parts.append(talk.get("text", ""))
+        author = talk.get("owner", {}).get("name", "")
+    if question:
+        q_text = question.get("text", "")
+        q_author = question.get("owner", {}).get("name", "")
+        if q_text:
+            text_parts.append(f"【提问】{q_text}")
+        if not author:
+            author = q_author
+    if answer:
+        a_text = answer.get("text", "")
+        a_author = answer.get("owner", {}).get("name", "")
+        if a_text:
+            text_parts.append(f"【回答】{a_text}")
+        if not author:
+            author = a_author
+
+    full_text = "\n\n".join(_clean_zsxq_text(t) for t in text_parts if t.strip())
+    if not full_text:
+        return None
+
+    # 提取图片 URL
+    images = []
+    for img in talk.get("images", []) or []:
+        img_url = img.get("large", {}).get("url", "") or img.get("original", {}).get("url", "")
+        if img_url:
+            images.append(img_url)
+
+    # 互动数据
+    likes = topic.get("likes_count", 0)
+    comments = topic.get("comments_count", 0)
+
+    # 提取股票提及
+    stock_mentions = _extract_stock_mentions(full_text)
+
+    # 生成标题（第一行或前60字）
+    first_line = full_text.split("\n")[0].strip()
+    title = first_line[:60] + ("..." if len(first_line) > 60 else "")
+
+    return {
+        "source": "zsxq",
+        "title": title,
+        "summary": full_text,  # 完整内容
+        "url": f"https://wx.zsxq.com/group/{group_id}",
+        "category": "insight",
+        "published": create_time,
+        "raw_data": {
+            "topic_id": topic_id,
+            "author": author,
+            "images": images,
+            "likes": likes,
+            "comments": comments,
+            "stock_mentions": stock_mentions,
+        },
+    }
+
+
+def _extract_stock_mentions(text: str) -> list[str]:
+    """从文本中提取股票代码和名称。只提取高置信度的匹配。"""
+    mentions = set()
+    # 6位数字代码（必须是合法开头）
+    for m in _STOCK_CODE_RE.finditer(text):
+        code = m.group(1)
+        if code.startswith(("00", "30", "60", "68")):
+            mentions.add(code)
+    # 中文股票名: 必须是"名称+后缀"格式，排除动词短语
+    _noise = {"关注", "坚定", "详情", "欢迎", "近期", "回购", "合末", "价下", "分体", "很多", "十万"}
+    for m in _STOCK_NAME_RE.finditer(text):
+        name = m.group(1)
+        # 排除以常见噪音词开头的
+        if any(name.startswith(n) for n in _noise):
+            continue
+        # 至少2个字才可能是股票名
+        if len(name) >= 4:
+            mentions.add(name)
+    return sorted(mentions)
+
+
+def _download_zsxq_image(url: str, topic_id: str, idx: int) -> str | None:
+    """下载知识星球图片到本地，返回本地文件名。"""
+    try:
+        ZSXQ_IMG_DIR.mkdir(parents=True, exist_ok=True)
+        # 文件名: topic_id_idx.jpg
+        ext = "jpg"
+        if "format/png" in url:
+            ext = "png"
+        filename = f"{topic_id}_{idx}.{ext}"
+        filepath = ZSXQ_IMG_DIR / filename
+
+        if filepath.exists() and filepath.stat().st_size > 1000:
+            return filename  # 已下载过
+
+        cookies = _load_zsxq_cookies()
+        resp = requests.get(url, headers=_ZSXQ_HEADERS, cookies=cookies or {}, timeout=15, stream=True)
+        if resp.status_code == 200 and len(resp.content) > 500:
+            filepath.write_bytes(resp.content)
+            return filename
+        else:
+            logger.debug(f"图片下载失败: HTTP {resp.status_code}, {len(resp.content)} bytes")
+            return None
+    except Exception as e:
+        logger.debug(f"图片下载异常: {e}")
+        return None
+
+
+def save_zsxq_topics(items: list[dict[str, Any]]) -> int:
+    """保存知识星球内容到专用数据库，同时更新股票统计。"""
+    if not items:
+        return 0
+    init_zsxq_db()
+    conn = sqlite3.connect(ZSXQ_DB_PATH)
+    now = datetime.now().isoformat(timespec="seconds")
+    saved = 0
+    stock_mentions_all: dict[str, list[str]] = {}  # {stock_name: [topic_ids]}
+
+    for item in items:
+        raw = item.get("raw_data", {})
+        topic_id = raw.get("topic_id", "")
+        if not topic_id:
+            continue
+
+        try:
+            # 下载图片到本地
+            local_images = []
+            for idx, img_url in enumerate(raw.get("images", [])):
+                local_name = _download_zsxq_image(img_url, topic_id, idx)
+                if local_name:
+                    local_images.append(local_name)
+
+            conn.execute(
+                """INSERT OR REPLACE INTO zsxq_topics
+                   (topic_id, author, content, images, likes_count, comments_count, published, fetched_at, stock_mentions)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    topic_id,
+                    raw.get("author", ""),
+                    item.get("summary", ""),
+                    json.dumps(local_images, ensure_ascii=False),
+                    raw.get("likes", 0),
+                    raw.get("comments", 0),
+                    item.get("published", ""),
+                    now,
+                    json.dumps(raw.get("stock_mentions", []), ensure_ascii=False),
+                ),
+            )
+            saved += 1
+
+            # 收集股票提及
+            for mention in raw.get("stock_mentions", []):
+                stock_mentions_all.setdefault(mention, []).append(topic_id)
+        except Exception:
+            pass
+
+    # 更新股票统计
+    for stock_name, topic_ids in stock_mentions_all.items():
+        try:
+            existing = conn.execute(
+                "SELECT topic_ids FROM zsxq_stock_stats WHERE stock_name = ?", (stock_name,)
+            ).fetchone()
+            if existing:
+                old_ids = set(json.loads(existing[0]))
+                old_ids.update(topic_ids)
+                all_ids = sorted(old_ids)
+            else:
+                all_ids = sorted(set(topic_ids))
+            conn.execute(
+                """INSERT OR REPLACE INTO zsxq_stock_stats
+                   (stock_name, mention_count, last_mentioned, topic_ids, updated_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (stock_name, len(all_ids), now, json.dumps(all_ids, ensure_ascii=False), now),
+            )
+        except Exception:
+            pass
+
+    conn.commit()
+    conn.close()
+    return saved
+
+
+def query_zsxq_topics(limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
+    """查询知识星球内容，按时间倒序。"""
+    if not ZSXQ_DB_PATH.exists():
+        return []
+    conn = sqlite3.connect(ZSXQ_DB_PATH)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        "SELECT * FROM zsxq_topics ORDER BY published DESC LIMIT ? OFFSET ?",
+        (limit, offset),
+    ).fetchall()
+    conn.close()
+    result = []
+    for r in rows:
+        d = dict(r)
+        d["images"] = json.loads(d.get("images", "[]"))
+        d["stock_mentions"] = json.loads(d.get("stock_mentions", "[]"))
+        result.append(d)
+    return result
+
+
+def query_zsxq_stock_stats(limit: int = 50) -> list[dict[str, Any]]:
+    """查询股票提及统计，按次数降序。"""
+    if not ZSXQ_DB_PATH.exists():
+        return []
+    conn = sqlite3.connect(ZSXQ_DB_PATH)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        "SELECT stock_name, mention_count, last_mentioned FROM zsxq_stock_stats ORDER BY mention_count DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def query_zsxq_summary() -> dict[str, Any]:
+    """知识星球智能汇总: 总帖数、活跃作者、热门股票、最近趋势。"""
+    if not ZSXQ_DB_PATH.exists():
+        return {"totalTopics": 0, "authors": [], "hotStocks": [], "recentTrend": []}
+    conn = sqlite3.connect(ZSXQ_DB_PATH)
+    conn.row_factory = sqlite3.Row
+
+    # 总帖数
+    total = conn.execute("SELECT COUNT(*) as cnt FROM zsxq_topics").fetchone()["cnt"]
+
+    # 活跃作者 top 10
+    authors = conn.execute(
+        "SELECT author, COUNT(*) as cnt FROM zsxq_topics GROUP BY author ORDER BY cnt DESC LIMIT 10"
+    ).fetchall()
+
+    # 热门股票 top 20
+    hot_stocks = conn.execute(
+        "SELECT stock_name, mention_count, last_mentioned FROM zsxq_stock_stats ORDER BY mention_count DESC LIMIT 20"
+    ).fetchall()
+
+    # 最近7天每天发帖数
+    trend = conn.execute("""
+        SELECT DATE(published) as day, COUNT(*) as cnt
+        FROM zsxq_topics
+        WHERE published >= DATE('now', '-7 days')
+        GROUP BY DATE(published)
+        ORDER BY day DESC
+    """).fetchall()
+
+    conn.close()
+
+    return {
+        "totalTopics": total,
+        "authors": [{"name": r["author"], "count": r["cnt"]} for r in authors],
+        "hotStocks": [dict(r) for r in hot_stocks],
+        "recentTrend": [{"date": r["day"], "count": r["cnt"]} for r in trend],
+    }
 
 
 def _load_zsxq_cookies() -> dict[str, str] | None:
@@ -443,7 +807,13 @@ def generate_brief_summary(date: str | None = None) -> dict[str, Any]:
         cat_items = by_category.get(cat, [])
         if cat_items:
             section_items = [
-                {"title": i["title"], "summary": i.get("summary", ""), "source": i["source"], "url": i.get("url", "")}
+                {
+                    "title": i["title"],
+                    "summary": i.get("summary", ""),
+                    "source": i["source"],
+                    "url": i.get("url", ""),
+                    "stock_mentions": i.get("stock_mentions", []),
+                }
                 for i in cat_items[:5]
             ]
             sections.append({

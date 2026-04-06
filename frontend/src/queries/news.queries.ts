@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { getNewsFeed, getNewsBrief, refreshNewsFeed } from "@/services";
+import { getNewsFeed, getNewsBrief, refreshNewsFeed, getZsxqTopics, getZsxqStockStats, refreshZsxq } from "@/services";
 
 export function useNewsFeed(params?: { source?: string; category?: string; limit?: number }) {
   return useQuery({
@@ -23,11 +23,43 @@ export function useRefreshNewsFeed() {
   return useMutation({
     mutationFn: refreshNewsFeed,
     onSuccess: () => {
-      // 刷新后重新加载新闻数据
       setTimeout(() => {
         queryClient.invalidateQueries({ queryKey: ["news-feed"] });
         queryClient.invalidateQueries({ queryKey: ["news-brief"] });
-      }, 3000); // 给后台采集 3 秒时间
+      }, 3000);
+    },
+  });
+}
+
+// ── 知识星球 ──
+
+export function useZsxqTopics(limit = 50) {
+  return useQuery({
+    queryKey: ["zsxq-topics", limit],
+    queryFn: () => getZsxqTopics(limit),
+    staleTime: 30_000,
+    select: (data) => data.items,
+  });
+}
+
+export function useZsxqStockStats() {
+  return useQuery({
+    queryKey: ["zsxq-stock-stats"],
+    queryFn: () => getZsxqStockStats(),
+    staleTime: 30_000,
+    select: (data) => data.items,
+  });
+}
+
+export function useRefreshZsxq() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: refreshZsxq,
+    onSuccess: () => {
+      setTimeout(() => {
+        queryClient.invalidateQueries({ queryKey: ["zsxq-topics"] });
+        queryClient.invalidateQueries({ queryKey: ["zsxq-stock-stats"] });
+      }, 5000);
     },
   });
 }

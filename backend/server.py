@@ -20,7 +20,10 @@ from drawings_store import DrawingsStore
 from price_alert_store import PriceAlertStore
 from price_monitor import PriceMonitor
 from index_risk_analyzer import analyze_all_indices
-from news_aggregator import init_db as init_news_db, fetch_all as fetch_all_news, query_news, generate_brief_summary
+from news_aggregator import (
+    init_db as init_news_db, fetch_all as fetch_all_news, query_news, generate_brief_summary,
+    fetch_zsxq, save_zsxq_topics, query_zsxq_topics, query_zsxq_stock_stats, query_zsxq_summary, init_zsxq_db,
+)
 from pattern_predictor import predict_patterns
 
 # 初始化日志和配置
@@ -47,6 +50,7 @@ drawings_store = DrawingsStore(DRAWINGS_DB)
 
 # 初始化新闻数据库
 init_news_db()
+init_zsxq_db()
 alert_store = PriceAlertStore(ALERTS_DB)
 
 
@@ -635,6 +639,61 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception as exc:
                     logger.error(f"新闻采集失败: {exc}")
             _threading.Thread(target=_do_fetch, daemon=True).start()
+            return json_response(self, {"ok": True, "message": "采集已触发"})
+
+        # ── 知识星球图片静态服务 ──────────────────────
+        if path.startswith("/api/zsxq/images/"):
+            filename = path.split("/")[-1]
+            img_path = BACKEND / "data" / "zsxq_images" / filename
+            if img_path.exists() and img_path.is_file():
+                data = img_path.read_bytes()
+                content_type = "image/jpeg"
+                if filename.endswith(".png"):
+                    content_type = "image/png"
+                self.send_response(200)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "public, max-age=86400")
+                self.end_headers()
+                self.wfile.write(data)
+                return
+            return json_response(self, {"error": "image not found"}, 404)
+
+        # ── 知识星球 API ──────────────────────────────
+
+        # 知识星球内容列表
+        if path == "/api/zsxq/topics":
+            limit = int(q.get("limit", ["50"])[0])
+            offset = int(q.get("offset", ["0"])[0])
+            logger.debug(f"获取知识星球: limit={limit}, offset={offset}")
+            items = query_zsxq_topics(limit=limit, offset=offset)
+            return json_response(self, {"items": items})
+
+        # 知识星球股票提及统计
+        if path == "/api/zsxq/stock-stats":
+            limit = int(q.get("limit", ["50"])[0])
+            logger.debug(f"获取知识星球股票统计: limit={limit}")
+            stats = query_zsxq_stock_stats(limit=limit)
+            return json_response(self, {"items": stats})
+
+        # 知识星球智能汇总
+        if path == "/api/zsxq/summary":
+            logger.debug("获取知识星球汇总")
+            summary = query_zsxq_summary()
+            return json_response(self, summary)
+
+        # 手动触发知识星球采集
+        if path == "/api/zsxq/refresh" and method == "POST":
+            logger.info("手动触发知识星球采集...")
+            import threading as _thr
+            def _do_zsxq():
+                try:
+                    items = fetch_zsxq(limit=90)
+                    saved = save_zsxq_topics(items)
+                    logger.info(f"知识星球采集完成: {len(items)} 条, 保存 {saved} 条")
+                except Exception as exc:
+                    logger.error(f"知识星球采集失败: {exc}")
+            _thr.Thread(target=_do_zsxq, daemon=True).start()
             return json_response(self, {"ok": True, "message": "采集已触发"})
 
         # 未找到API

@@ -1,8 +1,11 @@
 import { useState } from "react";
-import { useNewsBrief, useNewsFeed, useRefreshNewsFeed } from "@/queries/news.queries";
+import { useQuery } from "@tanstack/react-query";
+import { useNewsBrief, useNewsFeed, useRefreshNewsFeed, useZsxqTopics, useZsxqStockStats, useRefreshZsxq } from "@/queries/news.queries";
 import { cn } from "@/lib/utils";
-import { RefreshCw, ExternalLink, Filter } from "lucide-react";
-import type { NewsBriefSection, NewsItem } from "@/services";
+import { RefreshCw, ExternalLink, Filter, Star, BarChart3 } from "lucide-react";
+import { CandlestickPanel } from "@/features/chart/components/candlestick-panel";
+import { searchMarket } from "@/services";
+import type { NewsBriefSection, NewsItem, ZsxqTopic, ZsxqStockStat } from "@/services";
 
 const SOURCE_LABELS: Record<string, string> = {
   cls: "财联社",
@@ -22,10 +25,36 @@ const CATEGORY_COLORS: Record<string, string> = {
   general: "bg-gray-500/10 text-gray-600",
 };
 
+// ── K线浮窗 ──
+function KlinePopup({ stockName, onClose }: { stockName: string; onClose: () => void }) {
+  const { data: match } = useStockSearch(stockName);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30" onClick={onClose}>
+      <div className="bg-canvas border border-border-default rounded-xl shadow-2xl w-[700px] h-[480px] flex flex-col" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-4 py-2.5 border-b border-border-default">
+          <span className="text-sm font-medium">{match?.stockName || stockName} {match?.tsCode || ""}</span>
+          <button onClick={onClose} className="text-text-tertiary hover:text-text-primary text-lg leading-none">&times;</button>
+        </div>
+        <div className="flex-1 min-h-0">
+          {match?.tsCode ? (
+            <CandlestickPanel kind="stock" code={match.tsCode} label={match.tsCode} title={match.stockName || stockName} />
+          ) : (
+            <div className="flex items-center justify-center h-full text-text-tertiary text-sm">
+              {stockName} 未匹配到股票
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function MorningBriefPage() {
-  const [activeTab, setActiveTab] = useState<"brief" | "feed">("brief");
+  const [activeTab, setActiveTab] = useState<"brief" | "feed" | "zsxq">("brief");
   const [selectedSource, setSelectedSource] = useState<string | undefined>();
   const [selectedCategory, setSelectedCategory] = useState<string | undefined>();
+  const [klinePopup, setKlinePopup] = useState<string | null>(null);
 
   const { data: brief, isLoading: briefLoading } = useNewsBrief();
   const { data: feedItems, isLoading: feedLoading } = useNewsFeed({
@@ -34,10 +63,16 @@ export default function MorningBriefPage() {
     limit: 100,
   });
   const refreshMutation = useRefreshNewsFeed();
+  const zsxqRefresh = useRefreshZsxq();
 
   const handleRefresh = () => {
-    refreshMutation.mutate();
+    if (activeTab === "zsxq") {
+      zsxqRefresh.mutate();
+    } else {
+      refreshMutation.mutate();
+    }
   };
+  const isRefreshing = refreshMutation.isPending || zsxqRefresh.isPending;
 
   return (
     <div className="flex flex-col h-full bg-canvas">
@@ -51,16 +86,14 @@ export default function MorningBriefPage() {
         </div>
         <button
           onClick={handleRefresh}
-          disabled={refreshMutation.isPending}
+          disabled={isRefreshing}
           className={cn(
             "flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-md border border-border-default transition-colors",
-            refreshMutation.isPending
-              ? "opacity-50 cursor-not-allowed"
-              : "hover:bg-surface-hover"
+            isRefreshing ? "opacity-50 cursor-not-allowed" : "hover:bg-surface-hover"
           )}
         >
-          <RefreshCw className={cn("w-3.5 h-3.5", refreshMutation.isPending && "animate-spin")} />
-          {refreshMutation.isPending ? "采集中..." : "刷新采集"}
+          <RefreshCw className={cn("w-3.5 h-3.5", isRefreshing && "animate-spin")} />
+          {isRefreshing ? "采集中..." : "刷新采集"}
         </button>
       </div>
 
@@ -69,6 +102,7 @@ export default function MorningBriefPage() {
         {([
           { id: "brief" as const, label: "简报摘要" },
           { id: "feed" as const, label: "新闻流" },
+          { id: "zsxq" as const, label: "知识星球" },
         ]).map((t) => (
           <button
             key={t.id}
@@ -87,8 +121,10 @@ export default function MorningBriefPage() {
 
       {/* 主内容 */}
       <div className="flex-1 min-h-0 overflow-auto">
-        {activeTab === "brief" ? (
-          <BriefView brief={brief} isLoading={briefLoading} />
+        {activeTab === "zsxq" ? (
+          <ZsxqView />
+        ) : activeTab === "brief" ? (
+          <BriefView brief={brief} isLoading={briefLoading} onStockClick={setKlinePopup} />
         ) : (
           <FeedView
             items={feedItems}
@@ -97,9 +133,13 @@ export default function MorningBriefPage() {
             selectedCategory={selectedCategory}
             onSourceChange={setSelectedSource}
             onCategoryChange={setSelectedCategory}
+            onStockClick={setKlinePopup}
           />
         )}
       </div>
+
+      {/* K线浮窗 */}
+      {klinePopup && <KlinePopup stockName={klinePopup} onClose={() => setKlinePopup(null)} />}
     </div>
   );
 }
@@ -108,9 +148,11 @@ export default function MorningBriefPage() {
 function BriefView({
   brief,
   isLoading,
+  onStockClick,
 }: {
   brief: { date: string; totalItems: number; sourceStats: Record<string, number>; sections: NewsBriefSection[] } | undefined;
   isLoading: boolean;
+  onStockClick?: (name: string) => void;
 }) {
   if (isLoading) {
     return (
@@ -144,13 +186,13 @@ function BriefView({
 
       {/* 分类板块 */}
       {brief.sections.map((section) => (
-        <SectionCard key={section.category} section={section} />
+        <SectionCard key={section.category} section={section} onStockClick={onStockClick} />
       ))}
     </div>
   );
 }
 
-function SectionCard({ section }: { section: NewsBriefSection }) {
+function SectionCard({ section, onStockClick }: { section: NewsBriefSection; onStockClick?: (name: string) => void }) {
   const colorCls = CATEGORY_COLORS[section.category] ?? CATEGORY_COLORS.general;
 
   return (
@@ -173,6 +215,13 @@ function SectionCard({ section }: { section: NewsBriefSection }) {
                   <p className="text-xs text-text-tertiary mt-1 line-clamp-2">
                     {item.summary}
                   </p>
+                )}
+                {(item as any).stock_mentions?.length > 0 && (
+                  <div className="flex flex-wrap gap-1 mt-1.5">
+                    {(item as any).stock_mentions.map((s: string) => (
+                      <ZsxqStockTag key={s} name={s} onClick={() => onStockClick?.(s)} />
+                    ))}
+                  </div>
                 )}
               </div>
               <div className="flex items-center gap-2 shrink-0">
@@ -206,6 +255,7 @@ function FeedView({
   selectedCategory,
   onSourceChange,
   onCategoryChange,
+  onStockClick,
 }: {
   items: NewsItem[] | undefined;
   isLoading: boolean;
@@ -213,6 +263,7 @@ function FeedView({
   selectedCategory: string | undefined;
   onSourceChange: (v: string | undefined) => void;
   onCategoryChange: (v: string | undefined) => void;
+  onStockClick?: (name: string) => void;
 }) {
   const sources = ["cls", "eastmoney", "sina", "zsxq"];
   const categories = ["policy", "sector", "company", "macro", "fund", "tech", "insight", "general"];
@@ -310,6 +361,13 @@ function FeedView({
                         {item.summary}
                       </p>
                     )}
+                    {(item as any).stock_mentions?.length > 0 && (
+                      <div className="flex flex-wrap gap-1 mt-1">
+                        {(item as any).stock_mentions.map((s: string) => (
+                          <ZsxqStockTag key={s} name={s} onClick={() => onStockClick?.(s)} />
+                        ))}
+                      </div>
+                    )}
                   </div>
                   {item.url && (
                     <a
@@ -329,6 +387,271 @@ function FeedView({
       </div>
     </div>
   );
+}
+
+// ── 知识星球视图（双列：左信息流 + 右K线图）──
+function ZsxqView() {
+  const [subTab, setSubTab] = useState<"timeline" | "stats">("timeline");
+  const [selectedStock, setSelectedStock] = useState<string | null>(null);
+  const { data: topics, isLoading } = useZsxqTopics(100);
+  const { data: stats } = useZsxqStockStats();
+
+  if (isLoading) {
+    return <div className="flex items-center justify-center h-32 text-text-tertiary text-sm">加载中...</div>;
+  }
+
+  if (!topics || topics.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full text-text-tertiary gap-2 p-8">
+        <Star className="w-8 h-8 opacity-30" />
+        <p className="text-sm">暂无知识星球数据</p>
+        <p className="text-xs">请先配置 Cookie：在后端运行</p>
+        <code className="text-xs bg-surface px-2 py-1 rounded">python3 news_aggregator.py --login-zsxq</code>
+        <p className="text-xs mt-1">然后点击右上角"刷新采集"</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex h-full">
+      {/* 左侧: 信息流 */}
+      <div className="flex-1 min-w-0 flex flex-col border-r border-border-default">
+        <div className="flex items-center gap-4 px-4 py-2 border-b border-border-subtle bg-surface shrink-0">
+          <button
+            onClick={() => setSubTab("timeline")}
+            className={cn("flex items-center gap-1 text-xs transition-colors", subTab === "timeline" ? "text-accent font-medium" : "text-text-tertiary")}
+          >
+            <Star className="w-3 h-3" /> 时间流 ({topics.length})
+          </button>
+          <button
+            onClick={() => setSubTab("stats")}
+            className={cn("flex items-center gap-1 text-xs transition-colors", subTab === "stats" ? "text-accent font-medium" : "text-text-tertiary")}
+          >
+            <BarChart3 className="w-3 h-3" /> 股票统计 ({stats?.length ?? 0})
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-auto">
+          {subTab === "timeline" ? (
+            <div className="py-3 px-3 space-y-3">
+              {topics.map((topic) => (
+                <ZsxqTopicCard key={topic.topic_id} topic={topic} onStockClick={setSelectedStock} />
+              ))}
+            </div>
+          ) : (
+            <div className="flex-1 overflow-auto">
+              <table className="w-full text-sm">
+                <thead className="sticky top-0 z-10">
+                  <tr className="bg-surface border-b border-border-default">
+                    <th className="text-left px-3 py-2 text-xs font-medium text-text-secondary w-8">#</th>
+                    <th className="text-left px-3 py-2 text-xs font-medium text-text-secondary">股票</th>
+                    <th className="text-right px-3 py-2 text-xs font-medium text-text-secondary w-14">次数</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(stats ?? []).map((s, i) => (
+                    <ZsxqStockRow
+                      key={s.stock_name}
+                      index={i}
+                      stat={s}
+                      isSelected={selectedStock === s.stock_name}
+                      onClick={() => setSelectedStock(s.stock_name)}
+                    />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* 右侧: K线图 */}
+      <div className="w-[50%] shrink-0">
+        {selectedStock ? (
+          <ZsxqStockChart stockQuery={selectedStock} />
+        ) : (
+          <div className="flex items-center justify-center h-full text-text-tertiary text-sm">
+            点击股票标签查看K线图
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// 股票标签：带 RS 值
+function ZsxqStockTag({ name, onClick }: { name: string; onClick: () => void }) {
+  const { data: match } = useStockSearch(name);
+  const rs = match?.rps20;
+  const pct = match?.pctChg;
+
+  return (
+    <button
+      onClick={onClick}
+      className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-accent/10 text-[11px] font-medium hover:bg-accent/20 transition-colors cursor-pointer"
+    >
+      <span className="text-accent">{name}</span>
+      {rs != null && rs > 0 && <span className="text-text-tertiary">RS{rs.toFixed(0)}</span>}
+      {pct != null && (
+        <span className={cn("font-mono", pct >= 0 ? "text-state-up" : "text-state-down")}>
+          {pct >= 0 ? "+" : ""}{pct.toFixed(1)}%
+        </span>
+      )}
+    </button>
+  );
+}
+
+// 股票统计行：搜索获取实时指标
+function ZsxqStockRow({ index, stat, isSelected, onClick }: {
+  index: number;
+  stat: ZsxqStockStat;
+  isSelected: boolean;
+  onClick: () => void;
+}) {
+  const { data: match } = useStockSearch(stat.stock_name);
+
+  return (
+    <tr
+      className={cn("border-b border-border-subtle hover:bg-surface-hover transition-colors cursor-pointer",
+        isSelected && "bg-accent/5"
+      )}
+      onClick={onClick}
+    >
+      <td className="px-3 py-2 text-xs text-text-tertiary">{index + 1}</td>
+      <td className="px-3 py-2">
+        <div className="font-medium text-accent">{stat.stock_name}</div>
+        {match && (
+          <div className="text-[10px] text-text-tertiary mt-0.5">
+            {match.stockName} · {match.tsCode}
+            {match.pctChg != null && (
+              <span className={cn("ml-1.5 font-mono", match.pctChg >= 0 ? "text-state-up" : "text-state-down")}>
+                {match.pctChg >= 0 ? "+" : ""}{match.pctChg.toFixed(2)}%
+              </span>
+            )}
+            {match.rps20 != null && match.rps20 > 0 && (
+              <span className="ml-1.5">RS {match.rps20.toFixed(0)}</span>
+            )}
+            {match.sectorName && (
+              <span className="ml-1.5 text-text-tertiary">{match.sectorName}</span>
+            )}
+          </div>
+        )}
+      </td>
+      <td className="px-3 py-2 text-right font-mono text-accent">{stat.mention_count}</td>
+    </tr>
+  );
+}
+
+function ZsxqStockChart({ stockQuery }: { stockQuery: string }) {
+  const { data: searchResult } = useStockSearch(stockQuery);
+  const tsCode = searchResult?.tsCode;
+  const stockName = searchResult?.stockName || stockQuery;
+
+  if (!tsCode) {
+    return (
+      <div className="flex items-center justify-center h-full text-text-tertiary text-sm">
+        "{stockQuery}" 未找到匹配股票
+      </div>
+    );
+  }
+
+  return (
+    <CandlestickPanel kind="stock" code={tsCode} label={tsCode} title={stockName} />
+  );
+}
+
+function useStockSearch(query: string) {
+  return useQuery({
+    queryKey: ["zsxq-stock-search", query],
+    queryFn: () => searchMarket(query, 1),
+    enabled: !!query && query.length >= 2,
+    staleTime: 5 * 60_000,
+    select: (data) => {
+      const s = data?.stocks?.[0];
+      if (!s) return null;
+      return {
+        tsCode: s.tsCode,
+        stockName: s.stockName,
+        pctChg: s.pctChange1d,
+        rps20: s.rps20,
+        sectorName: s.sectorName,
+        close: s.close,
+      };
+    },
+  });
+}
+
+function ZsxqTopicCard({ topic, onStockClick }: { topic: ZsxqTopic; onStockClick?: (name: string) => void }) {
+  const [expanded, setExpanded] = useState(false);
+  const content = topic.content || "";
+  const isLong = content.length > 300;
+  const displayContent = isLong && !expanded ? content.slice(0, 300) + "..." : content;
+
+  return (
+    <div className="border border-border-default rounded-lg overflow-hidden">
+      <div className="flex items-center justify-between px-4 py-2 bg-surface border-b border-border-subtle">
+        <div className="flex items-center gap-2">
+          <div className="w-5 h-5 rounded-full bg-accent/20 flex items-center justify-center">
+            <span className="text-[10px] text-accent font-bold">{topic.author?.charAt(0) || "?"}</span>
+          </div>
+          <span className="text-xs font-medium">{topic.author}</span>
+        </div>
+        <div className="flex items-center gap-3 text-[11px] text-text-tertiary">
+          {topic.likes_count > 0 && <span>{topic.likes_count} 赞</span>}
+          {topic.comments_count > 0 && <span>{topic.comments_count} 评论</span>}
+          <span>{formatZsxqTime(topic.published)}</span>
+        </div>
+      </div>
+
+      <div className="px-4 py-2.5">
+        <div className="text-sm leading-relaxed whitespace-pre-wrap text-text-primary">{displayContent}</div>
+        {isLong && (
+          <button onClick={() => setExpanded(!expanded)} className="text-xs text-accent mt-1.5 hover:underline">
+            {expanded ? "收起" : "展开全文"}
+          </button>
+        )}
+      </div>
+
+      {topic.stock_mentions && topic.stock_mentions.length > 0 && (
+        <div className="px-4 pb-2.5 flex flex-wrap gap-1.5">
+          {topic.stock_mentions.map((s) => (
+            <ZsxqStockTag key={s} name={s} onClick={() => onStockClick?.(s)} />
+          ))}
+        </div>
+      )}
+
+      {topic.images && topic.images.length > 0 && (
+        <div className="px-4 pb-2.5 flex gap-2 overflow-x-auto">
+          {topic.images.map((name, i) => (
+            <img
+              key={i}
+              src={`/api/zsxq/images/${name}`}
+              alt=""
+              className="max-h-48 rounded border border-border-subtle object-contain cursor-pointer"
+              loading="lazy"
+              onClick={() => window.open(`/api/zsxq/images/${name}`, "_blank")}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function formatZsxqTime(timeStr: string): string {
+  if (!timeStr) return "";
+  try {
+    // zsxq 格式: "2026-04-06T12:30:00.000+0800"
+    const d = new Date(timeStr);
+    if (isNaN(d.getTime())) return timeStr.substring(0, 16);
+    const now = new Date();
+    const diff = now.getTime() - d.getTime();
+    if (diff < 3600_000) return `${Math.floor(diff / 60_000)}分钟前`;
+    if (diff < 86400_000) return `${Math.floor(diff / 3600_000)}小时前`;
+    return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  } catch {
+    return timeStr.substring(0, 16);
+  }
 }
 
 function formatTime(timeStr: string): string {

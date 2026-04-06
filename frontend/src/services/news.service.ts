@@ -47,3 +47,34 @@ export function getNewsBrief(date?: string) {
 export function refreshNewsFeed() {
   return api<{ ok: boolean; message: string }>("/news-feed/refresh", { method: "POST" });
 }
+
+// ── 知识星球 ──
+
+export interface ZsxqTopic {
+  topic_id: string;
+  author: string;
+  content: string;
+  images: string[];
+  likes_count: number;
+  comments_count: number;
+  published: string;
+  stock_mentions: string[];
+}
+
+export interface ZsxqStockStat {
+  stock_name: string;
+  mention_count: number;
+  last_mentioned: string;
+}
+
+export function getZsxqTopics(limit = 50, offset = 0) {
+  return api<{ items: ZsxqTopic[] }>(`/zsxq/topics?limit=${limit}&offset=${offset}`, { cacheTTL: 30_000 });
+}
+
+export function getZsxqStockStats(limit = 50) {
+  return api<{ items: ZsxqStockStat[] }>(`/zsxq/stock-stats?limit=${limit}`, { cacheTTL: 30_000 });
+}
+
+export function refreshZsxq() {
+  return api<{ ok: boolean; message: string }>("/zsxq/refresh", { method: "POST" });
+}

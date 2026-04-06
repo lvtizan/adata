@@ -36,7 +36,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger("news_daemon")
 
-INTERVAL = 300  # 5 分钟
+INTERVAL = 300       # 新闻: 5 分钟
+ZSXQ_INTERVAL = 1800 # 知识星球: 30 分钟
 
 stop_event = Event()
 
@@ -92,9 +93,24 @@ def run_once() -> None:
         logger.error(f"采集异常: {e}", exc_info=True)
 
 
+def run_zsxq() -> None:
+    """采集知识星球内容"""
+    try:
+        from news_aggregator import fetch_zsxq, save_zsxq_topics, init_zsxq_db
+        init_zsxq_db()
+        items = fetch_zsxq(limit=90)  # 3页 x 30条
+        if items:
+            saved = save_zsxq_topics(items)
+            logger.info(f"知识星球: 获取 {len(items)} 条, 保存 {saved} 条")
+        else:
+            logger.info("知识星球: 0 条 (未配置cookie或无新内容)")
+    except Exception as e:
+        logger.warning(f"知识星球采集失败: {e}")
+
+
 def main() -> None:
     logger.info("新闻采集守护进程启动")
-    logger.info(f"采集间隔: {INTERVAL}s")
+    logger.info(f"新闻间隔: {INTERVAL}s, 知识星球间隔: {ZSXQ_INTERVAL}s")
 
     # PID 文件
     if "--daemon" in sys.argv:
@@ -113,12 +129,19 @@ def main() -> None:
 
     # 立即执行一次
     run_once()
+    run_zsxq()
 
-    # 轮询
+    # 双轮询: 新闻5分钟, 知识星球30分钟
+    news_counter = 0
     while not stop_event.is_set():
         stop_event.wait(INTERVAL)
-        if not stop_event.is_set():
-            run_once()
+        if stop_event.is_set():
+            break
+        run_once()
+        news_counter += 1
+        # 每6次新闻轮询(30分钟)跑一次知识星球
+        if news_counter % 6 == 0:
+            run_zsxq()
 
     logger.info("新闻采集守护进程已停止")
 
