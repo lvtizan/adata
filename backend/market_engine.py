@@ -3201,6 +3201,11 @@ class MarketEngine:
 
     def market_recap(self, trade_date: str) -> dict[str, Any]:
         """盘前纪要：涨停热点 / 机构买卖 / 游资动向 / 新高股票 / 异动预警"""
+        # 优先查预计算数据（<1ms）
+        cached = self._precomputed.get_market_recap(trade_date)
+        if cached:
+            return cached
+
         def _load() -> dict[str, Any]:
             result = {
                 "tradeDate": trade_date,
@@ -3210,6 +3215,11 @@ class MarketEngine:
                 "newHighs": self._recap_new_highs(trade_date),
                 "alerts": self._recap_alerts(trade_date),
             }
+            # 计算完存入预计算库供下次使用
+            try:
+                self._precomputed.set_market_recap(trade_date, result)
+            except Exception:
+                pass
             return result
 
         return self._cached(f"market_recap:{trade_date}", 900, _load)

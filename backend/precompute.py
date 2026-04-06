@@ -75,11 +75,18 @@ def init_db(conn: sqlite3.Connection) -> None:
 
         CREATE TABLE IF NOT EXISTS search_snapshot (
             trade_date TEXT NOT NULL,
-            payload    TEXT NOT NULL,         -- JSON: [{tsCode, stockName, sectorCode, sectorName, close, pctChange1d, pctChange5d, pctChange10d, rps20, amount}, ...]
+            payload    TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             PRIMARY KEY (trade_date)
         );
         CREATE INDEX IF NOT EXISTS idx_search_date ON search_snapshot(trade_date);
+
+        CREATE TABLE IF NOT EXISTS market_recap_cache (
+            trade_date TEXT NOT NULL,
+            payload    TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (trade_date)
+        );
     """)
 
 
@@ -432,6 +439,25 @@ class PrecomputedStore:
             return json.loads(row["payload"])
         return None
 
+    def get_market_recap(self, trade_date: str) -> dict | None:
+        """获取预计算的盘前纪要数据"""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT payload FROM market_recap_cache WHERE trade_date = ?",
+                (trade_date,),
+            ).fetchone()
+        if row:
+            return json.loads(row["payload"])
+        return None
+
+    def set_market_recap(self, trade_date: str, payload: dict) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO market_recap_cache (trade_date, payload, updated_at) VALUES (?,?,?)",
+                (trade_date, json.dumps(payload, ensure_ascii=False), now_iso()),
+            )
+            conn.commit()
+
     def latest_date(self) -> str | None:
         with self._connect() as conn:
             row = conn.execute(
@@ -587,6 +613,16 @@ def run(trade_date: str | None = None):
             logger.warning("无 metrics 数据，跳过搜索快照")
     except Exception as exc:
         logger.warning(f"搜索快照构建失败: {exc}")
+
+    # Step 6: 盘前纪要预计算
+    logger.info("预计算盘前纪要...")
+    try:
+        recap = engine.market_recap(trade_date)
+        store = PrecomputedStore()
+        store.set_market_recap(trade_date, recap)
+        logger.info(f"盘前纪要预计算完成: {len(recap.get('limitUpHotspots', {}).get('byBoard', []))} 连板等级, {len(recap.get('alerts', {}).get('items', []))} 异动预警")
+    except Exception as exc:
+        logger.warning(f"盘前纪要预计算失败: {exc}")
 
     conn.close()
     elapsed = time.time() - t0
