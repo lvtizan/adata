@@ -4,6 +4,7 @@ import { DataTable, NumericCell, type Column } from "@/shared/table";
 import { fmtPct, fmtAmount } from "@/shared/utils/format";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/shared/ui/tabs";
 import { cn } from "@/lib/utils";
+import { CandlestickPanel } from "@/features/chart/components/candlestick-panel";
 import type { InstitutionalItem, HotMoneyStock } from "@/services";
 
 export default function MarketRecapPage() {
@@ -95,75 +96,79 @@ export default function MarketRecapPage() {
 
   // ════ Tab 2: 机构买卖 ════
   const InstitutionalPanel = () => {
+    const [instTab, setInstTab] = useState<"dailyBuy" | "dailySell" | "3dBuy" | "3dSell">("dailyBuy");
+
+    const tabData: Record<string, InstitutionalItem[]> = {
+      dailyBuy: institutional.dailyNetBuy,
+      dailySell: institutional.dailyNetSell,
+      "3dBuy": institutional.threeDay.netBuy,
+      "3dSell": institutional.threeDay.netSell,
+    };
+    const currentList = tabData[instTab] || [];
+    const defaultItem = currentList[0];
+
+    const [selectedStock, setSelectedStock] = useState<{ tsCode: string; name: string } | null>(
+      defaultItem ? { tsCode: defaultItem.tsCode, name: defaultItem.stockName } : null
+    );
+
+    // 切换 tab 时自动选中第一个
+    const handleTabChange = (tab: typeof instTab) => {
+      setInstTab(tab);
+      const list = tabData[tab] || [];
+      if (list[0]) setSelectedStock({ tsCode: list[0].tsCode, name: list[0].stockName });
+    };
+
     const institutionalColumns: Column<InstitutionalItem>[] = [
-      { key: "index", label: "序号", width: "50px", render: (_, i) => <span className="text-sm">{i + 1}</span> },
-      { key: "tsCode", label: "代码", width: "80px", render: (item) => <span className="text-sm font-mono text-text-secondary">{item.tsCode}</span> },
+      { key: "index", label: "#", width: "36px", render: (_, i) => <span className="text-xs text-text-tertiary">{i + 1}</span> },
       { key: "stockName", label: "名称", render: (item) => <span className="text-sm">{item.stockName}</span> },
-      { key: "close", label: "收盘价", width: "70px", align: "right", render: (item) => <span className="text-sm font-mono">{item.close?.toFixed(2) ?? "-"}</span> },
-      { key: "pctChg", label: "涨跌幅", width: "70px", align: "right", render: (item) => <NumericCell value={item.pctChg} format={fmtPct} /> },
-      { key: "buyCount", label: "买方机构数", width: "90px", align: "right", render: (item) => <span className="text-sm">{item.buyCount}</span> },
-      { key: "sellCount", label: "卖方机构数", width: "90px", align: "right", render: (item) => <span className="text-sm">{item.sellCount}</span> },
-      { key: "buyAmount", label: "买入总额", width: "80px", align: "right", render: (item) => <span className="text-sm text-text-secondary">{fmtAmount(item.buyAmount)}</span> },
-      { key: "sellAmount", label: "卖出总额", width: "80px", align: "right", render: (item) => <span className="text-sm text-text-secondary">{fmtAmount(item.sellAmount)}</span> },
+      { key: "pctChg", label: "涨跌", width: "65px", align: "right", render: (item) => <NumericCell value={item.pctChg} format={fmtPct} /> },
       { key: "netAmount", label: "净额", width: "80px", align: "right", render: (item) => (
-        <span className={cn("text-sm font-mono", item.netAmount > 0 ? "text-state-up" : "text-state-down")}>
+        <span className={cn("text-xs font-mono", item.netAmount > 0 ? "text-state-up" : "text-state-down")}>
           {fmtAmount(item.netAmount)}
         </span>
       ) },
     ];
 
     return (
-      <div className="flex flex-col h-full gap-6 p-4 overflow-auto">
-        {/* 当日净买入 / 当日净卖出 */}
-        <div className="flex gap-6">
-          <div className="flex-1 min-h-0">
-            <h3 className="text-sm font-semibold mb-2 text-text-primary">当日净买入</h3>
-            <div className="flex-1 overflow-auto border border-border-default rounded">
-              <DataTable
-                columns={institutionalColumns}
-                data={institutional.dailyNetBuy}
-                rowKey={(item) => item.tsCode}
-                compact
-              />
-            </div>
+      <div className="flex h-full">
+        <div className="w-[360px] shrink-0 flex flex-col border-r border-border-default">
+          <div className="flex items-center gap-0 border-b border-border-subtle bg-surface px-2">
+            {([
+              { id: "dailyBuy" as const, label: "当日买入" },
+              { id: "dailySell" as const, label: "当日卖出" },
+              { id: "3dBuy" as const, label: "三日买入" },
+              { id: "3dSell" as const, label: "三日卖出" },
+            ]).map((t) => (
+              <button
+                key={t.id}
+                onClick={() => handleTabChange(t.id)}
+                className={cn(
+                  "px-3 py-2 text-xs border-b-2 transition-colors",
+                  instTab === t.id
+                    ? "border-accent text-text-primary font-medium"
+                    : "border-transparent text-text-tertiary hover:text-text-secondary"
+                )}
+              >
+                {t.label}
+              </button>
+            ))}
           </div>
-          <div className="flex-1 min-h-0">
-            <h3 className="text-sm font-semibold mb-2 text-text-primary">当日净卖出</h3>
-            <div className="flex-1 overflow-auto border border-border-default rounded">
-              <DataTable
-                columns={institutionalColumns}
-                data={institutional.dailyNetSell}
-                rowKey={(item) => item.tsCode}
-                compact
-              />
-            </div>
+          <div className="flex-1 overflow-auto">
+            <DataTable
+              columns={institutionalColumns}
+              data={currentList}
+              rowKey={(item) => item.tsCode}
+              onRowClick={(item) => setSelectedStock({ tsCode: item.tsCode, name: item.stockName })}
+              compact
+            />
           </div>
         </div>
-
-        {/* 三日净买入 / 三日净卖出 */}
-        <div className="flex gap-6">
-          <div className="flex-1 min-h-0">
-            <h3 className="text-sm font-semibold mb-2 text-text-primary">三日净买入</h3>
-            <div className="flex-1 overflow-auto border border-border-default rounded">
-              <DataTable
-                columns={institutionalColumns}
-                data={institutional.threeDay.netBuy}
-                rowKey={(item) => item.tsCode}
-                compact
-              />
-            </div>
-          </div>
-          <div className="flex-1 min-h-0">
-            <h3 className="text-sm font-semibold mb-2 text-text-primary">三日净卖出</h3>
-            <div className="flex-1 overflow-auto border border-border-default rounded">
-              <DataTable
-                columns={institutionalColumns}
-                data={institutional.threeDay.netSell}
-                rowKey={(item) => item.tsCode}
-                compact
-              />
-            </div>
-          </div>
+        <div className="flex-1 min-w-0">
+          {selectedStock ? (
+            <CandlestickPanel kind="stock" code={selectedStock.tsCode} label={selectedStock.tsCode} title={selectedStock.name} />
+          ) : (
+            <div className="flex items-center justify-center h-full text-text-tertiary text-sm">暂无数据</div>
+          )}
         </div>
       </div>
     );
@@ -171,46 +176,58 @@ export default function MarketRecapPage() {
 
   // ════ Tab 3: 游资动向 ════
   const HotMoneyPanel = () => {
+    const [hmTab, setHmTab] = useState<"buy" | "sell">("buy");
+    const desks = hmTab === "buy" ? hotMoney.netBuy : hotMoney.netSell;
+    const borderColor = hmTab === "buy" ? "border-red-600" : "border-green-600";
+
+    // 默认选中第一个股票
+    const firstStock = desks[0]?.stocks[0];
+    const [hmSelected, setHmSelected] = useState<{ tsCode: string; name: string } | null>(
+      firstStock ? { tsCode: firstStock.tsCode, name: firstStock.stockName } : null
+    );
+
+    const handleHmTab = (tab: "buy" | "sell") => {
+      setHmTab(tab);
+      const list = tab === "buy" ? hotMoney.netBuy : hotMoney.netSell;
+      const first = list[0]?.stocks[0];
+      if (first) setHmSelected({ tsCode: first.tsCode, name: first.stockName });
+    };
+
     return (
-      <div className="flex gap-6 p-4 h-full overflow-auto">
-        {/* 游资净买入 */}
-        <div className="flex-1 min-h-0 border border-border-default rounded p-3 overflow-auto">
-          <h3 className="text-sm font-semibold mb-3 text-text-primary sticky top-0 bg-surface">游资净买入</h3>
-          <div className="space-y-3">
-            {hotMoney.netBuy.map((deskGroup) => (
-              <div key={deskGroup.desk} className="border-l-2 border-red-600 pl-3">
-                <h4 className="text-xs font-semibold text-text-primary mb-1.5">{deskGroup.desk}</h4>
-                <div className="space-y-1">
+      <div className="flex h-full">
+        <div className="w-[340px] shrink-0 flex flex-col border-r border-border-default">
+          <div className="flex items-center gap-0 border-b border-border-subtle bg-surface px-2">
+            <button onClick={() => handleHmTab("buy")} className={cn("px-3 py-2 text-xs border-b-2 transition-colors", hmTab === "buy" ? "border-accent text-text-primary font-medium" : "border-transparent text-text-tertiary")}>净买入</button>
+            <button onClick={() => handleHmTab("sell")} className={cn("px-3 py-2 text-xs border-b-2 transition-colors", hmTab === "sell" ? "border-accent text-text-primary font-medium" : "border-transparent text-text-tertiary")}>净卖出</button>
+          </div>
+          <div className="flex-1 overflow-auto p-3 space-y-3">
+            {desks.map((deskGroup) => (
+              <div key={deskGroup.desk} className={cn("border-l-2 pl-3", borderColor)}>
+                <h4 className="text-[11px] font-semibold text-text-secondary mb-1.5 truncate" title={deskGroup.desk}>{deskGroup.desk}</h4>
+                <div className="space-y-0.5">
                   {deskGroup.stocks.map((stock) => (
-                    <div key={stock.tsCode} className="flex justify-between text-xs">
-                      <span className="text-text-secondary">{stock.stockName}</span>
-                      <span className="text-state-up font-mono">{fmtAmount(stock.netAmount)}</span>
-                    </div>
+                    <button
+                      key={stock.tsCode}
+                      onClick={() => setHmSelected({ tsCode: stock.tsCode, name: stock.stockName })}
+                      className={cn("w-full flex justify-between items-center text-xs py-1.5 px-2 rounded transition-colors",
+                        hmSelected?.tsCode === stock.tsCode ? "bg-accent/10 text-accent" : "hover:bg-surface-hover"
+                      )}
+                    >
+                      <span className="truncate mr-2">{stock.stockName}</span>
+                      <span className={cn("font-mono shrink-0", stock.netAmount > 0 ? "text-state-up" : "text-state-down")}>{fmtAmount(Math.abs(stock.netAmount))}</span>
+                    </button>
                   ))}
                 </div>
               </div>
             ))}
           </div>
         </div>
-
-        {/* 游资净卖出 */}
-        <div className="flex-1 min-h-0 border border-border-default rounded p-3 overflow-auto">
-          <h3 className="text-sm font-semibold mb-3 text-text-primary sticky top-0 bg-surface">游资净卖出</h3>
-          <div className="space-y-3">
-            {hotMoney.netSell.map((deskGroup) => (
-              <div key={deskGroup.desk} className="border-l-2 border-green-600 pl-3">
-                <h4 className="text-xs font-semibold text-text-primary mb-1.5">{deskGroup.desk}</h4>
-                <div className="space-y-1">
-                  {deskGroup.stocks.map((stock) => (
-                    <div key={stock.tsCode} className="flex justify-between text-xs">
-                      <span className="text-text-secondary">{stock.stockName}</span>
-                      <span className="text-state-down font-mono">{fmtAmount(Math.abs(stock.netAmount))}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
+        <div className="flex-1 min-w-0">
+          {hmSelected ? (
+            <CandlestickPanel kind="stock" code={hmSelected.tsCode} label={hmSelected.tsCode} title={hmSelected.name} />
+          ) : (
+            <div className="flex items-center justify-center h-full text-text-tertiary text-sm">暂无数据</div>
+          )}
         </div>
       </div>
     );
@@ -218,31 +235,36 @@ export default function MarketRecapPage() {
 
   // ════ Tab 4: 股价新高 ════
   const NewHighsPanel = () => {
-    const newHighsColumns: Column<typeof newHighs.stocks[0]>[] = [
-      { key: "index", label: "序号", width: "50px", render: (_, i) => <span className="text-sm">{i + 1}</span> },
-      { key: "tsCode", label: "代码", width: "80px", render: (item) => <span className="text-sm font-mono text-text-secondary">{item.tsCode}</span> },
-      { key: "stockName", label: "名称", render: (item) => <span className="text-sm">{item.stockName}</span> },
-      { key: "pctChg", label: "涨跌幅", width: "70px", align: "right", render: (item) => <NumericCell value={item.pctChg} format={fmtPct} /> },
-      { key: "close", label: "现价", width: "70px", align: "right", render: (item) => <span className="text-sm font-mono">{item.close?.toFixed(2) ?? "-"}</span> },
-      { key: "sectorName", label: "所属行业", render: (item) => <span className="text-xs text-text-secondary">{item.sectorName}</span> },
+    const sortedStocks = [...newHighs.stocks].sort((a, b) => b.pctChg - a.pctChg);
+    const first = sortedStocks[0];
+    const [nhSelected, setNhSelected] = useState<{ tsCode: string; name: string } | null>(
+      first ? { tsCode: first.tsCode, name: first.stockName } : null
+    );
+    const nhColumns: Column<typeof newHighs.stocks[0]>[] = [
+      { key: "index", label: "#", width: "36px", render: (_, i) => <span className="text-xs text-text-tertiary">{i + 1}</span> },
+      { key: "stockName", label: "名称", width: "80px", render: (item) => <span className="text-sm truncate block">{item.stockName}</span> },
+      { key: "pctChg", label: "涨跌", width: "65px", align: "right", render: (item) => <NumericCell value={item.pctChg} format={fmtPct} /> },
+      { key: "sectorName", label: "板块", width: "80px", render: (item) => <span className="text-[11px] text-text-tertiary truncate block">{item.sectorName}</span> },
     ];
 
-    const sortedStocks = [...newHighs.stocks].sort((a, b) => b.pctChg - a.pctChg);
-
     return (
-      <div className="flex flex-col h-full p-4 gap-4">
-        <div className="text-sm text-text-secondary">
-          今日收盘价创新高 <strong className="text-text-primary">{newHighs.count}</strong> 家，
-          昨日 <strong className="text-text-primary">{newHighs.trend.yesterday}</strong> 家，
-          前日 <strong className="text-text-primary">{newHighs.trend.dayBefore}</strong> 家
+      <div className="flex h-full">
+        <div className="w-[360px] shrink-0 flex flex-col border-r border-border-default">
+          <div className="px-3 py-2 border-b border-border-subtle text-xs text-text-secondary bg-surface">
+            今日新高 <strong className="text-text-primary">{newHighs.count}</strong> 家
+            {" / "}昨日 {newHighs.trend.yesterday}
+            {" / "}前日 {newHighs.trend.dayBefore}
+          </div>
+          <div className="flex-1 overflow-auto">
+            <DataTable columns={nhColumns} data={sortedStocks} rowKey={(item) => item.tsCode} onRowClick={(item) => setNhSelected({ tsCode: item.tsCode, name: item.stockName })} compact />
+          </div>
         </div>
-        <div className="flex-1 overflow-auto border border-border-default rounded">
-          <DataTable
-            columns={newHighsColumns}
-            data={sortedStocks}
-            rowKey={(item) => item.tsCode}
-            compact
-          />
+        <div className="flex-1 min-w-0">
+          {nhSelected ? (
+            <CandlestickPanel kind="stock" code={nhSelected.tsCode} label={nhSelected.tsCode} title={nhSelected.name} />
+          ) : (
+            <div className="flex items-center justify-center h-full text-text-tertiary text-sm">暂无数据</div>
+          )}
         </div>
       </div>
     );
@@ -250,67 +272,30 @@ export default function MarketRecapPage() {
 
   // ════ Tab 5: 异动预警 ════
   const AlertsPanel = () => {
-    const alertsColumns: Column<typeof alerts.items[0]>[] = [
-      { key: "index", label: "序号", width: "50px", render: (_, i) => <span className="text-sm">{i + 1}</span> },
-      { key: "tsCode", label: "代码", width: "80px", render: (item) => <span className="text-sm font-mono text-text-secondary">{item.tsCode}</span> },
-      { key: "stockName", label: "名称", render: (item) => <span className="text-sm">{item.stockName}</span> },
-      { key: "pctChg", label: "预警涨幅", width: "80px", align: "right", render: (item) => <NumericCell value={item.pctChg} format={fmtPct} /> },
-      { key: "sectorName", label: "主题/板块", render: (item) => <span className="text-xs text-text-secondary">{item.sectorName}</span> },
-      { key: "alertType", label: "类别", width: "80px", render: (item) => <span className="text-xs text-text-secondary">{item.alertType}</span> },
+    const firstAlert = alerts.items[0];
+    const [alertSelected, setAlertSelected] = useState<{ tsCode: string; name: string } | null>(
+      firstAlert ? { tsCode: firstAlert.tsCode, name: firstAlert.stockName } : null
+    );
+    const alertColumns: Column<typeof alerts.items[0]>[] = [
+      { key: "index", label: "#", width: "36px", render: (_, i) => <span className="text-xs text-text-tertiary">{i + 1}</span> },
+      { key: "stockName", label: "名称", width: "80px", render: (item) => <span className="text-sm truncate block">{item.stockName}</span> },
+      { key: "pctChg", label: "涨幅", width: "65px", align: "right", render: (item) => <NumericCell value={item.pctChg} format={fmtPct} /> },
+      { key: "alertType", label: "类别", width: "110px", render: (item) => <span className="text-[11px] text-text-tertiary truncate block">{item.alertType}</span> },
     ];
 
     return (
-      <div className="flex flex-col h-full p-4">
-        <div className="flex-1 overflow-auto border border-border-default rounded">
-          <table className="w-full border-collapse text-base">
-            <thead>
-              <tr>
-                {alertsColumns.map((col) => (
-                  <th
-                    key={col.key}
-                    className={cn(
-                      "sticky top-0 z-10 bg-surface px-3 text-xs font-semibold text-text-secondary border-b border-border-default whitespace-nowrap h-9",
-                      col.align === "right" ? "text-right" : "text-left"
-                    )}
-                    style={col.width ? { width: col.width, minWidth: col.width } : undefined}
-                  >
-                    {col.label}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {alerts.items.length === 0 ? (
-                <tr>
-                  <td colSpan={alertsColumns.length} className="text-center py-8 text-text-tertiary">
-                    暂无数据
-                  </td>
-                </tr>
-              ) : (
-                alerts.items.map((item, i) => (
-                  <tr
-                    key={item.tsCode}
-                    className={cn(
-                      "h-9 border-b border-border-subtle hover:bg-surface-hover transition-colors",
-                      item.deviation > 200 && "bg-red-50"
-                    )}
-                  >
-                    {alertsColumns.map((col) => (
-                      <td
-                        key={col.key}
-                        className={cn(
-                          "px-3 whitespace-nowrap",
-                          col.align === "right" ? "text-right" : "text-left"
-                        )}
-                      >
-                        {col.render(item, i)}
-                      </td>
-                    ))}
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
+      <div className="flex h-full">
+        <div className="w-[380px] shrink-0 flex flex-col border-r border-border-default">
+          <div className="flex-1 overflow-auto">
+            <DataTable columns={alertColumns} data={alerts.items} rowKey={(item) => item.tsCode} onRowClick={(item) => setAlertSelected({ tsCode: item.tsCode, name: item.stockName })} compact />
+          </div>
+        </div>
+        <div className="flex-1 min-w-0">
+          {alertSelected ? (
+            <CandlestickPanel kind="stock" code={alertSelected.tsCode} label={alertSelected.tsCode} title={alertSelected.name} />
+          ) : (
+            <div className="flex items-center justify-center h-full text-text-tertiary text-sm">暂无数据</div>
+          )}
         </div>
       </div>
     );
