@@ -1,6 +1,7 @@
 import { cn } from "@/lib/utils";
-import { Minus, PenLine, MoveUpRight, Square, StickyNote, ShieldCheck, ShieldAlert, Tag, DollarSign, X, Trash2 } from "lucide-react";
+import { Minus, PenLine, MoveUpRight, Square, StickyNote, ShieldCheck, ShieldAlert, Tag, DollarSign, X, Trash2, Palette } from "lucide-react";
 import type { ReactNode } from "react";
+import { useState } from "react";
 
 const DRAW_COLORS = [
   "#ef4444", "#f59e0b", "#22c55e", "#3b82f6", "#a855f7",
@@ -23,8 +24,6 @@ const TOOLS: Tool[] = [
 
 interface DrawingToolbarProps {
   activeTool: string | null;
-  drawingColor?: string;
-  onColorChange?: (color: string) => void;
   selectedOverlayId?: string | null;
   selectedOverlayName?: string | null;
   selectedOverlayLocked?: boolean;
@@ -39,6 +38,7 @@ interface DrawingToolbarProps {
   onAddResistanceTemplate: () => void;
   onAddTagTemplate: () => void;
   onAddBuyEntry?: () => void;
+  onChangeOverlayColor?: (id: string, color: string) => void;
   rightContent?: ReactNode;
 }
 
@@ -62,8 +62,6 @@ function ToolBtn({ active, title, onClick, children, className = "" }: {
 
 export function DrawingToolbar({
   activeTool,
-  drawingColor = "#3b82f6",
-  onColorChange,
   selectedOverlayId = null,
   selectedOverlayLocked = false,
   overlays = [],
@@ -75,8 +73,11 @@ export function DrawingToolbar({
   onAddResistanceTemplate,
   onAddTagTemplate,
   onAddBuyEntry,
+  onChangeOverlayColor,
   rightContent,
 }: DrawingToolbarProps) {
+  const [colorPickerOpen, setColorPickerOpen] = useState(false);
+
   return (
     <div className="flex items-center gap-0.5 px-1">
       {/* 画线工具 */}
@@ -90,24 +91,6 @@ export function DrawingToolbar({
           {tool.icon}
         </ToolBtn>
       ))}
-
-      <div className="w-px h-5 bg-border-default mx-0.5" />
-
-      {/* 颜色选择 */}
-      <div className="flex items-center gap-0.5 mx-0.5">
-        {DRAW_COLORS.map((c) => (
-          <button
-            key={c}
-            title={`颜色 ${c}`}
-            onClick={() => onColorChange?.(c)}
-            className={cn(
-              "w-5 h-5 rounded-full border-2 transition-transform",
-              drawingColor === c ? "border-text-primary scale-110" : "border-transparent hover:scale-105",
-            )}
-            style={{ backgroundColor: c }}
-          />
-        ))}
-      </div>
 
       <div className="w-px h-5 bg-border-default mx-0.5" />
 
@@ -127,8 +110,42 @@ export function DrawingToolbar({
 
       <div className="w-px h-5 bg-border-default mx-0.5" />
 
+      {/* 选中对象时显示：改色、锁定、删除 */}
+      {selectedOverlayId && (
+        <>
+          <div className="relative">
+            <ToolBtn
+              active={colorPickerOpen}
+              title="修改颜色"
+              onClick={() => setColorPickerOpen(!colorPickerOpen)}
+            >
+              <Palette className="w-4 h-4" />
+            </ToolBtn>
+            {colorPickerOpen && (
+              <div className="absolute top-full left-0 mt-1 z-50 flex gap-1 p-1.5 bg-canvas border border-border-default rounded-lg shadow-lg">
+                {DRAW_COLORS.map((c) => (
+                  <button
+                    key={c}
+                    title={c}
+                    onClick={() => {
+                      onChangeOverlayColor?.(selectedOverlayId, c);
+                      setColorPickerOpen(false);
+                    }}
+                    className="w-6 h-6 rounded-full border-2 border-transparent hover:border-text-primary transition-colors"
+                    style={{ backgroundColor: c }}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+          <ToolBtn title={selectedOverlayLocked ? "解锁" : "锁定"} onClick={onToggleLock}>
+            <span className="text-xs">{selectedOverlayLocked ? "🔒" : "🔓"}</span>
+          </ToolBtn>
+        </>
+      )}
+
       {/* 操作 */}
-      <ToolBtn title="取消" onClick={() => onToolSelect(null)}>
+      <ToolBtn title="取消" onClick={() => { onToolSelect(null); setColorPickerOpen(false); }}>
         <X className="w-4 h-4" />
       </ToolBtn>
       <ToolBtn title="清空全部画线" onClick={onClearAll} className="text-state-down">
