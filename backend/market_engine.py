@@ -2334,6 +2334,64 @@ class MarketEngine:
 
         return self._cached(cache_key, 300, _load)
 
+    def index_kline(self, ts_code: str, trade_date: str, bars: int = 180) -> dict[str, Any]:
+        """获取指数K线数据，支持 A 股指数 (.SH/.SZ/.CSI) 和同花顺指数 (.TI)"""
+        cache_key = f"index_kline:{ts_code}:{trade_date}:{bars}"
+
+        def _load() -> dict[str, Any]:
+            dates = self.trade_dates(trade_date, need=max(bars + 30, 220))
+            start = dates[-bars] if len(dates) >= bars else dates[0]
+
+            # 指数名称映射
+            from index_risk_analyzer import TRACKED_INDICES
+            name_map = {idx["ts_code"]: idx["name"] for idx in TRACKED_INDICES}
+            name = name_map.get(ts_code, ts_code)
+
+            df = None
+            if ts_code.endswith(".TI"):
+                # 同花顺指数
+                try:
+                    df = self.pro.ths_daily(ts_code=ts_code, start_date=start, end_date=trade_date)
+                except Exception as exc:
+                    logger.warning(f"同花顺指数加载失败 {ts_code}: {exc}")
+            elif ts_code.endswith(".HI"):
+                # 港股指数 — 尝试 ths_daily
+                try:
+                    df = self.pro.ths_daily(ts_code=ts_code, start_date=start, end_date=trade_date)
+                except Exception:
+                    pass
+            else:
+                # 标准 A 股指数
+                try:
+                    df = self.pro.index_daily(ts_code=ts_code, start_date=start, end_date=trade_date)
+                except Exception as exc:
+                    logger.warning(f"指数加载失败 {ts_code}: {exc}")
+
+            if df is None or df.empty:
+                return {"code": ts_code, "name": name, "points": []}
+
+            df = df.sort_values("trade_date").reset_index(drop=True)
+            df["ma5"] = df["close"].rolling(5).mean()
+            df["ma10"] = df["close"].rolling(10).mean()
+            df["ma20"] = df["close"].rolling(20).mean()
+
+            points = []
+            for _, r in df.iterrows():
+                points.append({
+                    "time": str(r["trade_date"]),
+                    "open": float(r["open"]),
+                    "high": float(r["high"]),
+                    "low": float(r["low"]),
+                    "close": float(r["close"]),
+                    "volume": float(r.get("vol", 0)),
+                    "ma5": float(r["ma5"]) if pd.notna(r["ma5"]) else None,
+                    "ma10": float(r["ma10"]) if pd.notna(r["ma10"]) else None,
+                    "ma20": float(r["ma20"]) if pd.notna(r["ma20"]) else None,
+                })
+            return {"code": ts_code, "name": name, "points": points}
+
+        return self._cached(cache_key, 300, _load)
+
     def sector_kline(self, sector_code: str, trade_date: str, bars: int = 180) -> dict[str, Any]:
         dates = self.trade_dates(trade_date, need=max(bars + 30, 220))
         start = dates[-bars] if len(dates) >= bars else dates[0]
@@ -3509,8 +3567,8 @@ class MarketEngine:
                             if desk not in desk_data:
                                 desk_data[desk] = {"buy": 0, "sell": 0, "stocks": {}}
 
-                            buy_amt = float(row.get("buy", 0) or 0)
-                            sell_amt = float(row.get("sell", 0) or 0)
+                            buy_amt = float(row.get("buy", 0) if pd.notna(row.get("buy")) else 0)
+                            sell_amt = float(row.get("sell", 0) if pd.notna(row.get("sell")) else 0)
                             net_amt = buy_amt - sell_amt
 
                             desk_data[desk]["buy"] += buy_amt

@@ -99,6 +99,15 @@ export function useStockPatterns(tsCode: string) {
   });
 }
 
+export function useStockPredictions(tsCode: string) {
+  return useQuery({
+    queryKey: ["stock", tsCode, "predictions"],
+    queryFn: () => import("@/services").then((m) => m.getStockPredictions(tsCode)),
+    enabled: !!tsCode,
+    staleTime: 10 * 60_000,
+  });
+}
+
 export function useStockSector(tsCode: string) {
   return useQuery({
     queryKey: ["stock", tsCode, "sector"],

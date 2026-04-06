@@ -1209,8 +1209,9 @@ def detect_feng_signals(df: pd.DataFrame) -> dict[str, Any]:
     # 支撑位 — 用聚类找真正的水平支撑
     swing_lows = _find_swing_lows(low_arr, window=3)
     strong_supports = _find_support_levels(low_arr, close_arr, swing_lows, tolerance=0.05)
-    # count>=2 且触及间隔>=10根K线（同一波回调的两根K线不算）
-    support_prices = [s["price"] for s in strong_supports if s["count"] >= 2]
+    # 优先使用多次触及的支撑位，如果没有则包含回退支撑位
+    multi_touch = [s["price"] for s in strong_supports if s["count"] >= 2]
+    support_prices = multi_touch if multi_touch else [s["price"] for s in strong_supports]
 
     signals: list[dict[str, Any]] = []
     buy_signals: list[dict[str, Any]] = []

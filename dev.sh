@@ -19,9 +19,12 @@ stop_all() {
     for p in 5174 8088 8082 2024 8001 3000 5173 8080; do
         lsof -ti :$p 2>/dev/null | xargs kill -9 2>/dev/null
     done
-    # 停止调度器
-    local pid_file="$DIR/.pids/scheduler.pid"
-    [ -f "$pid_file" ] && kill "$(cat "$pid_file")" 2>/dev/null && rm -f "$pid_file"
+    # 停止调度器和新闻守护进程
+    for pf in scheduler.pid news_daemon.pid; do
+        local pid_file="$DIR/.pids/$pf"
+        [ -f "$pid_file" ] && kill "$(cat "$pid_file")" 2>/dev/null && rm -f "$pid_file"
+    done
+    pkill -f "news_daemon.py" 2>/dev/null
     # DeerFlow 相关进程
     pkill -f "langgraph dev" 2>/dev/null
     pkill -f "uvicorn app.gateway.app:app" 2>/dev/null
@@ -73,6 +76,9 @@ nohup python3 server.py > "$LOG_DIR/a-data-backend.log" 2>&1 &
 
 # 启动定时调度器
 nohup python3 daily_scheduler.py --daemon > "$LOG_DIR/a-data-scheduler.log" 2>&1 &
+
+# 启动新闻采集守护进程（每5分钟采集一次）
+nohup python3 news_daemon.py --daemon > "$LOG_DIR/a-data-news.log" 2>&1 &
 
 # ═══════════════════════════════════════
 # 2. A-Stock 前端

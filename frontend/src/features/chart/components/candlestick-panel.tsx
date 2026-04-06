@@ -1,5 +1,5 @@
 import { ChartShell, KlineChart } from "@/shared/charts";
-import { useStockChart, useSectorChart, useStockPatterns } from "@/queries";
+import { useStockChart, useSectorChart, useStockPatterns, useStockPredictions } from "@/queries";
 import type { PatternSignal, DrawdownMarker } from "@/services";
 
 interface CandlestickPanelProps {
@@ -17,6 +17,8 @@ export function CandlestickPanel({ kind, code, label, title, emptyText = "请选
 
   // 个股才加载 pattern 数据（HH 信号 + 回撤标记）
   const { data: patternData } = useStockPatterns(kind === "stock" ? code : "");
+  // 形态预测数据
+  const { data: predictionData } = useStockPredictions(kind === "stock" ? code : "");
 
   return (
     <ChartShell
@@ -35,6 +37,7 @@ export function CandlestickPanel({ kind, code, label, title, emptyText = "请选
           supports={patternData?.supports}
           resistances={patternData?.resistances}
           fengSignals={query.data.fengSignals}
+          predictions={predictionData?.predictions}
         />
       )}
     </ChartShell>

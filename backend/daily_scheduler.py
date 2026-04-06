@@ -242,29 +242,45 @@ def _build_local_brief(overview: dict, sectors: dict, bull: dict) -> str:
 
 
 # ── 三个定时任务 ──────────────────────────────────
+def _fetch_news_and_build_brief(trade_date: str, brief_type: str) -> str | None:
+    """采集多源新闻并生成本地简报"""
+    try:
+        from news_aggregator import fetch_all, generate_brief_summary
+        results = fetch_all()
+        logger.info(f"新闻采集完成: {results}")
+        brief = generate_brief_summary(date=trade_date[:4] + "-" + trade_date[4:6] + "-" + trade_date[6:8])
+        if brief and brief.get("totalItems", 0) > 0:
+            # 转为 Markdown
+            lines = [f"# 每日简报 — {trade_date}\n"]
+            lines.append(f"共采集 {brief['totalItems']} 条新闻\n")
+            for section in brief.get("sections", []):
+                lines.append(f"\n## {section['label']} ({section['count']}条)\n")
+                for item in section["items"]:
+                    lines.append(f"- **{item['title']}** ({item['source']})")
+                    if item.get("summary") and item["summary"] != item["title"]:
+                        lines.append(f"  {item['summary'][:100]}")
+            return "\n".join(lines)
+    except Exception as e:
+        logger.warning(f"本地新闻采集失败: {e}")
+    return None
+
+
 def job_pre_market():
     """盘前作战地图（09:00）"""
     trade_date = get_trade_date()
     logger.info(f"=== 盘前作战地图 {trade_date} ===")
 
-    prompt = f"""今天是 {trade_date}，请生成盘前作战地图。
+    # 优先用本地多源新闻采集
+    content = _fetch_news_and_build_brief(trade_date, "pre_market")
 
-请执行以下步骤：
-1. 调用 astock_sector_rankings 获取板块排行，找出 RPS10 前 5 板块
-2. 调用 astock_bull_camp 获取牛股集中营最新列表
-3. 搜索"今日A股 利好 政策"和"隔夜美股表现"的最新消息
-4. 综合以上信息，生成简报，包含：
-   - 隔夜外盘概况
-   - 今日关注板块（前 5 + 加速板块）
-   - 牛股集中营动态
-   - 需要警惕的风险
-
-请用 Markdown 格式输出。"""
-
-    # 先尝试 DeerFlow，失败则用本地数据
-    content = call_deerflow(prompt)
+    # 回退到 DeerFlow（如果可用）
     if not content:
-        content = call_deerflow_mcp(prompt)
+        prompt = f"今天是 {trade_date}，请生成盘前作战地图。"
+        content = call_deerflow(prompt)
+
+    # 最后回退到 MCP 本地数据
+    if not content:
+        content = call_deerflow_mcp("")
 
     if content:
         save_brief(trade_date, "pre_market", f"盘前作战地图 — {trade_date}", content)
@@ -280,25 +296,10 @@ def job_midday():
     # Step 1: 刷新量化数据
     run_precompute(trade_date)
 
-    # Step 2: DeerFlow AI 简报
-    prompt = f"""今天是 {trade_date}，现在是午间休市。请生成盘中简报。
-
-请执行以下步骤：
-1. 调用 astock_market_overview 获取上午的涨跌统计
-2. 调用 astock_sector_rankings 查看板块变化
-3. 调用 astock_bull_camp 查看牛股集中营是否有异动
-4. 搜索今天上午的 A 股热点新闻
-5. 生成午间简报，重点关注：
-   - 上午市场表现总结
-   - 板块轮动方向
-   - 异动个股
-   - 下午关注重点
-
-请用 Markdown 格式输出。"""
-
-    content = call_deerflow(prompt)
+    # Step 2: 多源新闻简报
+    content = _fetch_news_and_build_brief(trade_date, "midday")
     if not content:
-        content = call_deerflow_mcp(prompt)
+        content = call_deerflow_mcp("")
 
     if content:
         save_brief(trade_date, "midday", f"午间简报 — {trade_date}", content)
@@ -312,36 +313,28 @@ def job_post_market():
     # Step 1: 刷新量化数据（收盘后完整数据）
     run_precompute(trade_date)
 
-    # Step 2: DeerFlow AI 总结
-    prompt = f"""今天是 {trade_date}，A 股已收盘。请生成每日收盘总结。
-
-请执行以下步骤：
-1. 调用 astock_market_overview 获取全天数据
-2. 调用 astock_sector_rankings 分析今日板块表现
-3. 调用 astock_bull_camp 获取牛股集中营完整列表
-4. 搜索今天 A 股的重大新闻和分析
-5. 生成收盘总结，包含：
-   - 今日大盘总结（指数/涨跌家数/成交额）
-   - 板块强弱排行（附 RPS 变化）
-   - 牛股集中营变动（新进/掉出）
-   - 明日关注重点
-   - 风险提示
-
-请用 Markdown 格式输出。"""
-
-    content = call_deerflow(prompt)
+    # Step 2: 多源新闻简报
+    content = _fetch_news_and_build_brief(trade_date, "post_market")
     if not content:
-        content = call_deerflow_mcp(prompt)
+        content = call_deerflow_mcp("")
 
     if content:
         save_brief(trade_date, "post_market", f"收盘总结 — {trade_date}", content)
 
 
 # ── 调度循环 ──────────────────────────────────────
+def job_precompute_predictions():
+    """16:00 收盘后预计算全市场形态预测"""
+    trade_date = get_trade_date()
+    logger.info(f"=== 预计算形态预测 {trade_date} ===")
+    run_precompute(trade_date)
+
+
 SCHEDULE = [
     ("09:00", job_pre_market),
     ("11:35", job_midday),
     ("15:10", job_post_market),
+    ("16:00", job_precompute_predictions),
 ]
 
 stop_event = Event()

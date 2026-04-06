@@ -87,6 +87,15 @@ def init_db(conn: sqlite3.Connection) -> None:
             updated_at TEXT NOT NULL,
             PRIMARY KEY (trade_date)
         );
+
+        CREATE TABLE IF NOT EXISTS pattern_predictions (
+            trade_date TEXT NOT NULL,
+            ts_code    TEXT NOT NULL,
+            payload    TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (trade_date, ts_code)
+        );
+        CREATE INDEX IF NOT EXISTS idx_pred_date ON pattern_predictions(trade_date);
     """)
 
 
@@ -614,7 +623,33 @@ def run(trade_date: str | None = None):
     except Exception as exc:
         logger.warning(f"搜索快照构建失败: {exc}")
 
-    # Step 6: 盘前纪要预计算
+    # Step 6: 形态预测（全市场扫描，只保存有预测结果的股票）
+    logger.info("批量形态预测...")
+    try:
+        from pattern_predictor import predict_patterns_for_precompute
+        pred_count = 0
+        ts = now_iso()
+        # 扫描 top 500 + 自选股
+        pred_codes = list(set(top_codes))
+        for code in pred_codes:
+            try:
+                result = predict_patterns_for_precompute(engine, code, trade_date)
+                if result.get("predictions"):
+                    conn.execute(
+                        "INSERT OR REPLACE INTO pattern_predictions (trade_date, ts_code, payload, updated_at) VALUES (?,?,?,?)",
+                        (trade_date, code, json.dumps(result, ensure_ascii=False), ts),
+                    )
+                    pred_count += 1
+                    if pred_count % 20 == 0:
+                        conn.commit()
+            except Exception:
+                pass
+        conn.commit()
+        logger.info(f"形态预测完成: {pred_count} 只有预测信号")
+    except Exception as exc:
+        logger.warning(f"形态预测失败: {exc}")
+
+    # Step 7: 盘前纪要预计算
     logger.info("预计算盘前纪要...")
     try:
         recap = engine.market_recap(trade_date)

@@ -1,8 +1,8 @@
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import { AppShell, TopBar, BottomBar, LeftRail } from "@/shared/layout";
-import { AiChatWidget } from "@/shared/layout/ai-chat-widget";
+import { AiResearchPanel } from "@/shared/layout/ai-research-panel";
 import { useMarketOverview, useBullCamp, useWatchlist } from "@/queries";
-import { Activity, BarChart3, Eye, Flame, Settings, Crosshair, FileText, TrendingUp, LayoutPanelTop, GitCommit } from "lucide-react";
+import { Activity, BarChart3, Eye, Flame, Settings, Crosshair, FileText, TrendingUp, LayoutPanelTop, GitCommit, Newspaper } from "lucide-react";
 
 const navItems = [
   { path: "/intraday", label: "盘中观察", icon: TrendingUp },
@@ -13,6 +13,7 @@ const navItems = [
   { path: "/bullcamp", label: "牛股集中营", icon: Flame },
   { path: "/hh-scan", label: "双底扫描", icon: Crosshair },
   { path: "/market-recap", label: "盘前纪要", icon: FileText },
+  { path: "/morning-brief", label: "每日简报", icon: Newspaper },
   { path: "/stock-compare", label: "股票对比", icon: GitCommit },
   { path: "/settings", label: "设置", icon: Settings },
 ];
@@ -57,7 +58,7 @@ export function RootLayout() {
       }
     >
       <Outlet />
-      <AiChatWidget />
+      <AiResearchPanel />
     </AppShell>
   );
 }

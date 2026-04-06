@@ -5,3 +5,5 @@ export * from "./sector.service";
 export * from "./stock.service";
 export * from "./chart.service";
 export * from "./index-risk.service";
+export * from "./news.service";
+export * from "./prediction.service";

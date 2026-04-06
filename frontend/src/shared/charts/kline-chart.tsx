@@ -5,6 +5,7 @@ import { getKLineStyles, dateToTimestamp } from "@/app/theme/chart-theme";
 import type { CandlePoint, FengSignals, ChartDrawingOverlay, ChartSignal } from "@/shared/types";
 import type { DrawdownMarker } from "@/services";
 import type { SupportLevel, ResistanceLevel } from "@/services/stock.service";
+import type { PatternPrediction } from "@/services/prediction.service";
 
 interface KlineChartProps {
   points: CandlePoint[];
@@ -15,6 +16,7 @@ interface KlineChartProps {
   supports?: SupportLevel[];
   resistances?: ResistanceLevel[];
   fengSignals?: FengSignals;
+  predictions?: PatternPrediction[];
   frequency?: string;
   /** 画线工具相关 */
   enableDrawing?: boolean;
@@ -63,6 +65,74 @@ let _registered = false;
 function ensureOverlays() {
   if (_registered) return;
   _registered = true;
+
+  // 预测虚线路径（多点折线）
+  registerOverlay({
+    name: "predictionPath",
+    needDefaultPointFigure: false, needDefaultXAxisFigure: false, needDefaultYAxisFigure: false,
+    totalStep: 10,
+    createPointFigures: ({ overlay, coordinates }) => {
+      if (!coordinates || coordinates.length < 2) return [];
+      const color = (overlay.extendData as any)?.color || "#a855f7";
+      const figures: any[] = [];
+      // 虚线连接所有点
+      for (let i = 0; i < coordinates.length - 1; i++) {
+        const from = coordinates[i];
+        const to = coordinates[i + 1];
+        if (!from || !to) continue;
+        figures.push({
+          type: "line",
+          attrs: { coordinates: [from, to] },
+          styles: { style: "dashed" as const, color, size: 2, dashedValue: [6, 4] },
+          ignoreEvent: true,
+        });
+      }
+      // 每个预测点画空心圆
+      for (let i = 1; i < coordinates.length; i++) {
+        const pt = coordinates[i];
+        if (!pt) continue;
+        figures.push({
+          type: "circle",
+          attrs: { x: pt.x, y: pt.y, r: 4 },
+          styles: { style: "stroke" as const, borderColor: color, borderSize: 2 },
+          ignoreEvent: true,
+        });
+      }
+      return figures;
+    },
+  });
+
+  // 预测标签（形态名+置信度+应对方案）
+  registerOverlay({
+    name: "predictionBadge",
+    needDefaultPointFigure: false, needDefaultXAxisFigure: false, needDefaultYAxisFigure: false,
+    totalStep: 1,
+    createPointFigures: ({ overlay, coordinates }) => {
+      const pt = coordinates[0];
+      const data = overlay.extendData as any;
+      if (!pt || !data) return [];
+      const lines = [
+        `${data.label} (${(data.confidence * 100).toFixed(0)}%)`,
+        data.phase || "",
+        data.entry ? `入: ${data.entry.slice(0, 20)}` : "",
+      ].filter(Boolean);
+      return lines.map((text, i) => ({
+        type: "text",
+        attrs: { x: pt.x + 8, y: pt.y + i * 14 - 14, text, align: "left", baseline: "middle" },
+        styles: {
+          color: i === 0 ? "#a855f7" : "#9ca3af",
+          size: i === 0 ? 11 : 10,
+          weight: i === 0 ? 700 : 400,
+          backgroundColor: "rgba(0,0,0,0.7)",
+          borderColor: "#a855f7",
+          borderSize: i === 0 ? 1 : 0,
+          borderRadius: 4,
+          paddingLeft: 4, paddingRight: 4, paddingTop: 2, paddingBottom: 2,
+        },
+        ignoreEvent: true,
+      }));
+    },
+  });
 
   // 支撑/压力/止损/止盈 标签
   registerOverlay<{ text: string; color: string; backgroundColor: string; borderColor: string }>({
@@ -244,7 +314,7 @@ function loadChartData(chart: Chart, symbol: string, data: Array<{
 const SYSTEM_GROUP = "__system__";
 
 export function KlineChart({
-  points, height, showVolume = true, signals, drawdowns, supports, resistances, fengSignals, frequency,
+  points, height, showVolume = true, signals, drawdowns, supports, resistances, fengSignals, predictions, frequency,
   enableDrawing, activeTool, drawingColor, initialDrawings, onDrawingsChange, chartRef: externalChartRef,
 }: KlineChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -457,6 +527,48 @@ export function KlineChart({
       }
     }
 
+    // ── 形态预测虚线 ──
+    if (predictions?.length) {
+      for (const pred of predictions) {
+        const path = pred.projectedPath;
+        if (!path || path.length < 2) continue;
+        // 画虚线路径
+        const pathPoints = path.map((p) => ({ timestamp: toTs(p.date), value: p.price }));
+        chart.createOverlay({
+          name: "predictionPath",
+          groupId: SYSTEM_GROUP,
+          points: pathPoints,
+          extendData: { color: "#a855f7" },
+          lock: true,
+        });
+        // 在第一个预测点旁边显示标签
+        const firstPredicted = path.find((p) => p.type !== "current") || path[1];
+        if (firstPredicted) {
+          chart.createOverlay({
+            name: "predictionBadge",
+            groupId: SYSTEM_GROUP,
+            points: [{ timestamp: toTs(firstPredicted.date), value: firstPredicted.price }],
+            extendData: {
+              label: pred.label,
+              confidence: pred.confidence,
+              phase: pred.phase,
+              entry: pred.action?.entry || "",
+            },
+            lock: true,
+          });
+        }
+        // 画关键价位虚线（目标价 + 止损）
+        if (pred.keyLevels?.target) {
+          chart.createOverlay({ name: "horizontalStraightLine", groupId: SYSTEM_GROUP, points: [{ value: pred.keyLevels.target }], styles: { line: { color: "#22c55e", size: 1, style: "dashed" as const } }, lock: true });
+          chart.createOverlay({ name: "levelTag", groupId: SYSTEM_GROUP, points: [{ value: pred.keyLevels.target }], extendData: { text: `目标 ${pred.keyLevels.target.toFixed(2)}`, color: "#fff", backgroundColor: "rgba(34,197,94,0.8)", borderColor: "rgba(34,197,94,0.9)" }, lock: true });
+        }
+        if (pred.keyLevels?.stopLoss) {
+          chart.createOverlay({ name: "horizontalStraightLine", groupId: SYSTEM_GROUP, points: [{ value: pred.keyLevels.stopLoss }], styles: { line: { color: "#ef4444", size: 1, style: "dashed" as const } }, lock: true });
+          chart.createOverlay({ name: "levelTag", groupId: SYSTEM_GROUP, points: [{ value: pred.keyLevels.stopLoss }], extendData: { text: `止损 ${pred.keyLevels.stopLoss.toFixed(2)}`, color: "#fff", backgroundColor: "rgba(239,68,68,0.8)", borderColor: "rgba(239,68,68,0.9)" }, lock: true });
+        }
+      }
+    }
+
     // ── 恢复用户画线 ──
     if (initialDrawings?.length) {
       for (const d of initialDrawings) {
@@ -483,7 +595,7 @@ export function KlineChart({
       chartRef.current = null;
       if (externalChartRef) externalChartRef.current = null;
     };
-  }, [points, height, showVolume, isDark, signals, drawdowns, supports, resistances, fengSignals, initialDrawings]);
+  }, [points, height, showVolume, isDark, signals, drawdowns, supports, resistances, fengSignals, predictions, initialDrawings]);
 
   // ── 画线工具切换 ──
   useEffect(() => {

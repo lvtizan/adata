@@ -9,6 +9,10 @@ export function getSectorChart(sectorCode: string, bars = 120) {
   return api<ChartData>(`/charts/sector/${sectorCode}?bars=${bars}`, { cacheTTL: 300_000 });
 }
 
+export function getIndexChart(tsCode: string, bars = 180) {
+  return api<ChartData>(`/charts/index/${tsCode}?bars=${bars}`, { cacheTTL: 300_000 });
+}
+
 export function getRelativeStrength(tsCode: string, sectorCode: string) {
   return api<RelativeStrengthData>(`/relative-strength?tsCode=${tsCode}&sectorCode=${sectorCode}`, { cacheTTL: 300_000 });
 }

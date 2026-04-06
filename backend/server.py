@@ -20,6 +20,8 @@ from drawings_store import DrawingsStore
 from price_alert_store import PriceAlertStore
 from price_monitor import PriceMonitor
 from index_risk_analyzer import analyze_all_indices
+from news_aggregator import init_db as init_news_db, fetch_all as fetch_all_news, query_news, generate_brief_summary
+from pattern_predictor import predict_patterns
 
 # 初始化日志和配置
 init_logging()
@@ -42,6 +44,9 @@ engine = MarketEngine(config)
 watchlist_store = WatchlistStore(WATCHLIST_DB)
 briefs_store = DailyBriefsStore()
 drawings_store = DrawingsStore(DRAWINGS_DB)
+
+# 初始化新闻数据库
+init_news_db()
 alert_store = PriceAlertStore(ALERTS_DB)
 
 
@@ -80,18 +85,33 @@ class _NumpyEncoder(json.JSONEncoder):
         if isinstance(o, (np.integer,)):
             return int(o)
         if isinstance(o, (np.floating,)):
-            return float(o)
+            v = float(o)
+            return 0.0 if (v != v) else v  # NaN guard
         if isinstance(o, (np.bool_,)):
             return bool(o)
         if isinstance(o, np.ndarray):
             return o.tolist()
         return super().default(o)
 
+    def encode(self, o):
+        """Override to sanitize NaN/Inf in plain floats"""
+        import math
+        def sanitize(val):
+            if isinstance(val, float):
+                if math.isnan(val) or math.isinf(val):
+                    return 0.0
+            if isinstance(val, dict):
+                return {k: sanitize(v) for k, v in val.items()}
+            if isinstance(val, list):
+                return [sanitize(v) for v in val]
+            return val
+        return super().encode(sanitize(o))
+
 
 def json_response(handler: BaseHTTPRequestHandler, obj: Any, code: int = 200) -> None:
     """发送JSON响应"""
     try:
-        payload = json.dumps(obj, ensure_ascii=False, cls=_NumpyEncoder).encode("utf-8")
+        payload = json.dumps(obj, ensure_ascii=False, cls=_NumpyEncoder, allow_nan=False).encode("utf-8")
         handler.send_response(code)
         handler.send_header("Content-Type", "application/json; charset=utf-8")
         handler.send_header("Content-Length", str(len(payload)))
@@ -338,6 +358,13 @@ class Handler(BaseHTTPRequestHandler):
             logger.debug(f"获取板块K线: {sector_code}, {trade_date}, bars={bars}")
             return json_response(self, engine.sector_kline(sector_code, trade_date, bars=bars))
 
+        # 指数K线API（用于指数对比图表）
+        if path.startswith("/api/charts/index/"):
+            ts_code = path.split("/")[4]
+            bars = int(q.get("bars", ["180"])[0])
+            logger.debug(f"获取指数K线: {ts_code}, bars={bars}")
+            return json_response(self, engine.index_kline(ts_code, trade_date, bars=bars))
+
         # 相对强弱API
         if path == "/api/relative-strength":
             ts_code = q.get("tsCode", [""])[0]
@@ -419,6 +446,58 @@ class Handler(BaseHTTPRequestHandler):
                 "latestHH": signal_results.get("latestHH"),
                 "hasBuySignal": signal_results.get("hasBuySignal", False),
             })
+
+        # 个股形态预测API
+        if path.startswith("/api/stock/") and path.endswith("/predictions"):
+            ts_code = path.split("/")[3]
+            logger.debug(f"获取形态预测: {ts_code}")
+            # 优先查预计算
+            try:
+                _conn = __import__("sqlite3").connect(str(BACKEND / "data" / "precomputed.db"))
+                row = _conn.execute(
+                    "SELECT payload FROM pattern_predictions WHERE trade_date=? AND ts_code=?",
+                    (trade_date, ts_code)
+                ).fetchone()
+                _conn.close()
+                if row:
+                    return json_response(self, __import__("json").loads(row[0]))
+            except Exception:
+                pass
+            # 实时计算
+            try:
+                kline = engine.stock_kline(ts_code, trade_date, bars=150)
+                points = kline.get("points", [])
+                if points:
+                    import pandas as _pd2
+                    pdf = _pd2.DataFrame(points)
+                    col_map = {"time": "trade_date", "o": "open", "h": "high", "l": "low", "c": "close", "v": "vol"}
+                    pdf = pdf.rename(columns={k: v for k, v in col_map.items() if k in pdf.columns})
+                    return json_response(self, predict_patterns(pdf))
+            except Exception as exc:
+                logger.warning(f"形态预测失败: {ts_code}, {exc}")
+            return json_response(self, {"predictions": []})
+
+        # 全市场形态预测列表（预计算结果）
+        if path == "/api/predictions":
+            logger.debug(f"获取全市场形态预测: {trade_date}")
+            try:
+                _conn = __import__("sqlite3").connect(str(BACKEND / "data" / "precomputed.db"))
+                rows = _conn.execute(
+                    "SELECT ts_code, payload FROM pattern_predictions WHERE trade_date=?",
+                    (trade_date,)
+                ).fetchall()
+                _conn.close()
+                items = []
+                for ts_code, payload_str in rows:
+                    data = __import__("json").loads(payload_str)
+                    for pred in data.get("predictions", []):
+                        pred["tsCode"] = ts_code
+                        items.append(pred)
+                items.sort(key=lambda x: x.get("confidence", 0), reverse=True)
+                return json_response(self, {"tradeDate": trade_date, "items": items})
+            except Exception as exc:
+                logger.warning(f"全市场预测查询失败: {exc}")
+            return json_response(self, {"tradeDate": trade_date, "items": []})
 
         # 个股上涨归因API
         if path.startswith("/api/stock/") and path.endswith("/attribution"):
@@ -525,6 +604,38 @@ class Handler(BaseHTTPRequestHandler):
                 return json_response(self, {"ok": True, "message": "更新已触发，请稍后刷新查看"})
             except Exception as exc:
                 return json_response(self, {"error": str(exc)}, 500)
+
+        # ── 新闻聚合 API ──────────────────────────────
+
+        # 获取新闻列表
+        if path == "/api/news-feed":
+            source = q.get("source", [None])[0]
+            category = q.get("category", [None])[0]
+            date = q.get("date", [None])[0]
+            limit = int(q.get("limit", ["50"])[0])
+            logger.debug(f"获取新闻: source={source}, category={category}, limit={limit}")
+            items = query_news(source=source, category=category, date=date, limit=limit)
+            return json_response(self, {"items": items})
+
+        # 获取新闻简报摘要
+        if path == "/api/news-brief":
+            date = q.get("date", [None])[0]
+            logger.debug(f"获取新闻简报: date={date}")
+            brief = generate_brief_summary(date=date)
+            return json_response(self, brief)
+
+        # 触发新闻采集
+        if path == "/api/news-feed/refresh" and method == "POST":
+            logger.info("手动触发新闻采集...")
+            import threading as _threading
+            def _do_fetch():
+                try:
+                    results = fetch_all_news()
+                    logger.info(f"新闻采集完成: {results}")
+                except Exception as exc:
+                    logger.error(f"新闻采集失败: {exc}")
+            _threading.Thread(target=_do_fetch, daemon=True).start()
+            return json_response(self, {"ok": True, "message": "采集已触发"})
 
         # 未找到API
         logger.warning(f"未找到API: {path}")

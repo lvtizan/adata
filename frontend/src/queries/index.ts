@@ -5,3 +5,5 @@ export * from "./stock.queries";
 export * from "./chart.queries";
 export * from "./index-risk.queries";
 export * from "./hh-scan.queries";
+export * from "./index-compare.queries";
+export * from "./news.queries";
