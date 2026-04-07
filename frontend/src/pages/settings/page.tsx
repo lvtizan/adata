@@ -8,7 +8,7 @@ import { useAppStore } from "@/store";
 import { NotifySettings } from "@/features/settings/NotifySettings";
 import { isDesktop, onMonitorAlert, type MonitorAlert } from "@/lib/desktop";
 import { useState, useEffect } from "react";
-import { Moon, Sun, Monitor, Bell, Info } from "lucide-react";
+import { Moon, Sun, Monitor, Bell, Info, Key } from "lucide-react";
 
 export default function SettingsPage() {
   const { theme, setTheme } = useAppStore();
@@ -84,6 +84,15 @@ export default function SettingsPage() {
           </section>
         )}
 
+        {/* 数据源配置 */}
+        <section className="space-y-3">
+          <div className="flex items-center gap-2 text-sm font-medium text-text-secondary">
+            <Key className="w-4 h-4" />
+            <span>数据源配置</span>
+          </div>
+          <ZsxqCookieConfig />
+        </section>
+
         {/* 关于 */}
         <section className="space-y-3">
           <div className="flex items-center gap-2 text-sm font-medium text-text-secondary">
@@ -97,6 +106,86 @@ export default function SettingsPage() {
             {!isDesktop && <p>运行环境: 浏览器</p>}
           </div>
         </section>
+      </div>
+    </div>
+  );
+}
+
+function ZsxqCookieConfig() {
+  const [status, setStatus] = useState<{ configured: boolean; token_preview?: string } | null>(null);
+  const [cookie, setCookie] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
+
+  useEffect(() => {
+    fetch("/api/zsxq/cookie-status")
+      .then((r) => r.json())
+      .then(setStatus)
+      .catch(() => setStatus({ configured: false }));
+  }, []);
+
+  const handleSave = async () => {
+    if (!cookie.trim()) return;
+    setSaving(true);
+    setMessage(null);
+    try {
+      const res = await fetch("/api/zsxq/cookie", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cookie: cookie.trim() }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setMessage({ type: "success", text: "Cookie 已保存" });
+        setCookie("");
+        // refresh status
+        const s = await fetch("/api/zsxq/cookie-status").then((r) => r.json());
+        setStatus(s);
+      } else {
+        setMessage({ type: "error", text: data.error || "保存失败" });
+      }
+    } catch {
+      setMessage({ type: "error", text: "网络错误" });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="rounded-lg border p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <span className="text-sm font-medium">知识星球 Cookie</span>
+          {status && (
+            <span className={`text-xs px-2 py-0.5 rounded-full ${status.configured ? "bg-green-500/15 text-green-500" : "bg-yellow-500/15 text-yellow-500"}`}>
+              {status.configured ? "已配置" : "未配置"}
+            </span>
+          )}
+        </div>
+        {status?.configured && status.token_preview && (
+          <p className="text-xs text-text-secondary">Token: {status.token_preview}</p>
+        )}
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={cookie}
+            onChange={(e) => setCookie(e.target.value)}
+            placeholder="粘贴 Cookie 值 (从浏览器 F12 → Network → Headers 获取)"
+            className="flex-1 rounded-lg border border-border-default bg-transparent px-3 py-2 text-sm placeholder:text-text-secondary/50 focus:outline-none focus:ring-1 focus:ring-accent"
+          />
+          <button
+            onClick={handleSave}
+            disabled={saving || !cookie.trim()}
+            className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+          >
+            {saving ? "保存中..." : "保存"}
+          </button>
+        </div>
+        {message && (
+          <p className={`text-xs ${message.type === "success" ? "text-green-500" : "text-red-500"}`}>
+            {message.text}
+          </p>
+        )}
       </div>
     </div>
   );

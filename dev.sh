@@ -14,18 +14,31 @@ RED='\033[0;31m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
-# ── 停止所有服务 ──
+# ── 停止所有服务（只杀自己启动的进程）──
 stop_all() {
-    for p in 5174 8088 8082 2024 8001 3000 5173 8080; do
-        lsof -ti :$p 2>/dev/null | xargs kill -9 2>/dev/null
+    local PID_DIR="$DIR/.pids"
+    for pf in backend.pid scheduler.pid news_daemon.pid frontend.pid langgraph.pid gateway.pid deerflow_frontend.pid; do
+        local pid_file="$PID_DIR/$pf"
+        if [ -f "$pid_file" ]; then
+            local pid=$(cat "$pid_file")
+            if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+                kill "$pid" 2>/dev/null
+                # 等待进程退出，最多 3 秒
+                for _w in 1 2 3; do
+                    kill -0 "$pid" 2>/dev/null || break
+                    sleep 1
+                done
+                # 还没退出就强杀
+                kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null
+            fi
+            rm -f "$pid_file"
+        fi
     done
-    # 停止调度器和新闻守护进程
-    for pf in scheduler.pid news_daemon.pid; do
-        local pid_file="$DIR/.pids/$pf"
-        [ -f "$pid_file" ] && kill "$(cat "$pid_file")" 2>/dev/null && rm -f "$pid_file"
-    done
-    pkill -f "news_daemon.py" 2>/dev/null
-    # DeerFlow 相关进程
+    # 兜底：只杀包含项目路径的进程
+    pkill -f "$DIR/backend/server.py" 2>/dev/null
+    pkill -f "$DIR/backend/daily_scheduler.py" 2>/dev/null
+    pkill -f "$DIR/backend/news_daemon.py" 2>/dev/null
+    pkill -f "$DIR/frontend.*vite" 2>/dev/null
     pkill -f "langgraph dev" 2>/dev/null
     pkill -f "uvicorn app.gateway.app:app" 2>/dev/null
     sleep 1
@@ -70,15 +83,21 @@ echo ""
 # ═══════════════════════════════════════
 # 1. A-Stock 后端
 # ═══════════════════════════════════════
+PID_DIR="$DIR/.pids"
+mkdir -p "$PID_DIR"
+
 echo -e "${YELLOW}[1/3]${NC} 启动 A-Stock 后端..."
 cd "$DIR/backend"
 nohup python3 server.py > "$LOG_DIR/a-data-backend.log" 2>&1 &
+echo $! > "$PID_DIR/backend.pid"
 
 # 启动定时调度器
 nohup python3 daily_scheduler.py --daemon > "$LOG_DIR/a-data-scheduler.log" 2>&1 &
+echo $! > "$PID_DIR/scheduler.pid"
 
 # 启动新闻采集守护进程（每5分钟采集一次）
 nohup python3 news_daemon.py --daemon > "$LOG_DIR/a-data-news.log" 2>&1 &
+echo $! > "$PID_DIR/news_daemon.pid"
 
 # ═══════════════════════════════════════
 # 2. A-Stock 前端
@@ -86,6 +105,7 @@ nohup python3 news_daemon.py --daemon > "$LOG_DIR/a-data-news.log" 2>&1 &
 echo -e "${YELLOW}[2/3]${NC} 启动 A-Stock 前端..."
 cd "$DIR/frontend"
 nohup npx vite --host 127.0.0.1 --port 5174 > "$LOG_DIR/a-data-frontend.log" 2>&1 &
+echo $! > "$PID_DIR/frontend.pid"
 
 # ═══════════════════════════════════════
 # 3. DeerFlow AI（如果存在）
@@ -105,15 +125,18 @@ if [ -d "$DEERFLOW_DIR/backend" ]; then
     (cd "$DEERFLOW_DIR/backend" && NO_COLOR=1 uv run langgraph dev \
         --no-browser --allow-blocking --no-reload \
         > "$DEERFLOW_DIR/logs/langgraph.log" 2>&1) &
+    echo $! > "$PID_DIR/langgraph.pid"
 
     # Gateway
     (cd "$DEERFLOW_DIR/backend" && PYTHONPATH=. uv run uvicorn app.gateway.app:app \
         --host 0.0.0.0 --port 8001 --reload \
         > "$DEERFLOW_DIR/logs/gateway.log" 2>&1) &
+    echo $! > "$PID_DIR/gateway.pid"
 
     # Frontend (Next.js)
     (cd "$DEERFLOW_DIR/frontend" && pnpm run dev \
         > "$DEERFLOW_DIR/logs/frontend.log" 2>&1) &
+    echo $! > "$PID_DIR/deerflow_frontend.pid"
 else
     echo -e "${YELLOW}[3/3]${NC} 跳过 DeerFlow（deer-flow-service 目录不存在）"
 fi

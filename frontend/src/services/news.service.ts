@@ -78,3 +78,17 @@ export function getZsxqStockStats(limit = 50) {
 export function refreshZsxq() {
   return api<{ ok: boolean; message: string }>("/zsxq/refresh", { method: "POST" });
 }
+
+export function searchZsxqTopics(keyword: string, limit = 50) {
+  return api<{ items: ZsxqTopic[]; keyword: string }>(`/zsxq/search?q=${encodeURIComponent(keyword)}&limit=${limit}`, { cacheTTL: 30_000 });
+}
+
+export interface ZsxqStockDetail {
+  stock_name: string;
+  topics: ZsxqTopic[];
+  related_stocks: Array<{ name: string; count: number }>;
+}
+
+export function getZsxqStockDetail(name: string) {
+  return api<ZsxqStockDetail>(`/zsxq/stock-detail?name=${encodeURIComponent(name)}`, { cacheTTL: 30_000 });
+}

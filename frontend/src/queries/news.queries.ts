@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { getNewsFeed, getNewsBrief, refreshNewsFeed, getZsxqTopics, getZsxqStockStats, refreshZsxq } from "@/services";
+import { getNewsFeed, getNewsBrief, refreshNewsFeed, getZsxqTopics, getZsxqStockStats, refreshZsxq, searchZsxqTopics, getZsxqStockDetail } from "@/services";
 
 export function useNewsFeed(params?: { source?: string; category?: string; limit?: number }) {
   return useQuery({
@@ -48,6 +48,25 @@ export function useZsxqStockStats() {
     queryFn: () => getZsxqStockStats(),
     staleTime: 30_000,
     select: (data) => data.items,
+  });
+}
+
+export function useZsxqSearch(keyword: string) {
+  return useQuery({
+    queryKey: ["zsxq-search", keyword],
+    queryFn: () => searchZsxqTopics(keyword),
+    enabled: !!keyword && keyword.length >= 1,
+    staleTime: 30_000,
+    select: (data) => data.items,
+  });
+}
+
+export function useZsxqStockDetail(name: string | null) {
+  return useQuery({
+    queryKey: ["zsxq-stock-detail", name],
+    queryFn: () => getZsxqStockDetail(name!),
+    enabled: !!name,
+    staleTime: 30_000,
   });
 }
 

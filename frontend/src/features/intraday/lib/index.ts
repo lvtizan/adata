@@ -1,7 +1,7 @@
 export {
   scoreIntradaySector,
   scoreIntradayStock,
-} from "./enhanced-score";
+} from "./score";
 
 export type {
   IntradayGrade,

@@ -267,10 +267,45 @@ _ZSXQ_HEADERS = {
 
 # 股票代码正则: 6位数字
 _STOCK_CODE_RE = re.compile(r"(?<!\d)(\d{6})(?!\d)")
-# 中文股票名: 常见后缀模式
+# 中文股票名: 常见后缀模式 (fallback)
 _STOCK_NAME_RE = re.compile(
     r"([\u4e00-\u9fa5]{2,6}(?:股份|集团|科技|电子|医药|能源|材料|通信|光电|半导体|新材|智能|生物|环保|机械|化工|控股|电气|汽车|银行|证券|保险|地产|传媒|食品|医疗|制药|软件|芯片|光伏|锂电|储能|算力))"
 )
+
+# 股票名称词典 (name -> ts_code)
+_STOCK_NAME_DICT: dict[str, str] = {}
+_STOCK_DICT_LOADED = False
+
+def _load_stock_name_dict() -> None:
+    """从 tushare 加载全部 A 股名称词典，用于精确匹配。"""
+    global _STOCK_NAME_DICT, _STOCK_DICT_LOADED
+    if _STOCK_DICT_LOADED:
+        return
+    try:
+        from config import get_config
+        import tushare as ts
+        config = get_config()
+        pro = ts.pro_api(config.tushare_token)
+        pro._DataApi__token = config.tushare_token
+        if getattr(config, 'tushare_http_url', None):
+            pro._DataApi__http_url = config.tushare_http_url
+        df = pro.stock_basic(exchange='', list_status='L', fields='ts_code,name')
+        for _, row in df.iterrows():
+            name = row['name'].strip()
+            # 跳过太短、含特殊字符的
+            if len(name) < 2 or name.startswith('*') or name.startswith('N'):
+                continue
+            # 去掉全角A/B后缀
+            clean = name.rstrip('ＡＢＣABCabc').strip()
+            if len(clean) >= 2:
+                _STOCK_NAME_DICT[clean] = row['ts_code']
+            if name != clean and len(name) >= 2:
+                _STOCK_NAME_DICT[name] = row['ts_code']
+        _STOCK_DICT_LOADED = True
+        logger.info(f"股票名称词典已加载: {len(_STOCK_NAME_DICT)} 条")
+    except Exception as e:
+        logger.warning(f"加载股票名称词典失败: {e}")
+        _STOCK_DICT_LOADED = True  # 避免重复尝试
 
 
 def init_zsxq_db() -> None:
@@ -426,10 +461,10 @@ def _parse_zsxq_topic(topic: dict, group_id: str) -> dict[str, Any] | None:
     if not full_text:
         return None
 
-    # 提取图片 URL
+    # 提取图片 URL（优先原图）
     images = []
     for img in talk.get("images", []) or []:
-        img_url = img.get("large", {}).get("url", "") or img.get("original", {}).get("url", "")
+        img_url = img.get("original", {}).get("url", "") or img.get("large", {}).get("url", "")
         if img_url:
             images.append(img_url)
 
@@ -463,21 +498,32 @@ def _parse_zsxq_topic(topic: dict, group_id: str) -> dict[str, Any] | None:
 
 
 def _extract_stock_mentions(text: str) -> list[str]:
-    """从文本中提取股票代码和名称。只提取高置信度的匹配。"""
+    """从文本中提取股票代码和名称。优先使用股票名称词典精确匹配。"""
+    _load_stock_name_dict()
     mentions = set()
-    # 6位数字代码（必须是合法开头）
+
+    # 1. 6位数字代码（必须是合法开头）
     for m in _STOCK_CODE_RE.finditer(text):
         code = m.group(1)
         if code.startswith(("00", "30", "60", "68")):
             mentions.add(code)
-    # 中文股票名: 必须是"名称+后缀"格式，排除动词短语
+
+    # 2. 基于词典的精确匹配（滑动窗口，按长度2-6字扫描）
+    if _STOCK_NAME_DICT:
+        for win_len in range(6, 1, -1):  # 从长到短
+            for i in range(len(text) - win_len + 1):
+                substr = text[i:i + win_len]
+                if substr in _STOCK_NAME_DICT:
+                    mentions.add(substr)
+        if len(mentions) >= 2:
+            return sorted(mentions)
+
+    # 3. Fallback: 正则模式匹配（词典未加载时）
     _noise = {"关注", "坚定", "详情", "欢迎", "近期", "回购", "合末", "价下", "分体", "很多", "十万"}
     for m in _STOCK_NAME_RE.finditer(text):
         name = m.group(1)
-        # 排除以常见噪音词开头的
         if any(name.startswith(n) for n in _noise):
             continue
-        # 至少2个字才可能是股票名
         if len(name) >= 4:
             mentions.add(name)
     return sorted(mentions)
@@ -616,6 +662,116 @@ def query_zsxq_stock_stats(limit: int = 50) -> list[dict[str, Any]]:
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def reindex_zsxq_stock_mentions() -> int:
+    """重新提取所有帖子的股票提及，更新数据库。"""
+    if not ZSXQ_DB_PATH.exists():
+        return 0
+    _load_stock_name_dict()
+    conn = sqlite3.connect(ZSXQ_DB_PATH)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("SELECT topic_id, content FROM zsxq_topics").fetchall()
+    now = datetime.now().isoformat(timespec="seconds")
+    stock_mentions_all: dict[str, list[str]] = {}
+    updated = 0
+
+    for r in rows:
+        topic_id = r["topic_id"]
+        content = r["content"] or ""
+        mentions = _extract_stock_mentions(content)
+        conn.execute(
+            "UPDATE zsxq_topics SET stock_mentions = ? WHERE topic_id = ?",
+            (json.dumps(mentions, ensure_ascii=False), topic_id),
+        )
+        updated += 1
+        for m in mentions:
+            stock_mentions_all.setdefault(m, []).append(topic_id)
+
+    # 重建 stock_stats
+    conn.execute("DELETE FROM zsxq_stock_stats")
+    for stock_name, topic_ids in stock_mentions_all.items():
+        all_ids = sorted(set(topic_ids))
+        conn.execute(
+            """INSERT OR REPLACE INTO zsxq_stock_stats
+               (stock_name, mention_count, last_mentioned, topic_ids, updated_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (stock_name, len(all_ids), now, json.dumps(all_ids, ensure_ascii=False), now),
+        )
+
+    conn.commit()
+    conn.close()
+    logger.info(f"重新索引完成: {updated} 条帖子, {len(stock_mentions_all)} 个股票")
+    return updated
+
+
+def search_zsxq_topics(keyword: str, limit: int = 50) -> list[dict[str, Any]]:
+    """搜索知识星球内容，按时间倒序。"""
+    if not ZSXQ_DB_PATH.exists() or not keyword.strip():
+        return []
+    conn = sqlite3.connect(ZSXQ_DB_PATH)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        "SELECT * FROM zsxq_topics WHERE content LIKE ? ORDER BY published DESC LIMIT ?",
+        (f"%{keyword.strip()}%", limit),
+    ).fetchall()
+    conn.close()
+    result = []
+    for r in rows:
+        d = dict(r)
+        d["images"] = json.loads(d.get("images", "[]"))
+        d["stock_mentions"] = json.loads(d.get("stock_mentions", "[]"))
+        result.append(d)
+    return result
+
+
+def query_zsxq_stock_detail(stock_name: str) -> dict[str, Any]:
+    """查询某个股票/关键词的详情：出现的帖子列表及所有相关股票。"""
+    if not ZSXQ_DB_PATH.exists() or not stock_name.strip():
+        return {"stock_name": stock_name, "topics": [], "related_stocks": []}
+    conn = sqlite3.connect(ZSXQ_DB_PATH)
+    conn.row_factory = sqlite3.Row
+
+    # 获取该股票关联的 topic_ids
+    stat_row = conn.execute(
+        "SELECT topic_ids FROM zsxq_stock_stats WHERE stock_name = ?", (stock_name,)
+    ).fetchone()
+
+    if not stat_row:
+        conn.close()
+        return {"stock_name": stock_name, "topics": [], "related_stocks": []}
+
+    topic_ids = json.loads(stat_row["topic_ids"])
+    if not topic_ids:
+        conn.close()
+        return {"stock_name": stock_name, "topics": [], "related_stocks": []}
+
+    # 获取这些帖子
+    placeholders = ",".join("?" for _ in topic_ids)
+    rows = conn.execute(
+        f"SELECT * FROM zsxq_topics WHERE topic_id IN ({placeholders}) ORDER BY published DESC",
+        topic_ids,
+    ).fetchall()
+
+    topics = []
+    related_counter: dict[str, int] = {}
+    for r in rows:
+        d = dict(r)
+        d["images"] = json.loads(d.get("images", "[]"))
+        d["stock_mentions"] = json.loads(d.get("stock_mentions", "[]"))
+        topics.append(d)
+        for m in d["stock_mentions"]:
+            if m != stock_name:
+                related_counter[m] = related_counter.get(m, 0) + 1
+
+    conn.close()
+
+    related = sorted(related_counter.items(), key=lambda x: -x[1])
+    return {
+        "stock_name": stock_name,
+        "topics": topics,
+        "related_stocks": [{"name": n, "count": c} for n, c in related],
+    }
 
 
 def query_zsxq_summary() -> dict[str, Any]:

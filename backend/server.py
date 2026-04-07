@@ -23,6 +23,8 @@ from index_risk_analyzer import analyze_all_indices
 from news_aggregator import (
     init_db as init_news_db, fetch_all as fetch_all_news, query_news, generate_brief_summary,
     fetch_zsxq, save_zsxq_topics, query_zsxq_topics, query_zsxq_stock_stats, query_zsxq_summary, init_zsxq_db,
+    save_zsxq_cookies, _load_zsxq_cookies, search_zsxq_topics, query_zsxq_stock_detail,
+    reindex_zsxq_stock_mentions,
 )
 from pattern_predictor import predict_patterns
 
@@ -282,9 +284,6 @@ class Handler(BaseHTTPRequestHandler):
                 "ready": engine._warmed,
                 "message": "数据加载中..." if not engine._warmed else "就绪",
             })
-
-        if method != "GET":
-            return json_response(self, {"error": "method not allowed"}, 405)
 
         # 实时行情API（不依赖 trade_date，独立于其他 GET 路由）
         if path == "/api/realtime/quotes":
@@ -669,6 +668,23 @@ class Handler(BaseHTTPRequestHandler):
             items = query_zsxq_topics(limit=limit, offset=offset)
             return json_response(self, {"items": items})
 
+        # 知识星球搜索
+        if path == "/api/zsxq/search":
+            keyword = q.get("q", [""])[0]
+            limit = int(q.get("limit", ["50"])[0])
+            if not keyword:
+                return json_response(self, {"error": "缺少搜索关键词 q"}, 400)
+            items = search_zsxq_topics(keyword, limit=limit)
+            return json_response(self, {"items": items, "keyword": keyword})
+
+        # 知识星球股票详情（关联帖子+相关股票）
+        if path == "/api/zsxq/stock-detail":
+            name = q.get("name", [""])[0]
+            if not name:
+                return json_response(self, {"error": "缺少 name 参数"}, 400)
+            detail = query_zsxq_stock_detail(name)
+            return json_response(self, detail)
+
         # 知识星球股票提及统计
         if path == "/api/zsxq/stock-stats":
             limit = int(q.get("limit", ["50"])[0])
@@ -681,6 +697,44 @@ class Handler(BaseHTTPRequestHandler):
             logger.debug("获取知识星球汇总")
             summary = query_zsxq_summary()
             return json_response(self, summary)
+
+        # 知识星球 Cookie 状态
+        if path == "/api/zsxq/cookie-status":
+            cookies = _load_zsxq_cookies()
+            if cookies and cookies.get("zsxq_access_token"):
+                token = cookies["zsxq_access_token"]
+                masked = token[:8] + "****" + token[-4:] if len(token) > 12 else "****"
+                return json_response(self, {"configured": True, "token_preview": masked})
+            return json_response(self, {"configured": False})
+
+        # 保存知识星球 Cookie
+        if path == "/api/zsxq/cookie" and method == "POST":
+            raw = (body or {}).get("cookie", "").strip()
+            if not raw:
+                return json_response(self, {"error": "cookie 不能为空"}, 400)
+            cookies: dict[str, str] = {}
+            for pair in raw.split(";"):
+                pair = pair.strip()
+                if "=" in pair:
+                    k, v = pair.split("=", 1)
+                    cookies[k.strip()] = v.strip()
+            if not cookies.get("zsxq_access_token"):
+                return json_response(self, {"error": "Cookie 中未找到 zsxq_access_token"}, 400)
+            save_zsxq_cookies(cookies)
+            return json_response(self, {"ok": True, "message": "Cookie 已保存"})
+
+        # 重新索引知识星球股票提及
+        if path == "/api/zsxq/reindex" and method == "POST":
+            logger.info("触发知识星球股票重新索引...")
+            import threading as _thr2
+            def _do_reindex():
+                try:
+                    count = reindex_zsxq_stock_mentions()
+                    logger.info(f"重新索引完成: {count} 条")
+                except Exception as exc:
+                    logger.error(f"重新索引失败: {exc}")
+            _thr2.Thread(target=_do_reindex, daemon=True).start()
+            return json_response(self, {"ok": True, "message": "重新索引已触发"})
 
         # 手动触发知识星球采集
         if path == "/api/zsxq/refresh" and method == "POST":

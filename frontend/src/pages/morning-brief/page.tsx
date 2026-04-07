@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { useNewsBrief, useNewsFeed, useRefreshNewsFeed, useZsxqTopics, useZsxqStockStats, useRefreshZsxq } from "@/queries/news.queries";
+import { useNewsBrief, useNewsFeed, useRefreshNewsFeed, useZsxqTopics, useZsxqStockStats, useRefreshZsxq, useZsxqSearch, useZsxqStockDetail } from "@/queries/news.queries";
 import { cn } from "@/lib/utils";
-import { RefreshCw, ExternalLink, Filter, Star, BarChart3 } from "lucide-react";
+import { RefreshCw, ExternalLink, Filter, Star, BarChart3, Search, X, ArrowLeft } from "lucide-react";
 import { CandlestickPanel } from "@/features/chart/components/candlestick-panel";
 import { searchMarket } from "@/services";
 import type { NewsBriefSection, NewsItem, ZsxqTopic, ZsxqStockStat } from "@/services";
@@ -393,8 +393,13 @@ function FeedView({
 function ZsxqView() {
   const [subTab, setSubTab] = useState<"timeline" | "stats">("timeline");
   const [selectedStock, setSelectedStock] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [activeSearch, setActiveSearch] = useState("");
+  const [stockDetailName, setStockDetailName] = useState<string | null>(null);
   const { data: topics, isLoading } = useZsxqTopics(100);
   const { data: stats } = useZsxqStockStats();
+  const { data: searchResults } = useZsxqSearch(activeSearch);
+  const { data: stockDetail } = useZsxqStockDetail(stockDetailName);
 
   if (isLoading) {
     return <div className="flex items-center justify-center h-32 text-text-tertiary text-sm">加载中...</div>;
@@ -405,34 +410,121 @@ function ZsxqView() {
       <div className="flex flex-col items-center justify-center h-full text-text-tertiary gap-2 p-8">
         <Star className="w-8 h-8 opacity-30" />
         <p className="text-sm">暂无知识星球数据</p>
-        <p className="text-xs">请先配置 Cookie：在后端运行</p>
-        <code className="text-xs bg-surface px-2 py-1 rounded">python3 news_aggregator.py --login-zsxq</code>
+        <p className="text-xs">请在「设置」页面配置知识星球 Cookie</p>
         <p className="text-xs mt-1">然后点击右上角"刷新采集"</p>
       </div>
     );
   }
 
+  const handleSearch = () => {
+    if (searchQuery.trim()) {
+      setActiveSearch(searchQuery.trim());
+      setStockDetailName(null);
+    }
+  };
+
+  const clearSearch = () => {
+    setSearchQuery("");
+    setActiveSearch("");
+  };
+
+  const handleStockDetailClick = (name: string) => {
+    setStockDetailName(name);
+    setActiveSearch("");
+    setSearchQuery("");
+  };
+
+  // 是否正在显示搜索结果或股票详情
+  const showingSearch = !!activeSearch;
+  const showingDetail = !!stockDetailName && !!stockDetail;
+  const displayTopics = showingSearch ? (searchResults ?? []) : showingDetail ? stockDetail.topics : topics;
+
   return (
     <div className="flex h-full">
       {/* 左侧: 信息流 */}
       <div className="flex-1 min-w-0 flex flex-col border-r border-border-default">
+        {/* 搜索栏 */}
+        <div className="flex items-center gap-2 px-3 py-2 border-b border-border-subtle bg-surface shrink-0">
+          <Search className="w-3.5 h-3.5 text-text-tertiary shrink-0" />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && handleSearch()}
+            placeholder="搜索内容..."
+            className="flex-1 bg-transparent text-xs outline-none placeholder:text-text-tertiary/50"
+          />
+          {(activeSearch || stockDetailName) && (
+            <button onClick={() => { clearSearch(); setStockDetailName(null); }} className="text-text-tertiary hover:text-text-primary">
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
+
+        {/* 子Tab 或 返回按钮 */}
         <div className="flex items-center gap-4 px-4 py-2 border-b border-border-subtle bg-surface shrink-0">
-          <button
-            onClick={() => setSubTab("timeline")}
-            className={cn("flex items-center gap-1 text-xs transition-colors", subTab === "timeline" ? "text-accent font-medium" : "text-text-tertiary")}
-          >
-            <Star className="w-3 h-3" /> 时间流 ({topics.length})
-          </button>
-          <button
-            onClick={() => setSubTab("stats")}
-            className={cn("flex items-center gap-1 text-xs transition-colors", subTab === "stats" ? "text-accent font-medium" : "text-text-tertiary")}
-          >
-            <BarChart3 className="w-3 h-3" /> 股票统计 ({stats?.length ?? 0})
-          </button>
+          {showingSearch ? (
+            <div className="flex items-center gap-2 text-xs">
+              <button onClick={clearSearch} className="text-text-tertiary hover:text-accent"><ArrowLeft className="w-3 h-3" /></button>
+              <span className="text-text-secondary">搜索 "{activeSearch}" · {searchResults?.length ?? 0} 条结果</span>
+            </div>
+          ) : showingDetail ? (
+            <div className="flex items-center gap-2 text-xs">
+              <button onClick={() => setStockDetailName(null)} className="text-text-tertiary hover:text-accent"><ArrowLeft className="w-3 h-3" /></button>
+              <span className="text-accent font-medium">{stockDetail.stock_name}</span>
+              <span className="text-text-secondary">· {stockDetail.topics.length} 条提及</span>
+              {stockDetail.related_stocks.length > 0 && (
+                <span className="text-text-tertiary">· {stockDetail.related_stocks.length} 个相关股票</span>
+              )}
+            </div>
+          ) : (
+            <>
+              <button
+                onClick={() => setSubTab("timeline")}
+                className={cn("flex items-center gap-1 text-xs transition-colors", subTab === "timeline" ? "text-accent font-medium" : "text-text-tertiary")}
+              >
+                <Star className="w-3 h-3" /> 时间流 ({topics.length})
+              </button>
+              <button
+                onClick={() => setSubTab("stats")}
+                className={cn("flex items-center gap-1 text-xs transition-colors", subTab === "stats" ? "text-accent font-medium" : "text-text-tertiary")}
+              >
+                <BarChart3 className="w-3 h-3" /> 股票统计 ({stats?.length ?? 0})
+              </button>
+            </>
+          )}
         </div>
 
         <div className="flex-1 overflow-auto">
-          {subTab === "timeline" ? (
+          {/* 股票详情：相关股票标签 */}
+          {showingDetail && stockDetail.related_stocks.length > 0 && (
+            <div className="px-3 pt-3 pb-1">
+              <div className="text-[11px] text-text-tertiary mb-1.5">相关股票</div>
+              <div className="flex flex-wrap gap-1.5">
+                {stockDetail.related_stocks.map((rs) => (
+                  <button
+                    key={rs.name}
+                    onClick={() => { setSelectedStock(rs.name); setStockDetailName(rs.name); }}
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-accent/10 text-[11px] hover:bg-accent/20 transition-colors"
+                  >
+                    <span className="text-accent">{rs.name}</span>
+                    <span className="text-text-tertiary">×{rs.count}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {(showingSearch || showingDetail) ? (
+            <div className="py-3 px-3 space-y-3">
+              {displayTopics.map((topic) => (
+                <ZsxqTopicCard key={topic.topic_id} topic={topic} onStockClick={setSelectedStock} highlight={activeSearch || stockDetailName || undefined} />
+              ))}
+              {displayTopics.length === 0 && (
+                <div className="text-center text-text-tertiary text-sm py-8">未找到相关内容</div>
+              )}
+            </div>
+          ) : subTab === "timeline" ? (
             <div className="py-3 px-3 space-y-3">
               {topics.map((topic) => (
                 <ZsxqTopicCard key={topic.topic_id} topic={topic} onStockClick={setSelectedStock} />
@@ -455,7 +547,7 @@ function ZsxqView() {
                       index={i}
                       stat={s}
                       isSelected={selectedStock === s.stock_name}
-                      onClick={() => setSelectedStock(s.stock_name)}
+                      onClick={() => { setSelectedStock(s.stock_name); handleStockDetailClick(s.stock_name); }}
                     />
                   ))}
                 </tbody>
@@ -581,11 +673,23 @@ function useStockSearch(query: string) {
   });
 }
 
-function ZsxqTopicCard({ topic, onStockClick }: { topic: ZsxqTopic; onStockClick?: (name: string) => void }) {
+function ZsxqTopicCard({ topic, onStockClick, highlight }: { topic: ZsxqTopic; onStockClick?: (name: string) => void; highlight?: string }) {
   const [expanded, setExpanded] = useState(false);
+  const [lightboxImg, setLightboxImg] = useState<string | null>(null);
   const content = topic.content || "";
   const isLong = content.length > 300;
   const displayContent = isLong && !expanded ? content.slice(0, 300) + "..." : content;
+
+  // 高亮搜索关键词
+  const renderContent = (text: string) => {
+    if (!highlight) return text;
+    const parts = text.split(new RegExp(`(${highlight.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`, "gi"));
+    return parts.map((part, i) =>
+      part.toLowerCase() === highlight.toLowerCase()
+        ? <mark key={i} className="bg-yellow-300/40 text-inherit rounded-sm px-0.5">{part}</mark>
+        : part
+    );
+  };
 
   return (
     <div className="border border-border-default rounded-lg overflow-hidden">
@@ -604,7 +708,7 @@ function ZsxqTopicCard({ topic, onStockClick }: { topic: ZsxqTopic; onStockClick
       </div>
 
       <div className="px-4 py-2.5">
-        <div className="text-sm leading-relaxed whitespace-pre-wrap text-text-primary">{displayContent}</div>
+        <div className="text-sm leading-relaxed whitespace-pre-wrap text-text-primary">{renderContent(displayContent)}</div>
         {isLong && (
           <button onClick={() => setExpanded(!expanded)} className="text-xs text-accent mt-1.5 hover:underline">
             {expanded ? "收起" : "展开全文"}
@@ -627,11 +731,32 @@ function ZsxqTopicCard({ topic, onStockClick }: { topic: ZsxqTopic; onStockClick
               key={i}
               src={`/api/zsxq/images/${name}`}
               alt=""
-              className="max-h-48 rounded border border-border-subtle object-contain cursor-pointer"
+              className="max-h-48 rounded border border-border-subtle object-contain cursor-pointer hover:opacity-90 transition-opacity"
               loading="lazy"
-              onClick={() => window.open(`/api/zsxq/images/${name}`, "_blank")}
+              onClick={() => setLightboxImg(name)}
             />
           ))}
+        </div>
+      )}
+
+      {/* 图片 Lightbox */}
+      {lightboxImg && (
+        <div
+          className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center cursor-pointer"
+          onClick={() => setLightboxImg(null)}
+        >
+          <img
+            src={`/api/zsxq/images/${lightboxImg}`}
+            alt=""
+            className="max-w-[90vw] max-h-[90vh] object-contain rounded-lg shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          />
+          <button
+            className="absolute top-4 right-4 text-white/70 hover:text-white"
+            onClick={() => setLightboxImg(null)}
+          >
+            <X className="w-6 h-6" />
+          </button>
         </div>
       )}
     </div>
