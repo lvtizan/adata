@@ -1,23 +1,31 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { Search, Star } from "lucide-react";
 import { Input } from "@/shared/ui/input";
 import { Button } from "@/shared/ui/button";
-import { useAddToWatchlist, useMarketSearch } from "@/queries";
+import { useAddToWatchlist, useMarketSearch, useTradePlans, useWatchlist } from "@/queries";
 import { useDashboardStore } from "@/store";
 import { fmtPct } from "@/shared/utils/format";
 import { cn } from "@/lib/utils";
 
 export function MarketSearch() {
   const navigate = useNavigate();
+  const location = useLocation();
   const { setSelectedSectorCode } = useDashboardStore();
   const addToWatchlist = useAddToWatchlist();
   const [text, setText] = useState("");
   const [debounced, setDebounced] = useState("");
   const wrapRef = useRef<HTMLDivElement>(null);
+  const currentPath = location.pathname;
+  const isWatchlistPage = currentPath === "/watchlist";
+  const isTradePlanPage = currentPath === "/trade-plan";
+  const isLocalOnlyMode = isWatchlistPage || isTradePlanPage;
+
+  const { data: watchlist = [] } = useWatchlist();
+  const { data: tradePlans = [] } = useTradePlans();
 
   useEffect(() => {
-    const timer = window.setTimeout(() => setDebounced(text.trim()), 180);
+    const timer = window.setTimeout(() => setDebounced(text.trim()), 100);
     return () => window.clearTimeout(timer);
   }, [text]);
 
@@ -31,15 +39,78 @@ export function MarketSearch() {
     return () => document.removeEventListener("mousedown", handle);
   }, []);
 
-  const { data, isFetching } = useMarketSearch(debounced, 8);
+  const { data, isFetching } = useMarketSearch(isLocalOnlyMode ? "" : debounced, 8);
   const hasQuery = debounced.length >= 2;
-  const hasResults = (data?.stocks.length ?? 0) > 0 || (data?.sectors.length ?? 0) > 0;
+  const localStocks = useMemo(() => {
+    if (!hasQuery) return [];
+    const q = debounced.toLowerCase();
+    if (isWatchlistPage) {
+      return watchlist
+        .filter((item) => item.tsCode.toLowerCase().includes(q) || item.stockName.toLowerCase().includes(q))
+        .slice(0, 12)
+        .map((item) => ({
+          type: "stock" as const,
+          tsCode: item.tsCode,
+          stockName: item.stockName,
+          sectorCode: item.sectorCode,
+          sectorName: item.sectorName,
+          close: item.close,
+          pctChange1d: item.pctChange1d,
+          pctChange5d: item.pctChange5d,
+          pctChange10d: item.pctChange10d,
+          rps20: item.rps20,
+          amount: item.amount,
+        }));
+    }
+    if (isTradePlanPage) {
+      const unique = new Map<string, {
+        type: "stock";
+        tsCode: string;
+        stockName: string;
+        sectorCode: string;
+        sectorName: string;
+        close: number;
+        pctChange1d: number;
+        pctChange5d: number;
+        pctChange10d: number;
+        rps20: number;
+        amount: number;
+      }>();
+      for (const item of tradePlans) {
+        if (!item.tsCode) continue;
+        if (unique.has(item.tsCode)) continue;
+        unique.set(item.tsCode, {
+          type: "stock",
+          tsCode: item.tsCode,
+          stockName: item.stockName || item.tsCode,
+          sectorCode: item.sectorCode || "",
+          sectorName: item.sectorName || "",
+          close: item.entryPrice ?? 0,
+          pctChange1d: 0,
+          pctChange5d: 0,
+          pctChange10d: 0,
+          rps20: item.riskReward ?? 0,
+          amount: 0,
+        });
+      }
+      return Array.from(unique.values())
+        .filter((item) => item.tsCode.toLowerCase().includes(q) || item.stockName.toLowerCase().includes(q))
+        .slice(0, 12);
+    }
+    return [];
+  }, [hasQuery, debounced, isWatchlistPage, isTradePlanPage, watchlist, tradePlans]);
+
+  const hasResults = isLocalOnlyMode
+    ? localStocks.length > 0
+    : (data?.stocks.length ?? 0) > 0 || (data?.sectors.length ?? 0) > 0;
   const open = text.trim().length >= 2;
 
   const rows = useMemo(() => ({
-    stocks: data?.stocks ?? [],
-    sectors: data?.sectors ?? [],
-  }), [data]);
+    stocks: isLocalOnlyMode ? localStocks : (data?.stocks ?? []),
+    sectors: isLocalOnlyMode ? [] : (data?.sectors ?? []),
+  }), [data, isLocalOnlyMode, localStocks]);
+
+  const watchlistSet = useMemo(() => new Set(watchlist.map((w) => w.tsCode)), [watchlist]);
 
   return (
     <div ref={wrapRef} className="relative w-[360px] max-w-full">
@@ -59,7 +130,7 @@ export function MarketSearch() {
             <div className="px-3 py-2 text-xs text-text-tertiary">输入至少 2 个字符</div>
           )}
 
-          {hasQuery && isFetching && !hasResults && (
+          {hasQuery && isFetching && !hasResults && !isLocalOnlyMode && (
             <div className="px-3 py-2 text-xs text-text-tertiary">搜索中...</div>
           )}
 
@@ -103,8 +174,16 @@ export function MarketSearch() {
                 <div key={item.tsCode} className="flex items-center gap-2 px-3 py-2 hover:bg-surface-hover transition-colors">
                   <button
                     className="flex-1 text-left min-w-0"
-                    onClick={() => {
-                      navigate(`/sector-workbench?sectorCode=${encodeURIComponent(item.sectorCode)}&sectorName=${encodeURIComponent(item.sectorName)}&stockCode=${encodeURIComponent(item.tsCode)}`);
+                  onClick={() => {
+                      if (isWatchlistPage) {
+                        navigate(`/watchlist?stockCode=${encodeURIComponent(item.tsCode)}`);
+                      } else if (isTradePlanPage) {
+                        navigate(`/trade-plan?tsCode=${encodeURIComponent(item.tsCode)}`);
+                      } else {
+                        navigate(
+                          `/sector-workbench?sectorCode=${encodeURIComponent(item.sectorCode)}&sectorName=${encodeURIComponent(item.sectorName)}&stockCode=${encodeURIComponent(item.tsCode)}&stockName=${encodeURIComponent(item.stockName)}`,
+                        );
+                      }
                       setText("");
                       setDebounced("");
                     }}
@@ -119,8 +198,14 @@ export function MarketSearch() {
                   <Button
                     variant="ghost"
                     size="sm"
-                    className="h-7 px-2 text-[11px] shrink-0"
-                    onClick={() => addToWatchlist.mutate({
+                    className={cn(
+                      "h-7 w-7 p-0 shrink-0",
+                      watchlistSet.has(item.tsCode) && "text-amber-500 hover:text-amber-500"
+                    )}
+                    disabled={watchlistSet.has(item.tsCode) || addToWatchlist.isPending}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      addToWatchlist.mutate({
                       tsCode: item.tsCode,
                       stockName: item.stockName,
                       sectorCode: item.sectorCode,
@@ -131,11 +216,12 @@ export function MarketSearch() {
                       pctChange10d: item.pctChange10d,
                       rps20: item.rps20,
                       amount: item.amount,
-                    })}
-                    title="加入自选"
+                      });
+                    }}
+                    title={watchlistSet.has(item.tsCode) ? "已在自选" : "加入自选"}
+                    aria-label={watchlistSet.has(item.tsCode) ? "已在自选" : "加入自选"}
                   >
-                    <Star className="w-3.5 h-3.5 mr-1" />
-                    加自选
+                    <Star className={cn("w-3.5 h-3.5", watchlistSet.has(item.tsCode) && "fill-current")} />
                   </Button>
                 </div>
               ))}

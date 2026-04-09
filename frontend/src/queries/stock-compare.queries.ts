@@ -74,6 +74,8 @@ export function useMultiStockCharts(stocks: Array<{
   tsCode: string;
   stockName: string;
   sectorName: string;
+  rps10?: number;
+  rps20?: number;
 }>) {
   const queries = stocks.map(stock => ({
     queryKey: ['chart', 'stock', stock.tsCode, 120, '1d'],
@@ -82,7 +84,8 @@ export function useMultiStockCharts(stocks: Array<{
     select: (data: {points: CandlePoint[]}) => ({
       ...stock,
       points: data.points || [],
-      rps10: getRps10(data),
+      // 图表点数据不携带 rps 字段，优先用已选股票快照值，缺失再降级
+      rps10: stock.rps10 ?? stock.rps20 ?? getRps10(data),
     }),
   }));
 

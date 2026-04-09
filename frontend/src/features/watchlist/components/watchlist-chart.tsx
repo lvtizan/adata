@@ -7,6 +7,8 @@ import { clearLocalDrawings, readLocalDrawings, writeLocalDrawings } from "@/lib
 import { saveChartDrawings, clearChartDrawings, createPriceAlert } from "@/services";
 import type { ChartDrawingOverlay, RelativeStrengthData } from "@/shared/types";
 
+const ALERT_ICON = "🔔 ";
+
 // ── RS 迷你三线图（个股 / 板块 / 大盘）──
 function RsMiniChart({ rsData, stockName }: { rsData: RelativeStrengthData; stockName?: string }) {
   const W = 150, H = 60;
@@ -74,9 +76,10 @@ interface WatchlistChartProps {
   onChangeOverlayColor?: (chart: any, overlayId: string, color: string) => void;
   onSelectionChange?: (selection: { id: string | null; locked: boolean; name: string | null }) => void;
   onDrawingsChange?: (overlays: Array<{ id: string; name: string; lock: boolean; points: number; label?: string }>) => void;
+  onBuyPlanChange?: (plan: { entryPrice: number; stopLoss: number; takeProfit: number; riskReward: number | null }) => void;
 }
 
-export function WatchlistChart({ tsCode, sectorCode, stockName, activeTool, drawingColor, frequency = "1d", onChangeOverlayColor, onSelectionChange, onDrawingsChange }: WatchlistChartProps) {
+export function WatchlistChart({ tsCode, sectorCode, stockName, activeTool, drawingColor, frequency = "1d", onChangeOverlayColor, onSelectionChange, onDrawingsChange, onBuyPlanChange }: WatchlistChartProps) {
   const [buyMode, setBuyMode] = useState(false);
   const chartRef = useRef<Chart | null>(null);
   const chartContainerRef = useRef<HTMLDivElement>(null);
@@ -109,6 +112,28 @@ export function WatchlistChart({ tsCode, sectorCode, stockName, activeTool, draw
     })));
   }, [tsCode, onDrawingsChange]);
 
+  const snapshotUserDrawings = useCallback((chart: any): ChartDrawingOverlay[] => {
+    if (!chart?.getOverlaysByType) return [];
+    try {
+      const all = chart.getOverlaysByType?.() ?? [];
+      return all
+        .filter((o: any) => o.groupId !== "__system__" && !o.lock)
+        .map((o: any) => ({
+          id: o.id,
+          name: o.name,
+          points: o.points,
+          styles: o.styles,
+          extendData: o.extendData,
+        }));
+    } catch {
+      return [];
+    }
+  }, []);
+
+  const persistChartDrawings = useCallback((chart: any) => {
+    handleDrawingsChange(snapshotUserDrawings(chart));
+  }, [handleDrawingsChange, snapshotUserDrawings]);
+
   // 根据入场价计算止损止盈
   const calcSlTp = useCallback((entry: number) => {
     const supports = patternData?.supports ?? [];
@@ -122,11 +147,23 @@ export function WatchlistChart({ tsCode, sectorCode, stockName, activeTool, draw
   // 更新止损止盈线位置和标签
   const updateSlTpOverlays = useCallback((chart: any, groupId: string, entry: number, sl: number, tp: number) => {
     chart.overrideOverlay({ id: `${groupId}-sl`, points: [{ value: sl }] });
-    chart.overrideOverlay({ id: `${groupId}-sl-tag`, points: [{ value: sl }], extendData: { text: `止损 ${sl}`, color: "#ffffff", bg: "rgba(239,68,68,0.85)" } });
+    chart.overrideOverlay({ id: `${groupId}-sl-tag`, points: [{ value: sl }], extendData: { text: `${ALERT_ICON}止损 ${sl}`, color: "#ffffff", bg: "rgba(239,68,68,0.85)" } });
     chart.overrideOverlay({ id: `${groupId}-tp`, points: [{ value: tp }] });
-    chart.overrideOverlay({ id: `${groupId}-tp-tag`, points: [{ value: tp }], extendData: { text: `止盈 ${tp} (2R)`, color: "#ffffff", bg: "rgba(34,197,94,0.85)" } });
+    chart.overrideOverlay({ id: `${groupId}-tp-tag`, points: [{ value: tp }], extendData: { text: `${ALERT_ICON}止盈 ${tp} (2R)`, color: "#ffffff", bg: "rgba(34,197,94,0.85)" } });
     chart.overrideOverlay({ id: `${groupId}-entry-tag`, points: [{ value: entry }], extendData: { text: `入场 ${entry}`, color: "#ffffff", bg: "rgba(59,130,246,0.85)" } });
   }, []);
+
+  const emitBuyPlan = useCallback((entry: number, sl: number, tp: number) => {
+    const risk = entry - sl;
+    const reward = tp - entry;
+    const rr = risk > 0 ? +(reward / risk).toFixed(4) : null;
+    onBuyPlanChange?.({
+      entryPrice: +entry.toFixed(2),
+      stopLoss: +sl.toFixed(2),
+      takeProfit: +tp.toFixed(2),
+      riskReward: rr,
+    });
+  }, [onBuyPlanChange]);
 
   // 买入模式：点击透明遮罩选价位
   const handleBuyClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
@@ -170,6 +207,8 @@ export function WatchlistChart({ tsCode, sectorCode, stockName, activeTool, draw
         const newEntry = +newPrice.toFixed(2);
         const { sl: newSl, tp: newTp } = calcSlTp(newEntry);
         updateSlTpOverlays(chart, groupId, newEntry, newSl, newTp);
+        emitBuyPlan(newEntry, newSl, newTp);
+        persistChartDrawings(chart);
         // 更新预警
         void createPriceAlert({ tsCode, stockName: stockName ?? tsCode, entryPrice: newEntry, stopLoss: newSl, takeProfit: newTp });
       },
@@ -189,10 +228,12 @@ export function WatchlistChart({ tsCode, sectorCode, stockName, activeTool, draw
         const risk = entry - newSl;
         const newTp = risk > 0 ? +(entry + risk * 2).toFixed(2) : tp;
         updateSlTpOverlays(chart, groupId, entry, newSl, newTp);
+        emitBuyPlan(entry, newSl, newTp);
+        persistChartDrawings(chart);
         void createPriceAlert({ tsCode, stockName: stockName ?? tsCode, entryPrice: entry, stopLoss: newSl, takeProfit: newTp });
       },
     });
-    chart.createOverlay({ id: `${groupId}-sl-tag`, name: "leftTag", lock: true, points: [{ value: sl }], extendData: { text: `止损 ${sl}`, color: "#ffffff", bg: "rgba(239,68,68,0.85)" } });
+    chart.createOverlay({ id: `${groupId}-sl-tag`, name: "leftTag", lock: true, points: [{ value: sl }], extendData: { text: `${ALERT_ICON}止损 ${sl}`, color: "#ffffff", bg: "rgba(239,68,68,0.85)" } });
     // 止盈线（绿色，可拖动）
     chart.createOverlay({
       id: `${groupId}-tp`,
@@ -207,16 +248,20 @@ export function WatchlistChart({ tsCode, sectorCode, stockName, activeTool, draw
         const risk = (newTp - entry) / 2;
         const newSl = risk > 0 ? +(entry - risk).toFixed(2) : sl;
         updateSlTpOverlays(chart, groupId, entry, newSl, newTp);
+        emitBuyPlan(entry, newSl, newTp);
+        persistChartDrawings(chart);
         void createPriceAlert({ tsCode, stockName: stockName ?? tsCode, entryPrice: entry, stopLoss: newSl, takeProfit: newTp });
       },
     });
-    chart.createOverlay({ id: `${groupId}-tp-tag`, name: "leftTag", lock: true, points: [{ value: tp }], extendData: { text: `止盈 ${tp} (2R)`, color: "#ffffff", bg: "rgba(34,197,94,0.85)" } });
+    chart.createOverlay({ id: `${groupId}-tp-tag`, name: "leftTag", lock: true, points: [{ value: tp }], extendData: { text: `${ALERT_ICON}止盈 ${tp} (2R)`, color: "#ffffff", bg: "rgba(34,197,94,0.85)" } });
 
     // 创建价格预警
     void createPriceAlert({ tsCode, stockName: stockName ?? tsCode, entryPrice: entry, stopLoss: sl, takeProfit: tp });
+    emitBuyPlan(entry, sl, tp);
+    persistChartDrawings(chart);
 
     setBuyMode(false);
-  }, [stockData, patternData, tsCode, stockName, calcSlTp, updateSlTpOverlays]);
+  }, [stockData, patternData, tsCode, stockName, calcSlTp, updateSlTpOverlays, emitBuyPlan, persistChartDrawings]);
 
   // ESC 退出买入模式
   useEffect(() => {
