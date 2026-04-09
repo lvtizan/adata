@@ -26,6 +26,51 @@ function compareValues(a: any, b: any, key: string, dir: "asc" | "desc"): number
   return dir === "asc" ? va - vb : vb - va;
 }
 
+function RsSparkline({
+  values,
+  width = 56,
+  height = 18,
+}: {
+  values: Array<number | null | undefined>;
+  width?: number;
+  height?: number;
+}) {
+  const pts = values
+    .map((v, i) => ({ i, v: v == null || Number.isNaN(v) ? null : Number(v) }))
+    .filter((p): p is { i: number; v: number } => p.v != null);
+  if (pts.length < 2) return <span className="text-text-tertiary text-[10px]">—</span>;
+
+  const nums = pts.map((p) => p.v);
+  const min = Math.min(...nums);
+  const max = Math.max(...nums);
+  const range = max - min || 1;
+  const pad = 2;
+  const innerW = width - pad * 2;
+  const innerH = height - pad * 2;
+  const maxIdx = values.length - 1;
+  const coords = pts.map((p) => ({
+    x: pad + (maxIdx > 0 ? (p.i / maxIdx) * innerW : innerW / 2),
+    y: pad + innerH - ((p.v - min) / range) * innerH,
+  }));
+  const first = pts[0].v;
+  const last = pts[pts.length - 1].v;
+  const color = last > first ? "var(--color-state-up)" : last < first ? "var(--color-state-down)" : "var(--color-text-tertiary)";
+
+  return (
+    <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} className="inline-block align-middle">
+      <polyline
+        points={coords.map((c) => `${c.x.toFixed(1)},${c.y.toFixed(1)}`).join(" ")}
+        fill="none"
+        stroke={color}
+        strokeWidth={1.5}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <circle cx={coords[coords.length - 1].x} cy={coords[coords.length - 1].y} r={1.5} fill={color} />
+    </svg>
+  );
+}
+
 export default function BullcampPage() {
   const navigate = useNavigate();
   const { setSelectedSectorCode } = useDashboardStore();
@@ -68,10 +113,27 @@ export default function BullcampPage() {
     { key: "sectorName", label: "板块", sortable: true, render: (item) => <span className="text-xs text-text-secondary">{item.sectorName}</span> },
     { key: "close", label: "现价", width: "60px", align: "right", sortable: true, render: (item) => <span className="text-sm font-mono">{item.close?.toFixed(2) ?? "-"}</span> },
     { key: "pctChange5d", label: "5日", width: "60px", align: "right", sortable: true, render: (item) => <NumericCell value={item.pctChange5d} format={fmtPct} /> },
-    { key: "sectorPctChange5d", label: "板块5日", width: "64px", align: "right", sortable: true, render: (item) => <NumericCell value={item.sectorPctChange5d} format={fmtPct} /> },
     { key: "rps20", label: "RPS20", width: "56px", align: "right", sortable: true, render: (item) => <span className="text-sm font-mono">{item.rps20 ?? "-"}</span> },
-    { key: "sectorRps10", label: "板块RPS", width: "64px", align: "right", sortable: true, render: (item) => <span className="text-sm font-mono">{item.sectorRps10 ?? "-"}</span> },
-    { key: "relativeStrengthLatest", label: "相对强弱", width: "64px", align: "right", sortable: true, render: (item) => <span className="text-sm font-mono">{item.relativeStrengthLatest?.toFixed(1) ?? "-"}</span> },
+    {
+      key: "sectorRps10",
+      label: "板块RS",
+      width: "70px",
+      align: "right",
+      sortable: true,
+      render: (item) => (
+        <RsSparkline values={[item.sectorPctChange10d, item.sectorPctChange5d, item.sectorRps10]} />
+      ),
+    },
+    {
+      key: "relativeStrengthLatest",
+      label: "相对强弱",
+      width: "70px",
+      align: "right",
+      sortable: true,
+      render: (item) => (
+        <RsSparkline values={[item.relativeStrength20d, item.relativeStrength10d, item.relativeStrength5d, item.relativeStrengthLatest]} />
+      ),
+    },
     { key: "amount", label: "成交额", width: "68px", align: "right", sortable: true, render: (item) => <span className="text-sm text-text-secondary">{fmtAmount(item.amount)}</span> },
     { key: "campScore", label: "综合分", width: "56px", align: "right", sortable: true, render: (item) => <span className="text-sm font-semibold">{item.campScore?.toFixed(0) ?? "-"}</span> },
     { key: "campScoreHistory" as any, label: "趋势", width: "56px", align: "center", sortable: false, render: (item) => <ScoreSparkline data={item.campScoreHistory ?? []} /> },
