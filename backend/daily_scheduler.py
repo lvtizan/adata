@@ -132,6 +132,52 @@ def run_precompute(trade_date: str | None = None) -> bool:
         return False
 
 
+def run_daily_snapshot_fetch(trade_date: str | None = None) -> bool:
+    """抓取并落库当日日线快照（AKShare + 新浪hq兜底）"""
+    td = trade_date or get_trade_date()
+    logger.info(f"开始抓取日线快照... (trade_date={td})")
+    cmd = [
+        sys.executable,
+        str(BACKEND / "fetch_today_snapshot_akshare.py"),
+        "--trade-date",
+        td,
+    ]
+    env = os.environ.copy()
+    env.update(
+        {
+            "http_proxy": "",
+            "https_proxy": "",
+            "HTTP_PROXY": "",
+            "HTTPS_PROXY": "",
+            "ALL_PROXY": "",
+            "all_proxy": "",
+            "NO_PROXY": "*",
+            "no_proxy": "*",
+        }
+    )
+    try:
+        result = subprocess.run(
+            cmd,
+            cwd=str(BACKEND),
+            capture_output=True,
+            text=True,
+            timeout=240,
+            env=env,
+        )
+        if result.returncode == 0:
+            logger.info(f"日线快照抓取完成: {td}")
+            return True
+        tail = (result.stdout or "")[-400:] + "\n" + (result.stderr or "")[-400:]
+        logger.error(f"日线快照抓取失败: {tail}")
+        return False
+    except subprocess.TimeoutExpired:
+        logger.error("日线快照抓取超时（4分钟）")
+        return False
+    except Exception as e:
+        logger.error(f"日线快照抓取异常: {e}")
+        return False
+
+
 # ── DeerFlow 调用 ──────────────────────────────────
 def call_deerflow(prompt: str, timeout: int = 120) -> str | None:
     """
@@ -293,10 +339,13 @@ def job_midday():
     trade_date = get_trade_date()
     logger.info(f"=== 午间更新 {trade_date} ===")
 
-    # Step 1: 刷新量化数据
+    # Step 1: 先抓当日快照，再刷新量化数据
+    run_daily_snapshot_fetch(trade_date)
+
+    # Step 2: 刷新量化数据
     run_precompute(trade_date)
 
-    # Step 2: 多源新闻简报
+    # Step 3: 多源新闻简报
     content = _fetch_news_and_build_brief(trade_date, "midday")
     if not content:
         content = call_deerflow_mcp("")
@@ -310,10 +359,13 @@ def job_post_market():
     trade_date = get_trade_date()
     logger.info(f"=== 收盘更新 {trade_date} ===")
 
-    # Step 1: 刷新量化数据（收盘后完整数据）
+    # Step 1: 收盘后先抓一版日线快照
+    run_daily_snapshot_fetch(trade_date)
+
+    # Step 2: 刷新量化数据（收盘后完整数据）
     run_precompute(trade_date)
 
-    # Step 2: 多源新闻简报
+    # Step 3: 多源新闻简报
     content = _fetch_news_and_build_brief(trade_date, "post_market")
     if not content:
         content = call_deerflow_mcp("")
@@ -330,9 +382,18 @@ def job_precompute_predictions():
     run_precompute(trade_date)
 
 
+def job_intraday_snapshot():
+    """盘中抓取当日日线快照"""
+    trade_date = get_trade_date()
+    logger.info(f"=== 盘中快照抓取 {trade_date} ===")
+    run_daily_snapshot_fetch(trade_date)
+
+
 SCHEDULE = [
     ("09:00", job_pre_market),
+    ("09:35", job_intraday_snapshot),
     ("11:35", job_midday),
+    ("14:35", job_intraday_snapshot),
     ("15:10", job_post_market),
     ("16:00", job_precompute_predictions),
 ]
@@ -398,6 +459,7 @@ def main():
             job_post_market()
         else:
             logger.info("完整更新：precompute + AI 简报")
+            run_daily_snapshot_fetch(trade_date)
             run_precompute()
             job_post_market()
         return

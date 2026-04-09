@@ -1,10 +1,10 @@
 #-*- coding:utf-8 -*-    --------------Ashare 股票行情数据双核心版( https://github.com/mpquant/Ashare ) 
-import json,requests,datetime;      import pandas as pd  #
+import json,requests,datetime,os;      import pandas as pd  #
 
 _SESSION = requests.Session()
 _SESSION.trust_env = False
 _ENV_SESSION = requests.Session()
-_ENV_SESSION.trust_env = True
+_ENV_SESSION.trust_env = os.getenv("ASHARE_TRUST_ENV", "").lower() in ("1", "true", "yes")
 
 
 def _get(url):
