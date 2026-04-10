@@ -14,15 +14,6 @@ export function TopBar({ title, children }: TopBarProps) {
 
   return (
     <header className="h-12 flex items-center gap-3 px-4 border-b border-border-default bg-canvas shrink-0">
-      <div className="flex items-center gap-2.5 min-w-[180px]">
-        <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-text-primary to-accent flex items-center justify-center text-white text-xs font-bold">
-          AS
-        </div>
-        <div>
-          <div className="text-sm font-semibold leading-tight">A-Share Terminal</div>
-        </div>
-      </div>
-
       <nav className="flex gap-1">
         {children}
       </nav>

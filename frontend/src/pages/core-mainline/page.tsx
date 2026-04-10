@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { ArrowUpRight, Database, Globe2, HardDrive, Layers3 } from "lucide-react";
+import { ArrowUpRight, Database, Globe2, HardDrive, Layers3, Snowflake } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/shared/ui/tabs";
 import { cn } from "@/lib/utils";
 import { fmtPct } from "@/shared/utils/format";
 import { WatchlistChart } from "@/features/watchlist/components/watchlist-chart";
+import { DrawingToolbar } from "@/features/chart/components/drawing-toolbar";
 import { useBullCamp, useRealtimeQuotes, useStockSector, useWatchlist } from "@/queries";
 
-type ThemeId = "storage_chain" | "storage_extension" | "global_anchor";
+type ThemeId = "storage_chain" | "cpo_subline" | "liquid_cooling" | "global_anchor";
 
 interface ThemeStock {
   tsCode: string;
@@ -23,6 +24,7 @@ interface MainlineTheme {
   subtitle: string;
   stocks: ThemeStock[];
   notes: string[];
+  summaryBlocks?: Array<{ title: string; lines: string[] }>;
 }
 
 const THEMES: MainlineTheme[] = [
@@ -92,27 +94,213 @@ const THEMES: MainlineTheme[] = [
       "卡片中的 RS 统一按 RPS20 口径展示；缺失时显示 --。",
       "点击股票名会在右侧联动 K 线，支持画线与预警流程。",
     ],
+    summaryBlocks: [
+      {
+        title: "最核心主龙头",
+        lines: ["江波龙、兆易创新、佰维存储"],
+      },
+      {
+        title: "必须补充进池子的次核心",
+        lines: ["北京君正、德明利"],
+      },
+      {
+        title: "交易视角摘要",
+        lines: [
+          "看平台型主升龙头：江波龙（品牌+封测+固件+嵌入式+SSD+内存条）",
+          "看上游设计核心资产：兆易创新（NOR + SLC NAND + 利基 DRAM）",
+          "看企业级 / AI 存储弹性：佰维存储（企业级SSD + CXL + RDIMM + 先进封装）",
+          "看车规 / 工业高可靠方向：北京君正（车规 DRAM/SRAM + 工业医疗）",
+          "看主控模组补涨扩散：德明利（PCIe SSD主控 + eMMC/UFS主控 + 内存模组）",
+        ],
+      },
+      {
+        title: "最短结论",
+        lines: [
+          "存储链最核心主龙头：江波龙、兆易创新、佰维存储。",
+          "必须补充进池子的次核心：北京君正、德明利。",
+        ],
+      },
+    ],
   },
   {
-    id: "storage_extension",
-    label: "扩展观察",
-    subtitle: "主线外延与口径边界",
+    id: "cpo_subline",
+    label: "CPO子线",
+    subtitle: "CPO 核心与次核心观察池",
     stocks: [
       {
-        tsCode: "688766.SH",
-        stockName: "普冉股份",
-        tier: "补充",
-        role: "细分非易失存储补充（EEPROM/NOR）",
+        tsCode: "300308.SZ",
+        stockName: "中际旭创",
+        tier: "第一梯队",
+        role: "主升龙头（高速光模块核心）",
         highlights: [
-          "更偏细分赛道补充，不是主线第一优先",
-          "适合作为主线温度变化时的边际观察标的",
-          "关注库存与 ASP 变化对弹性的影响",
+          "核心主龙头之一，交易上优先盯主升动能",
+        ],
+      },
+      {
+        tsCode: "300502.SZ",
+        stockName: "新易盛",
+        tier: "第一梯队",
+        role: "主升龙头（高速光模块核心）",
+        highlights: [
+          "核心主龙头之一，交易上优先盯主升动能",
+        ],
+      },
+      {
+        tsCode: "300394.SZ",
+        stockName: "天孚通信",
+        tier: "第一梯队",
+        role: "上游高辨识度配套（高速光器件/封装）",
+        highlights: [
+          "在 CPO 链条中偏上游关键配套，辨识度高",
+        ],
+      },
+      {
+        tsCode: "000988.SZ",
+        stockName: "华工科技",
+        tier: "第一梯队",
+        role: "器件 + 模块 + CPO 方案综合弹性",
+        highlights: [
+          "兼具器件、模块与 CPO 方案能力，弹性来自链条协同",
+        ],
+      },
+      {
+        tsCode: "300548.SZ",
+        stockName: "长芯博创",
+        tier: "第二梯队",
+        role: "高速互联补涨/扩散",
+        highlights: [
+          "应纳入次核心观察池，适合跟踪扩散与补涨节奏",
+        ],
+      },
+      {
+        tsCode: "688313.SH",
+        stockName: "仕佳光子",
+        tier: "第二梯队",
+        role: "更上游器件渗透（光芯片/无源器件）",
+        highlights: [
+          "偏上游渗透逻辑，适合观察产业链向上游扩散",
+        ],
+      },
+      {
+        tsCode: "300620.SZ",
+        stockName: "光库科技",
+        tier: "第二梯队",
+        role: "更上游器件渗透（CPO/硅光配套）",
+        highlights: [
+          "偏上游器件侧，适合作为主线强度补充观察",
         ],
       },
     ],
     notes: [
-      "你现在关注的是“存储芯片/模组产业链”，不是典型半导体设备股口径。",
-      "若切到“设备”口径，应另建主线（光刻/刻蚀/薄膜沉积/测试封装设备）。",
+      "该 Tab 为你定义的 CPO 子线观察池，按交易视角优先级展示。",
+      "后续可新增“液冷”子线并复用同一结构。",
+    ],
+    summaryBlocks: [
+      {
+        title: "最核心主龙头",
+        lines: ["中际旭创、新易盛、天孚通信、华工科技"],
+      },
+      {
+        title: "必须补充进池子的次核心",
+        lines: ["长芯博创、仕佳光子、光库科技"],
+      },
+      {
+        title: "交易视角摘要",
+        lines: [
+          "看主升龙头：中际旭创、新易盛",
+          "看上游高辨识度配套：天孚通信",
+          "看“器件 + 模块 + CPO方案”综合弹性：华工科技",
+          "看高速互联补涨/扩散：长芯博创",
+          "看更上游器件渗透：仕佳光子、光库科技",
+        ],
+      },
+    ],
+  },
+  {
+    id: "liquid_cooling",
+    label: "液冷子线",
+    subtitle: "液冷设备/系统方案与整机受益链",
+    stocks: [
+      {
+        tsCode: "002837.SZ",
+        stockName: "英维克",
+        tier: "第一梯队",
+        role: "液冷端到端平台型能力（冷板/Manifold/CDU/管路/冷源）",
+        highlights: [
+          "液冷设备股辨识度最高之一，覆盖端到端方案",
+        ],
+      },
+      {
+        tsCode: "301018.SZ",
+        stockName: "申菱环境",
+        tier: "第一梯队",
+        role: "特种温控 + 液冷系统交付（一次侧/二次侧全链条）",
+        highlights: [
+          "液冷产品线完整，系统交付能力强，CDU 竞争力突出",
+        ],
+      },
+      {
+        tsCode: "300499.SZ",
+        stockName: "高澜股份",
+        tier: "第一梯队",
+        role: "液冷部件 + 系统工程（信息通信与储能液冷）",
+        highlights: [
+          "从部件到系统工程的一站式能力，跨场景扩展明显",
+        ],
+      },
+      {
+        tsCode: "300990.SZ",
+        stockName: "同飞股份",
+        tier: "第二梯队",
+        role: "液冷温控设备弹性补充",
+        highlights: [
+          "覆盖氟化液、纯水与 CDU，偏设备弹性标的",
+        ],
+      },
+      {
+        tsCode: "000977.SZ",
+        stockName: "浪潮信息",
+        tier: "补充",
+        role: "液冷整机/算力基础设施受益",
+        highlights: [
+          "偏整机与基础设施侧，不是最纯液冷设备口径",
+        ],
+      },
+      {
+        tsCode: "603019.SH",
+        stockName: "中科曙光",
+        tier: "补充",
+        role: "液冷机房与高端计算基础设施受益",
+        highlights: [
+          "偏机房与高端计算设备侧，受益液冷基础设施建设",
+        ],
+      },
+    ],
+    notes: [
+      "该 Tab 按交易视角分层：核心设备 → 弹性设备 → 整机/机房受益。",
+      "后续可继续扩展到“浸没式液冷”或“冷板产业链”细分卡片。",
+    ],
+    summaryBlocks: [
+      {
+        title: "液冷最核心",
+        lines: ["英维克、申菱环境、高澜股份"],
+      },
+      {
+        title: "液冷设备弹性补充",
+        lines: ["同飞股份"],
+      },
+      {
+        title: "液冷整机/机房侧受益",
+        lines: ["浪潮信息、中科曙光"],
+      },
+      {
+        title: "交易视角摘要",
+        lines: [
+          "主看核心设备三剑客：英维克、申菱环境、高澜股份",
+          "设备弹性看扩散：同飞股份",
+          "整机机房落地看受益：浪潮信息、中科曙光",
+        ],
+      },
     ],
   },
   {
@@ -138,6 +326,10 @@ export default function CoreMainlinePage() {
   const [searchParams] = useSearchParams();
   const [activeTheme, setActiveTheme] = useState<ThemeId>("storage_chain");
   const [selectedCode, setSelectedCode] = useState<string>("");
+  const [drawingTool, setDrawingTool] = useState<string | null>(null);
+  const [drawingColor, setDrawingColor] = useState("#3b82f6");
+  const [selectedOverlay, setSelectedOverlay] = useState<{ id: string | null; locked: boolean; name: string | null }>({ id: null, locked: false, name: null });
+  const [drawings, setDrawings] = useState<Array<{ id: string; name: string; lock: boolean; points: number; label?: string }>>([]);
 
   const allStocks = useMemo(() => THEMES.flatMap((t) => t.stocks), []);
   const allCodes = useMemo(() => Array.from(new Set(allStocks.map((s) => s.tsCode))), [allStocks]);
@@ -185,6 +377,14 @@ export default function CoreMainlinePage() {
     }
   }, [activeTheme, currentTheme, selectedCode]);
 
+  function emitDrawingAction(
+    action: "deleteSelected" | "clearAll" | "toggleLock" | "addSupportAtClose" | "addResistanceAtClose" | "addTagAtLatest" | "addBuyEntry" | "deleteById" | "toggleLockById" | "changeColorById",
+    detail: Record<string, unknown> = {},
+  ) {
+    if (!selectedStock) return;
+    window.dispatchEvent(new CustomEvent(`chart-drawing:${selectedStock.tsCode}`, { detail: { action, ...detail } }));
+  }
+
   return (
     <div className="flex h-full min-h-0">
       <div className="w-[560px] min-w-[500px] border-r border-border-default bg-surface-secondary/20 flex flex-col min-h-0">
@@ -198,12 +398,15 @@ export default function CoreMainlinePage() {
 
         <Tabs value={activeTheme} onValueChange={(v) => setActiveTheme(v as ThemeId)} className="flex-1 min-h-0 flex flex-col">
           <div className="px-3 pt-3">
-            <TabsList className="grid grid-cols-3">
+            <TabsList className="grid grid-cols-4">
               <TabsTrigger value="storage_chain" className="text-xs">
                 <HardDrive className="w-3.5 h-3.5 mr-1" /> 存储链
               </TabsTrigger>
-              <TabsTrigger value="storage_extension" className="text-xs">
-                <Layers3 className="w-3.5 h-3.5 mr-1" /> 扩展
+              <TabsTrigger value="cpo_subline" className="text-xs">
+                <Layers3 className="w-3.5 h-3.5 mr-1" /> CPO子线
+              </TabsTrigger>
+              <TabsTrigger value="liquid_cooling" className="text-xs">
+                <Snowflake className="w-3.5 h-3.5 mr-1" /> 液冷
               </TabsTrigger>
               <TabsTrigger value="global_anchor" className="text-xs">
                 <Globe2 className="w-3.5 h-3.5 mr-1" /> 全球锚点
@@ -214,6 +417,21 @@ export default function CoreMainlinePage() {
           {THEMES.map((theme) => (
             <TabsContent key={theme.id} value={theme.id} className="flex-1 min-h-0 mt-0 px-3 pb-3 overflow-auto">
               <div className="text-xs text-text-tertiary px-1 pt-2 pb-3">{theme.subtitle}</div>
+              {theme.summaryBlocks && theme.summaryBlocks.length > 0 && (
+                <div className="rounded-xl border border-sky-200 bg-sky-50/40 p-3 mb-3 space-y-2">
+                  <div className="text-xs font-semibold text-sky-800">板块内容摘要</div>
+                  {theme.summaryBlocks.map((block) => (
+                    <div key={block.title}>
+                      <div className="text-[11px] font-semibold text-slate-700">{block.title}</div>
+                      <div className="space-y-1 text-[11px] text-slate-600">
+                        {block.lines.map((line) => (
+                          <p key={line}>• {line}</p>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
               {theme.stocks.map((stock) => {
                 const pct = quoteMap?.get(stock.tsCode);
                 const rs = rsMap.get(stock.tsCode);
@@ -290,14 +508,44 @@ export default function CoreMainlinePage() {
                 </div>
               </div>
             </div>
-            <div className="flex-1 min-h-0">
+            <div className="flex-1 min-h-0 flex flex-col">
+              <div className="border-b border-border-default py-1">
+                <DrawingToolbar
+                  activeTool={drawingTool}
+                  drawingColor={drawingColor}
+                  selectedOverlayId={selectedOverlay.id}
+                  selectedOverlayName={selectedOverlay.name}
+                  selectedOverlayLocked={selectedOverlay.locked}
+                  overlays={drawings}
+                  onToolSelect={setDrawingTool}
+                  onDeleteSelected={() => emitDrawingAction("deleteSelected")}
+                  onClearAll={() => emitDrawingAction("clearAll")}
+                  onToggleLock={() => emitDrawingAction("toggleLock")}
+                  onDeleteOverlay={(id) => emitDrawingAction("deleteById", { overlayId: id })}
+                  onToggleOverlayLock={(id, nextLocked) => emitDrawingAction("toggleLockById", { overlayId: id, nextLocked })}
+                  onAddSupportTemplate={() => emitDrawingAction("addSupportAtClose")}
+                  onAddResistanceTemplate={() => emitDrawingAction("addResistanceAtClose")}
+                  onAddTagTemplate={() => emitDrawingAction("addTagAtLatest")}
+                  onAddBuyEntry={() => emitDrawingAction("addBuyEntry")}
+                  onChangeOverlayColor={(id, color) => {
+                    setDrawingColor(color);
+                    emitDrawingAction("changeColorById", { overlayId: id, color });
+                  }}
+                />
+              </div>
+              <div className="flex-1 min-h-0">
               <WatchlistChart
                 key={selectedStock.tsCode}
                 tsCode={selectedStock.tsCode}
                 stockName={selectedStock.stockName}
                 sectorCode={sectorCode}
                 frequency="1d"
+                activeTool={drawingTool}
+                drawingColor={drawingColor}
+                onSelectionChange={setSelectedOverlay}
+                onDrawingsChange={setDrawings}
               />
+              </div>
             </div>
           </>
         ) : (
