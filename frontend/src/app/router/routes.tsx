@@ -13,6 +13,7 @@ import MorningBriefPage from "@/pages/morning-brief/page";
 import SettingsPage from "@/pages/settings/page";
 import StockComparePage from "@/pages/stock-compare/page";
 import DebugPage from "@/pages/debug/page";
+import CoreMainlinePage from "@/pages/core-mainline/page";
 
 export const router = createBrowserRouter([
   {
@@ -31,6 +32,7 @@ export const router = createBrowserRouter([
       { path: "market-recap", element: <MarketRecapPage /> },
       { path: "morning-brief", element: <MorningBriefPage /> },
       { path: "stock-compare", element: <StockComparePage /> },
+      { path: "core-mainline", element: <CoreMainlinePage /> },
       { path: "debug", element: <DebugPage /> },
       { path: "settings", element: <SettingsPage /> },
     ],
