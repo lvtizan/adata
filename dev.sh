@@ -71,6 +71,15 @@ case "${1:-}" in
     status) show_status; exit 0 ;;
 esac
 
+# ── 启动前自检（防白屏：导出缺失/类型错误） ──
+echo -e "${YELLOW}[Preflight]${NC} 前端类型自检..."
+if ! (cd "$DIR/frontend" && npm run check > "$LOG_DIR/a-data-frontend-check.log" 2>&1); then
+    echo -e "${RED}✗ 前端类型检查失败，已阻止启动（避免白屏）${NC}"
+    echo "日志: $LOG_DIR/a-data-frontend-check.log"
+    tail -n 40 "$LOG_DIR/a-data-frontend-check.log"
+    exit 1
+fi
+
 # ── 先停旧进程 ──
 stop_all 2>/dev/null
 

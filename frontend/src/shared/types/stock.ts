@@ -147,3 +147,21 @@ export interface HHStatsResult {
     avgMaxGain20d: number | null;
   };
 }
+
+export interface TradePlanItem {
+  id: number;
+  tsCode: string;
+  stockName: string;
+  sectorCode?: string;
+  sectorName?: string;
+  entryPrice: number;
+  stopLoss: number | null;
+  takeProfit: number | null;
+  riskReward: number | null;
+  planRiskReward: number | null;
+  realTakeProfit: number | null;
+  realRiskReward: number | null;
+  status?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
