@@ -867,12 +867,11 @@ class MarketEngine:
             if got:
                 return code, int(got[1])
             try:
-                members = self.pro.index_member(index_code=code) if code.endswith(".SI") else self.pro.ths_member(ts_code=code)
-                if members is None or members.empty:
+                stock_codes = self._get_sector_member_codes(code, trade_date)
+                if not stock_codes:
                     self._cache[cache_key] = (time.time(), 0)
                     return code, 0
-                mcode_col = "con_code" if "con_code" in members.columns else "ts_code"
-                cnt = int(members[mcode_col].isin(limit_up_codes).sum())
+                cnt = sum(1 for sc in stock_codes if sc in limit_up_codes)
                 self._cache[cache_key] = (time.time(), cnt)
                 return code, cnt
             except Exception:
@@ -955,14 +954,31 @@ class MarketEngine:
         return out
 
     def _get_sector_member_codes(self, sector_code: str, trade_date: str) -> list[str]:
+        # 优先本地缓存（ths_members），避免在线接口限流/网络异常导致页面空白
+        try:
+            mapping, _ = self._ensure_ths_member_cache()
+            cached_codes = mapping.get(sector_code, [])
+            if cached_codes:
+                return list(dict.fromkeys(str(c) for c in cached_codes if c))
+        except Exception as exc:
+            logger.debug(f"读取本地板块成分缓存失败: {sector_code}, {exc}")
+
         stock_codes: list[str] = []
         if sector_code.endswith(".SI"):
-            members = self.pro.index_member(index_code=sector_code)
+            try:
+                members = self.pro.index_member(index_code=sector_code)
+            except Exception as exc:
+                logger.debug(f"index_member 拉取失败: {sector_code}, {exc}")
+                members = None
             if members is not None and not members.empty:
                 valid = members["out_date"].isna() | (members["out_date"] == "") | (members["out_date"] > trade_date)
                 stock_codes = members[valid]["con_code"].dropna().unique().tolist()
         else:
-            members = self.pro.ths_member(ts_code=sector_code)
+            try:
+                members = self.pro.ths_member(ts_code=sector_code)
+            except Exception as exc:
+                logger.debug(f"ths_member 拉取失败: {sector_code}, {exc}")
+                members = None
             if members is not None and not members.empty:
                 stock_codes = members["con_code"].dropna().unique().tolist()
         return stock_codes
@@ -1357,19 +1373,11 @@ class MarketEngine:
             mainline_members: dict[str, dict[str, Any]] = {}  # ts_code → sector info
             for sector_code in mainline_codes:
                 try:
-                    if sector_code.endswith(".SI"):
-                        members = self.pro.index_member(index_code=sector_code)
-                        if members is None or members.empty:
-                            continue
-                        valid = members["out_date"].isna() | (members["out_date"] == "") | (members["out_date"] > actual_date)
-                        codes = members[valid]["con_code"].dropna().unique().tolist()
-                    else:
-                        members = self.pro.ths_member(ts_code=sector_code)
-                        if members is None or members.empty:
-                            continue
-                        codes = members["con_code"].dropna().unique().tolist()
+                    codes = self._get_sector_member_codes(sector_code, actual_date)
                 except Exception as exc:
                     logger.debug(f"读取主线板块成分失败: {sector_code}, 错误: {exc}")
+                    codes = []
+                if not codes:
                     continue
 
                 for code in codes:
@@ -1380,17 +1388,20 @@ class MarketEngine:
                         }
 
             if not mainline_members:
-                logger.info("牛股集中营: 主线板块成分查询为空")
-                return []
-
-            # 只保留属于主线板块的股票
-            df = df[df["ts_code"].isin(mainline_members.keys())].copy()
-            if df.empty:
-                logger.info("牛股集中营: RPS250>87 且在主线板块的股票为空")
-                return []
-
-            df["sectorCode"] = df["ts_code"].map(lambda c: mainline_members[c]["sectorCode"])
-            df["sectorName"] = df["ts_code"].map(lambda c: mainline_members[c]["sectorName"])
+                logger.warning("牛股集中营: 主线板块成分查询为空，降级为高RPS候选池")
+                df["sectorCode"] = ""
+                df["sectorName"] = "候选池"
+            else:
+                # 只保留属于主线板块的股票；若为空则降级为候选池，避免整页空白
+                df_mainline = df[df["ts_code"].isin(mainline_members.keys())].copy()
+                if df_mainline.empty:
+                    logger.warning("牛股集中营: 主线交集为空，降级为高RPS候选池")
+                    df["sectorCode"] = ""
+                    df["sectorName"] = "候选池"
+                else:
+                    df = df_mainline
+                    df["sectorCode"] = df["ts_code"].map(lambda c: mainline_members[c]["sectorCode"])
+                    df["sectorName"] = df["ts_code"].map(lambda c: mainline_members[c]["sectorName"])
 
             # ── 计算综合评分 ──
             def minmax(s: pd.Series) -> pd.Series:
@@ -1915,8 +1926,13 @@ class MarketEngine:
         """确保同花顺概念板块成分股映射已缓存到 SQLite，返回 (sector→[stocks], sector→name)"""
         # 先查内存缓存
         cached = self._cache.get("_ths_members")
-        if cached and time.time() - cached[0] < 86400:  # 24 小时
-            return cached[1]
+        if cached:
+            age = time.time() - cached[0]
+            mapping_cached, names_cached = cached[1]
+            # 非空映射缓存 24h；空映射只短缓存，避免“空结果锁死一天”
+            max_age = 86400 if (mapping_cached or names_cached) else 60
+            if age < max_age:
+                return cached[1]
 
         # 查 SQLite
         stored = self._data_store.get_json("ths_members", "all", max_age_hours=24)
@@ -1928,6 +1944,16 @@ class MarketEngine:
             logger.info(f"同花顺成分股映射从缓存加载: {len(mapping)} 个板块")
             self._mark_source("ths_members", True, detail="cache_hit", count=len(mapping))
             return result
+        # 如果明确缓存为“空映射”，优先走本地联动簇，避免频繁打远端接口造成卡顿
+        if stored and not (stored.get("mapping") or stored.get("names")):
+            local_mapping, local_names = self._build_local_correlation_clusters()
+            if local_mapping:
+                self._data_store.set_json("ths_members", "all", {"mapping": local_mapping, "names": local_names})
+                result = (local_mapping, local_names)
+                self._cache["_ths_members"] = (time.time(), result)
+                logger.warning(f"ths_members 缓存为空，启用本地联动簇映射: {len(local_mapping)} 个簇")
+                self._mark_source("local_clusters", True, detail="generated_from_empty_cache", count=len(local_mapping))
+                return result
 
         # 全量拉取：优先同花顺
         logger.info("拉取同花顺概念板块成分股映射（首次约 55 秒）...")
