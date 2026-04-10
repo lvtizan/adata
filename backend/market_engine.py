@@ -171,10 +171,11 @@ class MarketEngine:
     def trade_dates(self, end_date: str, need: int = 80) -> list[str]:
         def _load():
             logger.debug(f"加载交易日历: {end_date}")
+            lookback_days = max(220, int(need * 2.4))
             try:
                 cal = self.pro.trade_cal(
                     exchange="SSE",
-                    start_date=(pd.Timestamp(end_date) - pd.Timedelta(days=220)).strftime("%Y%m%d"),
+                    start_date=(pd.Timestamp(end_date) - pd.Timedelta(days=lookback_days)).strftime("%Y%m%d"),
                     end_date=end_date,
                     fields="cal_date,is_open",
                 )
@@ -2183,37 +2184,81 @@ class MarketEngine:
     def stock_kline_ashare(self, ts_code: str, frequency: str = "1d", bars: int = 180) -> dict[str, Any]:
         """用 Ashare 获取日/周/月线（支持盘中实时），5 分钟缓存"""
         cache_key = f"kline_ashare:{ts_code}:{frequency}:{bars}"
+        local_cache_key = f"{ts_code}:{frequency}:{bars}"
+        minute_mode = bool(re.match(r"^\d+m$", frequency))
 
         def _load() -> dict[str, Any]:
-            try:
-                from ashare import get_price
-            except ImportError:
-                logger.warning("Ashare 未安装")
-                return {"code": ts_code, "name": ts_code, "points": []}
-            # ts_code 格式: 600519.SH → sh600519
-            pure = ts_code.split(".")[0]
-            suffix = ts_code.split(".")[-1] if "." in ts_code else ""
-            prefix = "sh" if suffix == "SH" else "sz" if suffix == "SZ" else ""
-            ashare_code = prefix + pure
-            try:
-                df = get_price(ashare_code, frequency=frequency, count=bars)
-            except Exception as exc:
-                logger.warning(f"Ashare 获取失败: {ts_code} {frequency}, {exc}")
-                return {"code": ts_code, "name": ts_code, "points": []}
-            if df is None or df.empty:
-                return {"code": ts_code, "name": ts_code, "points": []}
+            cached_df = self._data_store.get_frame("stock_kline_ashare", local_cache_key)
+            if (
+                cached_df is not None
+                and not cached_df.empty
+                and minute_mode
+                and "trade_date" in cached_df.columns
+                and cached_df["trade_date"].astype(str).str.len().max() <= 8
+            ):
+                # 历史缓存里分钟线时间被截断为 YYYYMMDD，判定为脏缓存并强制刷新
+                cached_df = None
+            if cached_df is not None and not cached_df.empty:
+                df_norm = cached_df.copy()
+            else:
+                try:
+                    from ashare import get_price
+                except ImportError:
+                    logger.warning("Ashare 未安装")
+                    return {"code": ts_code, "name": ts_code, "points": []}
+                # ts_code 格式: 600519.SH → sh600519
+                pure = ts_code.split(".")[0]
+                suffix = ts_code.split(".")[-1] if "." in ts_code else ""
+                prefix = "sh" if suffix == "SH" else "sz" if suffix == "SZ" else ""
+                ashare_code = prefix + pure
+                try:
+                    df = get_price(ashare_code, frequency=frequency, count=bars)
+                except Exception as exc:
+                    logger.warning(f"Ashare 获取失败: {ts_code} {frequency}, {exc}")
+                    df = None
+
+                if (df is None or df.empty) and frequency == "1d":
+                    local_daily = self._stock_kline_daily_from_snapshots(ts_code, bars=bars)
+                    if local_daily is not None and not local_daily.empty:
+                        logger.info(f"个股日K回退本地快照成功: {ts_code}, bars={bars}")
+                        df_norm = local_daily
+                    else:
+                        return {"code": ts_code, "name": ts_code, "points": []}
+                elif df is None or df.empty:
+                    return {"code": ts_code, "name": ts_code, "points": []}
+
+                if df is not None and not df.empty:
+                    def _fmt_idx(idx: Any) -> str:
+                        if hasattr(idx, "strftime"):
+                            return idx.strftime("%Y%m%d%H%M") if minute_mode else idx.strftime("%Y%m%d")
+                        s = str(idx).replace("-", "").replace(":", "").replace(" ", "")
+                        return s[:12] if minute_mode else s[:8]
+
+                    df_norm = pd.DataFrame(
+                        {
+                            "trade_date": [_fmt_idx(idx) for idx in df.index],
+                            "open": pd.to_numeric(df["open"], errors="coerce"),
+                            "high": pd.to_numeric(df["high"], errors="coerce"),
+                            "low": pd.to_numeric(df["low"], errors="coerce"),
+                            "close": pd.to_numeric(df["close"], errors="coerce"),
+                            "volume": pd.to_numeric(df["volume"], errors="coerce"),
+                            "amount": 0.0,
+                        }
+                    ).dropna(subset=["trade_date", "open", "high", "low", "close", "volume"])
+                if not df_norm.empty:
+                    self._data_store.set_frame("stock_kline_ashare", local_cache_key, df_norm)
+
             name = self.stock_name_map().get(ts_code, ts_code)
             points = []
-            for idx_time, r in df.iterrows():
-                t = idx_time.strftime("%Y%m%d") if hasattr(idx_time, "strftime") else str(idx_time)[:10].replace("-", "")
+            for _, r in df_norm.iterrows():
                 points.append({
-                    "time": t,
+                    "time": str(r["trade_date"]),
                     "open": float(r["open"]),
                     "high": float(r["high"]),
                     "low": float(r["low"]),
                     "close": float(r["close"]),
                     "volume": float(r["volume"]),
-                    "amount": 0.0,
+                    "amount": float(r["amount"]) if "amount" in r else 0.0,
                 })
 
             # 日线：追加今天的实时 bar（新浪行情）
@@ -2229,6 +2274,48 @@ class MarketEngine:
             return {"code": ts_code, "name": name, "points": points, "frequency": frequency}
 
         return self._cached(cache_key, 300, _load)
+
+    def _stock_kline_daily_from_snapshots(self, ts_code: str, bars: int = 180) -> pd.DataFrame:
+        """当在线源不可用时，使用本地 stock_snapshot 重建个股日K."""
+        all_dates = self._cached_snapshot_dates("stock_snapshot")
+        if not all_dates:
+            return pd.DataFrame()
+
+        lookback_dates = all_dates[-max(int(bars * 2), 320) :]
+        snapshots = self.stock_snapshot_batch(lookback_dates)
+        rows: list[dict[str, Any]] = []
+        for d in lookback_dates:
+            frame = snapshots.get(d)
+            if frame is None or frame.empty or "ts_code" not in frame.columns:
+                continue
+            hit = frame[frame["ts_code"] == ts_code]
+            if hit.empty:
+                continue
+            row = hit.iloc[0]
+            try:
+                o = float(row.get("open", 0) or 0)
+                h = float(row.get("high", 0) or 0)
+                l = float(row.get("low", 0) or 0)
+                c = float(row.get("close", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            if o <= 0 or h <= 0 or l <= 0 or c <= 0:
+                continue
+            rows.append(
+                {
+                    "trade_date": str(d),
+                    "open": o,
+                    "high": h,
+                    "low": l,
+                    "close": c,
+                    "volume": float(row.get("vol", 0) or 0),
+                    "amount": float(row.get("amount", 0) or 0),
+                }
+            )
+        if not rows:
+            return pd.DataFrame()
+        out = pd.DataFrame(rows).drop_duplicates(subset=["trade_date"], keep="last").sort_values("trade_date")
+        return out.tail(max(1, int(bars))).reset_index(drop=True)
 
     def _fetch_today_bar(self, ts_code: str) -> dict[str, Any] | None:
         """从新浪获取今日实时 OHLCV bar"""
@@ -2283,22 +2370,29 @@ class MarketEngine:
 
     def stock_kline(self, ts_code: str, trade_date: str, bars: int = 180) -> dict[str, Any]:
         cache_key = f"kline:{ts_code}:{trade_date}:{bars}"
+        local_cache_key = f"{ts_code}:{trade_date}:{bars}"
 
         def _load() -> dict[str, Any]:
-            dates = self.trade_dates(trade_date, need=max(bars + 30, 220))
-            start = dates[-bars] if len(dates) >= bars else dates[0]
-            try:
-                df = ts.pro_bar(
-                    ts_code=ts_code,
-                    api=self.pro,
-                    adj="qfq",
-                    start_date=start,
-                    end_date=trade_date,
-                    asset="E",
-                )
-            except Exception as exc:
-                logger.warning(f"前复权日线加载失败，降级原始日线: {ts_code}, 错误: {exc}")
-                df = self.pro.daily(ts_code=ts_code, start_date=start, end_date=trade_date)
+            cached_df = self._data_store.get_frame("stock_kline_qfq", local_cache_key)
+            if cached_df is not None and not cached_df.empty:
+                df = cached_df.copy()
+            else:
+                dates = self.trade_dates(trade_date, need=max(bars + 30, 220))
+                start = dates[-bars] if len(dates) >= bars else dates[0]
+                try:
+                    df = ts.pro_bar(
+                        ts_code=ts_code,
+                        api=self.pro,
+                        adj="qfq",
+                        start_date=start,
+                        end_date=trade_date,
+                        asset="E",
+                    )
+                except Exception as exc:
+                    logger.warning(f"前复权日线加载失败，降级原始日线: {ts_code}, 错误: {exc}")
+                    df = self.pro.daily(ts_code=ts_code, start_date=start, end_date=trade_date)
+                if df is not None and not df.empty:
+                    self._data_store.set_frame("stock_kline_qfq", local_cache_key, df)
             if df is None or df.empty:
                 return {"code": ts_code, "name": ts_code, "points": []}
             df = df.sort_values("trade_date").reset_index(drop=True)
@@ -2333,6 +2427,255 @@ class MarketEngine:
             return {"code": ts_code, "name": name, "points": points, "fengSignals": feng_signals}
 
         return self._cached(cache_key, 300, _load)
+
+    def _detect_5m_patterns(self, points: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """从5分钟K中检测最近一个双底和双顶信号，用于图上标注"""
+        signals: list[dict[str, Any]] = []
+        n = len(points)
+        if n < 40:
+            return signals
+
+        low_arr = np.array([float(x.get("low", 0) or 0) for x in points], dtype=float)
+        high_arr = np.array([float(x.get("high", 0) or 0) for x in points], dtype=float)
+        if np.any(low_arr <= 0) or np.any(high_arr <= 0):
+            return signals
+
+        local_lows: list[int] = []
+        local_highs: list[int] = []
+        for i in range(2, n - 2):
+            if low_arr[i] <= float(np.min(low_arr[i - 2 : i + 3])):
+                local_lows.append(i)
+            if high_arr[i] >= float(np.max(high_arr[i - 2 : i + 3])):
+                local_highs.append(i)
+
+        found_w = False
+        for j in range(len(local_lows) - 1, 0, -1):
+            i2 = local_lows[j]
+            for i in range(j - 1, -1, -1):
+                i1 = local_lows[i]
+                span = i2 - i1
+                if span < 12 or span > 140:
+                    continue
+                p1, p2 = low_arr[i1], low_arr[i2]
+                base = (p1 + p2) / 2.0
+                if base <= 0 or abs(p1 - p2) / base > 0.025:
+                    continue
+                mid_high = float(np.max(high_arr[i1 : i2 + 1]))
+                if (mid_high - max(p1, p2)) / max(p1, p2) < 0.015:
+                    continue
+                signals.append(
+                    {
+                        "date": str(points[i2].get("time", "")),
+                        "type": "h2_w",
+                        "label": "W",
+                        "price": round(float(p2), 2),
+                        "highPrice": round(mid_high, 2),
+                    }
+                )
+                found_w = True
+                break
+            if found_w:
+                break
+
+        found_top = False
+        for j in range(len(local_highs) - 1, 0, -1):
+            i2 = local_highs[j]
+            for i in range(j - 1, -1, -1):
+                i1 = local_highs[i]
+                span = i2 - i1
+                if span < 12 or span > 140:
+                    continue
+                p1, p2 = high_arr[i1], high_arr[i2]
+                base = (p1 + p2) / 2.0
+                if base <= 0 or abs(p1 - p2) / base > 0.025:
+                    continue
+                valley = float(np.min(low_arr[i1 : i2 + 1]))
+                if valley <= 0 or (min(p1, p2) - valley) / valley < 0.015:
+                    continue
+                signals.append(
+                    {
+                        "date": str(points[i2].get("time", "")),
+                        "type": "doubleTop",
+                        "label": "双顶",
+                        "price": round(float(p2), 2),
+                        "lowPrice": round(valley, 2),
+                    }
+                )
+                found_top = True
+                break
+            if found_top:
+                break
+
+        return signals
+
+    def stock_kline_5m_synthetic(self, ts_code: str, trade_date: str, bars: int = 240) -> dict[str, Any]:
+        """上证5分钟：优先真实分钟线，失败时回退日K合成"""
+        cache_key = f"kline_5m_synth:{ts_code}:{trade_date}:{bars}"
+
+        def _load() -> dict[str, Any]:
+            try:
+                # 1) 优先用真实5分钟
+                real_5m = self.stock_kline_ashare(ts_code, "5m", bars=bars)
+                real_points = list(real_5m.get("points", [])) if isinstance(real_5m, dict) else []
+                if real_points and any(len(str(p.get("time", ""))) >= 12 for p in real_points):
+                    signals = self._detect_5m_patterns(real_points)
+                    return {
+                        "code": real_5m.get("code", ts_code),
+                        "name": real_5m.get("name", ts_code),
+                        "points": real_points[-bars:],
+                        "signals": signals,
+                        "frequency": "5m",
+                        "synthetic": False,
+                        "sourceFrequency": "5m",
+                    }
+
+                # 2) 回退为日K合成5分钟
+                day_bars = max(int(bars / 48) + 12, 30)
+                daily = self.stock_kline_ashare(ts_code, "1d", bars=day_bars)
+                daily_points = list(daily.get("points", [])) if isinstance(daily, dict) else []
+
+                if not daily_points:
+                    # 上证指数是指数代码，优先走 index 日线，避免走个股接口导致异常
+                    daily_fallback: dict[str, Any]
+                    try:
+                        if ts_code == "000001.SH":
+                            daily_fallback = self.index_kline(ts_code, trade_date, bars=day_bars)
+                        else:
+                            daily_fallback = self.stock_kline(ts_code, trade_date, bars=day_bars)
+                    except Exception as exc:
+                        logger.warning(f"5m合成日线回退失败: {ts_code}, 错误: {exc}")
+                        daily_fallback = {"code": ts_code, "name": ts_code, "points": []}
+
+                    daily_points = list(daily_fallback.get("points", [])) if isinstance(daily_fallback, dict) else []
+                    if not daily_points:
+                        return {"code": ts_code, "name": ts_code, "points": [], "frequency": "5m", "synthetic": True}
+
+                daily_points = [p for p in daily_points if str(p.get("time", "")) <= trade_date][-day_bars:]
+                if not daily_points:
+                    return {
+                        "code": daily.get("code", ts_code),
+                        "name": daily.get("name", ts_code),
+                        "points": [],
+                        "frequency": "5m",
+                        "synthetic": True,
+                    }
+            except Exception as exc:
+                logger.warning(f"5m合成异常: {ts_code}, 错误: {exc}")
+                return {"code": ts_code, "name": ts_code, "points": [], "frequency": "5m", "synthetic": True}
+
+            out: list[dict[str, Any]] = []
+
+            def _session_times(d: str) -> list[str]:
+                morning = [f"{d}{h:02d}{m:02d}" for h, m in (
+                    (9, 35), (9, 40), (9, 45), (9, 50), (9, 55),
+                    (10, 0), (10, 5), (10, 10), (10, 15), (10, 20), (10, 25), (10, 30),
+                    (10, 35), (10, 40), (10, 45), (10, 50), (10, 55),
+                    (11, 0), (11, 5), (11, 10), (11, 15), (11, 20), (11, 25), (11, 30),
+                )]
+                afternoon = [f"{d}{h:02d}{m:02d}" for h, m in (
+                    (13, 5), (13, 10), (13, 15), (13, 20), (13, 25), (13, 30), (13, 35), (13, 40),
+                    (13, 45), (13, 50), (13, 55), (14, 0), (14, 5), (14, 10), (14, 15), (14, 20),
+                    (14, 25), (14, 30), (14, 35), (14, 40), (14, 45), (14, 50), (14, 55), (15, 0),
+                )]
+                return morning + afternoon
+
+            for d in daily_points:
+                day = str(d.get("time", ""))
+                if len(day) < 8:
+                    continue
+                day = day[:8]
+                o = float(d.get("open", 0) or 0)
+                h = float(d.get("high", 0) or 0)
+                l = float(d.get("low", 0) or 0)
+                c = float(d.get("close", 0) or 0)
+                v = float(d.get("volume", 0) or 0)
+                if h <= 0 or l <= 0 or o <= 0 or c <= 0:
+                    continue
+                if h < l:
+                    h, l = l, h
+
+                # 先构造“收盘轨迹”：经过 O/H/L/C，保持每日日K一致
+                if c >= o:
+                    low_slot, high_slot = 6, 36
+                    anchors = [(0, o), (low_slot, l), (high_slot, h), (47, c)]
+                else:
+                    high_slot, low_slot = 6, 36
+                    anchors = [(0, o), (high_slot, h), (low_slot, l), (47, c)]
+
+                close_path = np.zeros(48, dtype=float)
+                for i in range(len(anchors) - 1):
+                    s_idx, s_val = anchors[i]
+                    e_idx, e_val = anchors[i + 1]
+                    if e_idx <= s_idx:
+                        continue
+                    seg = np.linspace(s_val, e_val, e_idx - s_idx + 1)
+                    close_path[s_idx : e_idx + 1] = seg
+
+                # 轻微波动，避免生成“机械直线”
+                amp = max((h - l) * 0.02, 0.001)
+                noise = np.sin(np.linspace(0, np.pi * 2, 48)) * amp
+                close_path = np.clip(close_path + noise, l, h)
+                close_path[0] = o
+                close_path[low_slot] = l
+                close_path[high_slot] = h
+                close_path[-1] = c
+
+                # 分配成交量：开盘、收盘及极值附近更活跃
+                idx = np.arange(48, dtype=float)
+                weights = (
+                    1.0
+                    + 1.6 * np.exp(-((idx - 0) / 6.0) ** 2)
+                    + 1.6 * np.exp(-((idx - 47) / 6.0) ** 2)
+                    + 0.9 * np.exp(-((idx - low_slot) / 7.0) ** 2)
+                    + 0.9 * np.exp(-((idx - high_slot) / 7.0) ** 2)
+                )
+                weights = weights / weights.sum()
+                vols = v * weights
+
+                prev_close = o
+                for i, t in enumerate(_session_times(day)):
+                    ci = float(close_path[i])
+                    oi = float(prev_close)
+                    span = max(abs(ci - oi), (h - l) * 0.003)
+                    hi = min(h, max(oi, ci) + span * 0.45)
+                    lo = max(l, min(oi, ci) - span * 0.45)
+                    if i == high_slot:
+                        hi = h
+                    if i == low_slot:
+                        lo = l
+                    if lo > hi:
+                        lo, hi = hi, lo
+                    vol_i = float(vols[i])
+                    out.append(
+                        {
+                            "time": t,
+                            "open": round(oi, 2),
+                            "high": round(hi, 2),
+                            "low": round(lo, 2),
+                            "close": round(ci, 2),
+                            "volume": max(vol_i, 0.0),
+                            "amount": round(max(vol_i, 0.0) * ((oi + ci) / 2.0), 2),
+                        }
+                    )
+                    prev_close = ci
+
+            points_out = out[-bars:]
+            signals = self._detect_5m_patterns(points_out)
+            if points_out:
+                first_time = str(points_out[0]["time"])
+                signals = [s for s in signals if str(s.get("date", "")) >= first_time]
+
+            return {
+                "code": daily.get("code", ts_code),
+                "name": daily.get("name", ts_code),
+                "points": points_out,
+                "signals": signals,
+                "frequency": "5m",
+                "synthetic": True,
+                "sourceFrequency": "1d",
+            }
+
+        return self._cached(cache_key, 60, _load)
 
     def index_kline(self, ts_code: str, trade_date: str, bars: int = 180) -> dict[str, Any]:
         """获取指数K线数据，支持 A 股指数 (.SH/.SZ/.CSI) 和同花顺指数 (.TI)"""
