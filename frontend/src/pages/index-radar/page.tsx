@@ -49,7 +49,7 @@ export default function IndexRadarPage() {
       <div className="flex-1 min-h-0 overflow-auto">
         {tab === "compare" ? (
           <div className="p-4">
-            <IndexComparePanel />
+            <IndexComparePanel mainlines={overview?.mainlines ?? []} />
           </div>
         ) : (
           <IndexRiskPanel />

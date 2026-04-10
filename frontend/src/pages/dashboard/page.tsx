@@ -9,6 +9,8 @@ import { WatchlistChart } from "@/features/watchlist/components/watchlist-chart"
 import { ChartShell } from "@/shared/charts";
 import { useNavigate } from "react-router-dom";
 import { ChevronLeft, ChevronRight } from "lucide-react";
+import { DrawingToolbar } from "@/features/chart/components/drawing-toolbar";
+import { DrawingsPanel } from "@/features/chart/components/drawings-panel";
 
 /**
  * 基于百分比的弹性列宽 hook。
@@ -89,6 +91,17 @@ export default function DashboardPage() {
 
   const selectedSector = rankings.find((s) => s.sectorCode === selectedSectorCode);
   const selectedStock = stocks.find((s) => s.tsCode === selectedStockCode);
+  const [drawingTool, setDrawingTool] = useState<string | null>(null);
+  const [selectedOverlay, setSelectedOverlay] = useState<{ id: string | null; locked: boolean; name: string | null }>({ id: null, locked: false, name: null });
+  const [drawings, setDrawings] = useState<Array<{ id: string; name: string; lock: boolean; points: number; label?: string }>>([]);
+
+  function emitDrawingAction(
+    action: "deleteSelected" | "clearAll" | "toggleLock" | "addSupportAtClose" | "addResistanceAtClose" | "addTagAtLatest" | "deleteById" | "toggleLockById",
+    detail: Record<string, unknown> = {},
+  ) {
+    if (!selectedStock?.tsCode) return;
+    window.dispatchEvent(new CustomEvent(`chart-drawing:${selectedStock.tsCode}`, { detail: { action, ...detail } }));
+  }
 
   return (
     <div className="flex flex-col h-full">
@@ -171,12 +184,48 @@ export default function DashboardPage() {
                 className="h-full"
               >
                 {selectedStock?.tsCode ? (
-                  <WatchlistChart
-                    key={selectedStock.tsCode}
-                    tsCode={selectedStock.tsCode}
-                    sectorCode={selectedSector?.sectorCode || ""}
-                    stockName={selectedStock.stockName}
-                  />
+                  <div className="h-full flex flex-col min-h-0">
+                    <div className="border-b border-border-default py-1">
+                      <DrawingToolbar
+                        activeTool={drawingTool}
+                        selectedOverlayId={selectedOverlay.id}
+                        selectedOverlayName={selectedOverlay.name}
+                        selectedOverlayLocked={selectedOverlay.locked}
+                        overlays={drawings}
+                        onToolSelect={setDrawingTool}
+                        onDeleteSelected={() => emitDrawingAction("deleteSelected")}
+                        onClearAll={() => emitDrawingAction("clearAll")}
+                        onToggleLock={() => emitDrawingAction("toggleLock")}
+                        onDeleteOverlay={(id) => emitDrawingAction("deleteById", { overlayId: id })}
+                        onToggleOverlayLock={(id, nextLocked) => emitDrawingAction("toggleLockById", { overlayId: id, nextLocked })}
+                        onAddSupportTemplate={() => emitDrawingAction("addSupportAtClose")}
+                        onAddResistanceTemplate={() => emitDrawingAction("addResistanceAtClose")}
+                        onAddTagTemplate={() => emitDrawingAction("addTagAtLatest")}
+                      />
+                    </div>
+                    <div className="flex-1 min-h-0 flex">
+                      <div className="flex-1 min-w-0">
+                        <WatchlistChart
+                          key={selectedStock.tsCode}
+                          tsCode={selectedStock.tsCode}
+                          sectorCode={selectedSector?.sectorCode || ""}
+                          stockName={selectedStock.stockName}
+                          activeTool={drawingTool}
+                          onSelectionChange={setSelectedOverlay}
+                          onDrawingsChange={setDrawings}
+                        />
+                      </div>
+                      <div className="w-[220px] border-l border-border-default p-2 overflow-auto">
+                        <DrawingsPanel
+                          items={drawings}
+                          selectedId={selectedOverlay.id}
+                          selectedName={selectedOverlay.name}
+                          onDelete={(id) => emitDrawingAction("deleteById", { overlayId: id })}
+                          onToggleLock={(id, nextLocked) => emitDrawingAction("toggleLockById", { overlayId: id, nextLocked })}
+                        />
+                      </div>
+                    </div>
+                  </div>
                 ) : (
                   <div />
                 )}

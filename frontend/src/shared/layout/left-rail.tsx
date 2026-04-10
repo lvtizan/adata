@@ -7,12 +7,19 @@ interface LeftRailItem {
   onClick?: () => void;
 }
 
+interface LeftRailSection {
+  title: string;
+  items: LeftRailItem[];
+}
+
 interface LeftRailProps {
   items?: LeftRailItem[];
+  sections?: LeftRailSection[];
   children?: React.ReactNode;
 }
 
-export function LeftRail({ items = [], children }: LeftRailProps) {
+export function LeftRail({ items = [], sections = [], children }: LeftRailProps) {
+  const grouped = sections.length > 0;
   return (
     <aside className="w-[196px] border-r border-[#e8ebf2] bg-[#f4f6fb] flex flex-col py-3 px-2.5 gap-1 shrink-0">
       <div className="mb-2 flex items-center gap-2 px-2">
@@ -30,19 +37,40 @@ export function LeftRail({ items = [], children }: LeftRailProps) {
           <div className="text-sm font-semibold leading-tight text-[#111827] truncate">A数据</div>
         </div>
       </div>
-      {items.map((item, i) => (
-        <button
-          key={i}
-          onClick={item.onClick}
-          className={cn(
-            "w-full h-9 px-2.5 flex items-center gap-2.5 rounded-md text-left text-[#4a4a4a] hover:text-[#1f1f1f] hover:bg-white transition-colors",
-            item.active && "text-[#111] bg-white border border-[#e9edf5] shadow-[0_1px_2px_rgba(15,23,42,0.04)]"
-          )}
-        >
-          <span className="w-4 h-4 inline-flex items-center justify-center">{item.icon}</span>
-          <span className="text-[15px] leading-none font-normal tracking-[0.005em]">{item.label}</span>
-        </button>
-      ))}
+      {grouped ? (
+        sections.map((section) => (
+          <div key={section.title} className="mb-1">
+            <div className="px-2.5 py-1 text-[11px] text-[#8b94a7] tracking-[0.06em]">{section.title}</div>
+            {section.items.map((item, i) => (
+              <button
+                key={`${section.title}-${i}`}
+                onClick={item.onClick}
+                className={cn(
+                  "w-full h-9 px-2.5 flex items-center gap-2.5 rounded-md text-left text-[#4a4a4a] hover:text-[#1f1f1f] hover:bg-white transition-colors",
+                  item.active && "text-[#111] bg-white border border-[#e9edf5] shadow-[0_1px_2px_rgba(15,23,42,0.04)]"
+                )}
+              >
+                <span className="w-4 h-4 inline-flex items-center justify-center">{item.icon}</span>
+                <span className="text-[15px] leading-none font-normal tracking-[0.005em]">{item.label}</span>
+              </button>
+            ))}
+          </div>
+        ))
+      ) : (
+        items.map((item, i) => (
+          <button
+            key={i}
+            onClick={item.onClick}
+            className={cn(
+              "w-full h-9 px-2.5 flex items-center gap-2.5 rounded-md text-left text-[#4a4a4a] hover:text-[#1f1f1f] hover:bg-white transition-colors",
+              item.active && "text-[#111] bg-white border border-[#e9edf5] shadow-[0_1px_2px_rgba(15,23,42,0.04)]"
+            )}
+          >
+            <span className="w-4 h-4 inline-flex items-center justify-center">{item.icon}</span>
+            <span className="text-[15px] leading-none font-normal tracking-[0.005em]">{item.label}</span>
+          </button>
+        ))
+      )}
       {children}
     </aside>
   );

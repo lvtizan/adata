@@ -2,11 +2,10 @@ import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import { AppShell, TopBar, BottomBar, LeftRail } from "@/shared/layout";
 import { AiResearchPanel } from "@/shared/layout/ai-research-panel";
 import { useMarketOverview, useBullCamp, useWatchlist } from "@/queries";
-import { Activity, BarChart3, Eye, Flame, Settings, Crosshair, FileText, TrendingUp, LayoutPanelTop, GitCommit, Newspaper, ClipboardList, BookMarked } from "lucide-react";
+import { Activity, BarChart3, Eye, Flame, Settings, Crosshair, FileText, TrendingUp, GitCommit, Newspaper, ClipboardList, BookMarked } from "lucide-react";
 
 const navItems = [
   { path: "/intraday", label: "盘中观察", icon: TrendingUp },
-  { path: "/market-overview", label: "市场总览", icon: LayoutPanelTop },
   { path: "/dashboard", label: "板块分析", icon: BarChart3 },
   { path: "/index-radar", label: "指数雷达", icon: Activity },
   { path: "/watchlist", label: "自选股", icon: Eye },
@@ -18,6 +17,25 @@ const navItems = [
   { path: "/core-mainline", label: "核心主线", icon: BookMarked },
   { path: "/trade-plan", label: "交易计划", icon: ClipboardList },
   { path: "/settings", label: "设置", icon: Settings },
+];
+
+const navGroups = [
+  {
+    title: "实时",
+    paths: ["/intraday", "/dashboard", "/index-radar"],
+  },
+  {
+    title: "交易",
+    paths: ["/watchlist", "/bullcamp", "/hh-scan", "/stock-compare", "/core-mainline", "/trade-plan"],
+  },
+  {
+    title: "复盘",
+    paths: ["/market-recap", "/morning-brief"],
+  },
+  {
+    title: "系统",
+    paths: ["/settings"],
+  },
 ];
 
 export function RootLayout() {
@@ -43,11 +61,17 @@ export function RootLayout() {
       }
       leftRail={
         <LeftRail
-          items={navItems.map((item) => ({
-            label: item.label,
-            icon: <item.icon className="w-4 h-4" />,
-            active: isActive(item.path),
-            onClick: () => navigate(item.path),
+          sections={navGroups.map((group) => ({
+            title: group.title,
+            items: group.paths
+              .map((path) => navItems.find((item) => item.path === path))
+              .filter((item): item is (typeof navItems)[number] => !!item)
+              .map((item) => ({
+                label: item.label,
+                icon: <item.icon className="w-4 h-4" />,
+                active: isActive(item.path),
+                onClick: () => navigate(item.path),
+              })),
           }))}
         />
       }

@@ -348,82 +348,112 @@ def detect_hh_signals(df: pd.DataFrame, swing_window: int = 5, lookback: int = 1
             r_info["lastDate"] = str(dates[res["lastIndex"]])
         resistance_output.append(r_info)
 
-    # ── 2. 在每个支撑位数 HH (Higher High) ──
-    # 以支撑位触发的上涨结构为基础：
-    #   第一个 swing high 作为基准高点
-    #   后续每一个更高的 swing high 依次记作 H1 / H2 / ...
-    # 这样既能避免把每次小反包都记成 H，也与图上 HH 标记保持一致
+    # ── 2. 仅用“最近重要支撑”做一轮 H1→H2，避免重复 H1/H2/H3 ──
     signals: list[dict[str, Any]] = []
-    used_bars: set[int] = set()  # 避免同一根 K 线被多个支撑重复标记
+    # 优先最近且多次触碰的强支撑；没有强支撑就用最近支撑
+    strong_candidates = [s for s in support_levels if s.get("count", 0) >= 2]
+    picked = max(strong_candidates or support_levels, key=lambda s: s.get("lastIndex", -1))
+    sup_price = float(picked["price"])
+    tol = sup_price * 0.05
+    support_zone_top = float(picked.get("highPrice", sup_price)) + tol
+    support_zone_bottom = float(picked.get("lowPrice", sup_price)) - tol
 
-    for sup in support_levels:
-        sup_price = sup["price"]
-        # 定义支撑区间
-        if sup["count"] == 1:
-            support_zone_top = sup_price * 1.05
-            support_zone_bottom = sup_price * 0.95
-        else:
-            tol = sup_price * 0.05
-            support_zone_top = sup["highPrice"] + tol
-            support_zone_bottom = sup["lowPrice"] - tol
+    # 计数从所有触支撑点回测，选最近一组完整 H1/H2，避免“最后触点过晚”漏信号
+    touch_indices = sorted([idx for idx, val in swing_lows if support_zone_bottom <= val <= support_zone_top])
+    if touch_indices:
+        best_seq: list[dict[str, Any]] = []
 
-        # 找触碰支撑区间的 swing low — 这是计数起点
-        touch_indices = sorted([idx for idx, val in swing_lows
-                                if support_zone_bottom <= val <= support_zone_top])
-        if not touch_indices:
-            continue
+        for start_bar in touch_indices:
+            state = "seeking_h1"
+            has_pullback = False
+            pivot_low = float(low[start_bar])
+            seq: list[dict[str, Any]] = []
 
-        # 从最早触碰开始，寻找在该支撑之上的递增 swing high 序列
-        start_bar = touch_indices[0]
-        broken_at = None
-        for i in range(start_bar, seg_n):
-            if low[i] < support_zone_bottom:
-                broken_at = i
-                break
+            for i in range(max(start_bar + 2, 2), seg_n):
+                # H2失败后重数：跌破支撑则清空阶段，重新等待 H1
+                if low[i] < support_zone_bottom:
+                    state = "seeking_h1"
+                    has_pullback = False
+                    pivot_low = float(low[i])
+                    continue
 
-        candidate_highs = [(idx, val) for idx, val in swing_highs if idx > start_bar]
-        if broken_at is not None:
-            candidate_highs = [(idx, val) for idx, val in candidate_highs if idx < broken_at]
-        if len(candidate_highs) < 2:
-            continue
+                pivot_low = min(pivot_low, float(low[i]))
+                prev_down = (close[i - 1] < open_arr[i - 1]) or (close[i - 1] < close[i - 2]) or (high[i - 1] < high[i - 2])
+                is_bull = close[i] > open_arr[i]
+                is_engulf = close[i] > high[i - 1]  # 反包上破下跌K
 
-        baseline_idx, baseline_val = candidate_highs[0]
-        h_count = 0
-        prev_high_val = baseline_val
+                if state == "seeking_h1":
+                    if prev_down and is_bull and is_engulf:
+                        sig: dict[str, Any] = {
+                            "price": round(float(high[i]), 2),
+                            "type": "H1",
+                            "supportPrice": round(sup_price, 2),
+                        }
+                        if dates is not None and i < len(dates):
+                            sig["date"] = str(dates[i])
+                        seq.append(sig)
+                        state = "waiting_pullback_for_h2"
+                    continue
 
-        for idx, val in candidate_highs[1:]:
-            if idx in used_bars:
-                continue
-            if val <= prev_high_val:
-                continue
+                if state == "waiting_pullback_for_h2":
+                    if (close[i] < close[i - 1]) or (high[i] < high[i - 1]):
+                        has_pullback = True
+                        continue
+                    if has_pullback and prev_down and is_bull and is_engulf:
+                        volume_ratio = None
+                        is_gentle_volume = False
+                        if vol is not None and vol_ma20 is not None and i < len(vol):
+                            day_vol = vol[i]
+                            avg_vol = vol_ma20[i] if i < len(vol_ma20) and not np.isnan(vol_ma20[i]) else None
+                            if avg_vol and avg_vol > 0:
+                                volume_ratio = round(float(day_vol / avg_vol), 2)
+                                is_gentle_volume = 1.2 <= volume_ratio <= 3.0
 
-            h_count += 1
-            used_bars.add(idx)
-            prev_high_val = val
+                        sig2: dict[str, Any] = {
+                            "price": round(float(high[i]), 2),
+                            "type": "H2",
+                            "supportPrice": round(sup_price, 2),
+                        }
+                        if dates is not None and i < len(dates):
+                            sig2["date"] = str(dates[i])
+                        if volume_ratio is not None:
+                            sig2["volumeRatio"] = volume_ratio
+                        if is_gentle_volume:
+                            sig2["buySignal"] = True
+                        seq.append(sig2)
+                        # 同步映射 W 信号，供前端画双底标记
+                        sig_w: dict[str, Any] = {
+                            "price": round(float(low[i]), 2),
+                            "highPrice": round(float(high[i]), 2),
+                            "type": "doubleBottom",
+                            "label": "W",
+                            "supportPrice": round(sup_price, 2),
+                        }
+                        if dates is not None and i < len(dates):
+                            sig_w["date"] = str(dates[i])
+                        seq.append(sig_w)
+                        break
 
-            volume_ratio = None
-            is_gentle_volume = False
-            if vol is not None and vol_ma20 is not None and idx < len(vol):
-                day_vol = vol[idx]
-                avg_vol = vol_ma20[idx] if idx < len(vol_ma20) and not np.isnan(vol_ma20[idx]) else None
-                if avg_vol and avg_vol > 0:
-                    volume_ratio = round(float(day_vol / avg_vol), 2)
-                    is_gentle_volume = 1.2 <= volume_ratio <= 3.0
+            # 优先保留完整序列；若都不完整，保留最新的单 H1
+            has_h2 = any(s.get("type") == "H2" for s in seq)
+            has_h2_best = any(s.get("type") == "H2" for s in best_seq)
+            has_buy_seq = any(s.get("buySignal") for s in seq)
+            has_buy_best = any(s.get("buySignal") for s in best_seq)
+            if has_buy_seq and not has_buy_best:
+                best_seq = seq
+            elif has_buy_seq and has_buy_best:
+                if seq and best_seq and seq[-1].get("date", "") >= best_seq[-1].get("date", ""):
+                    best_seq = seq
+            elif has_h2 and not has_h2_best:
+                best_seq = seq
+            elif has_h2 and has_h2_best:
+                if seq and best_seq and seq[-1].get("date", "") >= best_seq[-1].get("date", ""):
+                    best_seq = seq
+            elif not has_h2_best and seq:
+                if not best_seq or seq[-1].get("date", "") >= best_seq[-1].get("date", ""):
+                    best_seq = seq
 
-            is_buy_signal = h_count >= 2 and is_gentle_volume
-
-            sig: dict[str, Any] = {
-                "price": round(float(high[idx]), 2),
-                "type": f"H{h_count}",
-                "supportPrice": round(sup_price, 2),
-            }
-            if dates is not None and idx < len(dates):
-                sig["date"] = str(dates[idx])
-            if volume_ratio is not None:
-                sig["volumeRatio"] = volume_ratio
-            if is_buy_signal:
-                sig["buySignal"] = True
-            signals.append(sig)
+        signals.extend(best_seq)
 
     # 按日期排序，去重（同一日期只保留一个信号）
     signals.sort(key=lambda s: s.get("date", ""))
@@ -487,11 +517,7 @@ def detect_hh_signals(df: pd.DataFrame, swing_window: int = 5, lookback: int = 1
     # 按日期重新排序用于显示
     drawdowns.sort(key=lambda d: d.get("date", ""))
 
-    if signals:
-        max_h = max(int(s.get("type", "H0").replace("H", "") or "0") for s in signals)
-        latest_hh = f"H{max_h}" if max_h > 0 else None
-    else:
-        latest_hh = None
+    latest_hh = signals[-1]["type"] if signals else None
     has_buy = any(s.get("buySignal") for s in signals)
 
     return {
@@ -1190,6 +1216,11 @@ def detect_feng_signals(df: pd.DataFrame) -> dict[str, Any]:
     """
     冯总极简交易系统：支撑位止跌 → 数K线(H1/H2) → W底确认。
 
+    关键规则：
+      1) 只有出现“下跌后在支撑附近止跌并反弹”上下文，才启动 H1/H2 计数。
+      2) H1 后必须先有回落，再出现下一次反包上破才记 H2。
+      3) H2 失败（跌破当前支撑）后，清零并重新从 H1 开始计数。
+
     返回:
       signals: [{date, price, label, ...}]  — 标注在K线图上的信号点
       buySignals: [{date, price, stopLoss, takeProfit, ...}] — 最近一个买入信号
@@ -1206,100 +1237,123 @@ def detect_feng_signals(df: pd.DataFrame) -> dict[str, Any]:
     close_arr = df["close"].values.astype(float)
     dates = df["trade_date"].values
 
-    # 支撑位 — 用聚类找真正的水平支撑
-    swing_lows = _find_swing_lows(low_arr, window=3)
-    strong_supports = _find_support_levels(low_arr, close_arr, swing_lows, tolerance=0.05)
-    # 优先使用多次触及的支撑位，如果没有则包含回退支撑位
-    multi_touch = [s["price"] for s in strong_supports if s["count"] >= 2]
-    support_prices = multi_touch if multi_touch else [s["price"] for s in strong_supports]
-
     signals: list[dict[str, Any]] = []
     buy_signals: list[dict[str, Any]] = []
-    used_bars: set[int] = set()  # 防止同一根K线被多个swing_high重复标记
 
-    # ── Al Brooks 式 H1/H2 数法 ──
-    #
-    # 逻辑：扫描波段高点，高点之后价格回调到支撑位附近时，
-    #        开始数 "今高>昨高" 的次数：
-    #        第1次 = H1（第一次尝试反转）
-    #        H1 失败后第2次 = H2 = W底确认
-    #        H2 之后价格必须站稳（后3根不破W低点），否则不算
+    recent_start = max(8, n - 120)
 
-    swing_highs = _find_swing_highs(high_arr, window=5)
+    def _has_decline_before(idx: int) -> bool:
+        if idx < 3:
+            return False
+        c1 = close_arr[idx - 1] < close_arr[idx - 2]
+        c2 = close_arr[idx - 2] < close_arr[idx - 3]
+        h1 = high_arr[idx - 1] < high_arr[idx - 2]
+        return (c1 and c2) or (c1 and h1)
 
-    for sh_idx, sh_price in swing_highs:
-        # 状态: seeking_h1 → got_h1_wait_pullback → seeking_h2
-        state = "seeking_h1"
-        h1_idx = -1
-        h1_failed = False  # H1 后是否已回落
-        pullback_low_price = sh_price
+    def _is_support_touch(idx: int) -> bool:
+        left = max(0, idx - 20)
+        window_low = float(np.min(low_arr[left:idx + 1]))
+        if window_low <= 0:
+            return False
+        # 触及最近20根低点附近（1.5% 容忍）
+        return float(low_arr[idx]) <= window_low * 1.015
 
-        for i in range(sh_idx + 1, min(sh_idx + 40, n)):
-            if low_arr[i] < pullback_low_price:
-                pullback_low_price = float(low_arr[i])
+    def _has_rebound_after(idx: int) -> bool:
+        right = min(n, idx + 5)
+        if idx + 1 >= right:
+            return False
+        rebound_high = float(np.max(high_arr[idx + 1:right]))
+        return rebound_high > float(high_arr[idx]) * 1.01
 
-            drop = (sh_price - low_arr[i]) / sh_price if sh_price > 0 else 0
-            if drop > 0.40:
-                break
-            if drop < 0.01:
-                continue
+    def _is_down_leg(idx: int) -> bool:
+        if idx < 2:
+            return False
+        return (
+            close_arr[idx - 1] <= close_arr[idx - 2]
+            or high_arr[idx - 1] <= high_arr[idx - 2]
+            or low_arr[idx - 1] <= low_arr[idx - 2]
+        )
 
-            if not _near_support(pullback_low_price, support_prices, 0.05):
-                continue
+    def _is_reversal_break(idx: int) -> bool:
+        if idx < 1:
+            return False
+        return (
+            close_arr[idx] > high_arr[idx - 1]
+            and close_arr[idx] >= open_arr[idx]
+            and high_arr[idx] > high_arr[idx - 1]
+        )
 
-            is_hh = _is_price_breakout(i, high_arr)
+    support_touch_idx = [
+        i for i in range(recent_start, n - 3)
+        if _has_decline_before(i) and _is_support_touch(i) and _has_rebound_after(i)
+    ]
+    if not support_touch_idx:
+        return {"signals": signals, "buySignals": buy_signals}
 
-            if state == "seeking_h1" and is_hh and i not in used_bars:
+    # 用“本轮最低支撑触发点”作为起始支撑，避免起点过晚漏掉 H1/H2
+    min_low = min(float(low_arr[i]) for i in support_touch_idx)
+    lowest_candidates = [i for i in support_touch_idx if abs(float(low_arr[i]) - min_low) < 1e-9]
+    start_idx = lowest_candidates[0]
+    support_floor = float(low_arr[start_idx])
+    h1_idx = None
+    h2_idx = None
+    has_pullback_after_h1 = False
+    pivot_low = float(low_arr[start_idx])
+
+    for i in range(start_idx + 2, n):
+        pivot_low = min(pivot_low, float(low_arr[i]))
+
+        # H2失败（跌破支撑）=> 重新计数 H1/H2
+        if float(low_arr[i]) < support_floor * 0.99:
+            h1_idx = None
+            h2_idx = None
+            has_pullback_after_h1 = False
+            support_floor = float(low_arr[i])
+            pivot_low = float(low_arr[i])
+            continue
+
+        if h1_idx is None:
+            if _is_down_leg(i) and _is_reversal_break(i):
                 h1_idx = i
-                used_bars.add(i)
                 signals.append({
                     "date": str(dates[i]),
                     "price": round(float(high_arr[i]), 2),
                     "label": "H1",
                     "type": "h1",
                 })
-                state = "got_h1_wait_pullback"
+            continue
 
-            elif state == "got_h1_wait_pullback":
-                # H1 后等回落：至少一根 K 线今高 <= 昨高
-                if not is_hh:
-                    state = "seeking_h2"
+        if h2_idx is None:
+            # H1后必须先出现回落
+            if i > h1_idx and (close_arr[i] < close_arr[i - 1] or high_arr[i] < high_arr[i - 1]):
+                has_pullback_after_h1 = True
+                continue
 
-            elif state == "seeking_h2" and is_hh and i not in used_bars:
-                    # 验证 W 底有效：后续 3 根 K 线不能跌破 W 的低点
-                    w_low = float(low_arr[i])
-                    valid_w = True
-                    for j in range(i + 1, min(i + 4, n)):
-                        if low_arr[j] < w_low * 0.99:  # 允许 1% 误差
-                            valid_w = False
-                            break
-                    if not valid_w:
-                        break  # W 失败，这个波段放弃
-
-                    sl = round(float(pullback_low_price), 2)
-                    entry = round(float(close_arr[i]), 2)
-                    risk = entry - sl
-                    if risk > 0:
-                        tp = round(entry + risk * 2, 2)
-                        used_bars.add(i)
-                        signals.append({
-                            "date": str(dates[i]),
-                            "price": round(float(low_arr[i]), 2),
-                            "highPrice": round(float(high_arr[i]), 2),
-                            "label": "W",
-                            "type": "h2_w",
-                        })
-                        buy_signals.append({
-                            "type": "buy",
-                            "date": str(dates[i]),
-                            "price": entry,
-                            "pattern": "wBottom",
-                            "patternLabel": "W底",
-                            "stopLoss": sl,
-                            "takeProfit": tp,
-                            "riskReward": 2.0,
-                        })
-                    break  # 这个波段高点的 H1/H2 完成，去找下一个波段高点
+            if has_pullback_after_h1 and _is_down_leg(i) and _is_reversal_break(i):
+                h2_idx = i
+                sl = round(float(pivot_low), 2)
+                entry = round(float(close_arr[i]), 2)
+                risk = entry - sl
+                if risk > 0:
+                    tp = round(entry + risk * 2, 2)
+                    signals.append({
+                        "date": str(dates[i]),
+                        "price": round(float(low_arr[i]), 2),
+                        "highPrice": round(float(high_arr[i]), 2),
+                        "label": "W",
+                        "type": "h2_w",
+                    })
+                    buy_signals.append({
+                        "type": "buy",
+                        "date": str(dates[i]),
+                        "price": entry,
+                        "pattern": "wBottom",
+                        "patternLabel": "W底",
+                        "stopLoss": sl,
+                        "takeProfit": tp,
+                        "riskReward": 2.0,
+                    })
+                break
 
     return {"signals": signals, "buySignals": buy_signals}
 
