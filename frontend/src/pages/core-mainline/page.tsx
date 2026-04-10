@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { ArrowUpRight, Database, Globe2, HardDrive, Layers3, Snowflake } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/shared/ui/tabs";
@@ -326,6 +326,7 @@ export default function CoreMainlinePage() {
   const [searchParams] = useSearchParams();
   const [activeTheme, setActiveTheme] = useState<ThemeId>("storage_chain");
   const [selectedCode, setSelectedCode] = useState<string>("");
+  const consumedQueryRef = useRef(false);
   const [drawingTool, setDrawingTool] = useState<string | null>(null);
   const [drawingColor, setDrawingColor] = useState("#3b82f6");
   const [selectedOverlay, setSelectedOverlay] = useState<{ id: string | null; locked: boolean; name: string | null }>({ id: null, locked: false, name: null });
@@ -360,7 +361,8 @@ export default function CoreMainlinePage() {
 
   useEffect(() => {
     const tsCode = searchParams.get("tsCode");
-    if (tsCode && stockMap.has(tsCode)) {
+    if (!consumedQueryRef.current && tsCode && stockMap.has(tsCode)) {
+      consumedQueryRef.current = true;
       setSelectedCode(tsCode);
       const matchTheme = THEMES.find((t) => t.stocks.some((s) => s.tsCode === tsCode));
       if (matchTheme) setActiveTheme(matchTheme.id);
@@ -433,29 +435,34 @@ export default function CoreMainlinePage() {
                 </div>
               )}
               {theme.stocks.map((stock) => {
-                const pct = quoteMap?.get(stock.tsCode);
+                const pct = quoteMap?.get(stock.tsCode)?.pctChange;
                 const rs = rsMap.get(stock.tsCode);
                 const selected = stock.tsCode === selectedCode;
                 return (
                   <div
                     key={stock.tsCode}
                     className={cn(
-                      "rounded-xl border mb-3 p-3 transition-all",
+                      "rounded-xl border mb-3 p-3 transition-all cursor-pointer",
                       selected ? "border-sky-300 bg-sky-50/60" : "border-border-default bg-canvas hover:bg-surface-hover/40",
                     )}
+                    onClick={() => setSelectedCode(stock.tsCode)}
+                    role="button"
+                    tabIndex={0}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        setSelectedCode(stock.tsCode);
+                      }
+                    }}
                   >
                     <div className="flex items-start justify-between gap-2">
-                      <button
-                        className="text-left group"
-                        onClick={() => setSelectedCode(stock.tsCode)}
-                        title="点击查看右侧K线"
-                      >
+                      <div className="text-left group" title="点击查看右侧K线">
                         <div className="text-sm font-semibold flex items-center gap-1.5">
                           {stock.stockName}
                           <ArrowUpRight className="w-3.5 h-3.5 text-sky-600 opacity-80 group-hover:opacity-100" />
                         </div>
                         <div className="text-[10px] text-text-tertiary font-mono mt-0.5">{stock.tsCode}</div>
-                      </button>
+                      </div>
                       <span className={cn("text-[10px] px-2 py-0.5 rounded-full border", tierClass(stock.tier))}>{stock.tier}</span>
                     </div>
                     <div className="mt-2.5 flex items-center gap-3 text-xs">
@@ -501,8 +508,8 @@ export default function CoreMainlinePage() {
                   </div>
                 </div>
                 <div className="ml-auto flex items-center gap-3 text-xs">
-                  <span className={cn("font-mono", (quoteMap?.get(selectedStock.tsCode) ?? 0) >= 0 ? "text-state-up" : "text-state-down")}>
-                    当日: {quoteMap?.get(selectedStock.tsCode) == null ? "--" : fmtPct(quoteMap.get(selectedStock.tsCode) as number)}
+                  <span className={cn("font-mono", (quoteMap?.get(selectedStock.tsCode)?.pctChange ?? 0) >= 0 ? "text-state-up" : "text-state-down")}>
+                    当日: {quoteMap?.get(selectedStock.tsCode)?.pctChange == null ? "--" : fmtPct(quoteMap.get(selectedStock.tsCode)?.pctChange as number)}
                   </span>
                   <span className="font-mono text-text-secondary">RS: {rsMap.get(selectedStock.tsCode)?.toFixed(0) ?? "--"}</span>
                 </div>

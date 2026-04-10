@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { getMarketOverview, getRealtimeQuotes, getIntradaySectors, getIntradaySectorStocks } from "@/services";
+import type { RealtimeQuote } from "@/shared/types";
 
 export function useMarketOverview(tradeDate?: string) {
   return useQuery({
@@ -38,9 +39,9 @@ export function useRealtimeQuotes(tsCodes: string[]) {
     staleTime: 15_000,
     refetchInterval: 30_000,
     select: (data) => {
-      const map = new Map<string, number>();
+      const map = new Map<string, RealtimeQuote>();
       for (const item of data.items) {
-        if (item.pctChange != null) map.set(item.tsCode, item.pctChange);
+        map.set(item.tsCode, item);
       }
       return map;
     },

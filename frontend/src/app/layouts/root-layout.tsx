@@ -2,38 +2,39 @@ import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import { AppShell, TopBar, BottomBar, LeftRail } from "@/shared/layout";
 import { AiResearchPanel } from "@/shared/layout/ai-research-panel";
 import { useMarketOverview, useBullCamp, useWatchlist } from "@/queries";
-import { Activity, BarChart3, Eye, Flame, Settings, Crosshair, FileText, TrendingUp, GitCommit, Newspaper, ClipboardList, BookMarked } from "lucide-react";
+import { Activity, BarChart3, Eye, Flame, Settings, Crosshair, FileText, TrendingUp, GitCommit, Newspaper, ClipboardList, BookMarked, type LucideIcon } from "lucide-react";
+import { useUII18n, type UIKey } from "@/i18n/ui";
 
-const navItems = [
-  { path: "/intraday", label: "盘中观察", icon: TrendingUp },
-  { path: "/dashboard", label: "板块分析", icon: BarChart3 },
-  { path: "/index-radar", label: "指数雷达", icon: Activity },
-  { path: "/watchlist", label: "自选股", icon: Eye },
-  { path: "/bullcamp", label: "牛股集中营", icon: Flame },
-  { path: "/hh-scan", label: "双底扫描", icon: Crosshair },
-  { path: "/market-recap", label: "盘前纪要", icon: FileText },
-  { path: "/morning-brief", label: "每日简报", icon: Newspaper },
-  { path: "/stock-compare", label: "股票对比", icon: GitCommit },
-  { path: "/core-mainline", label: "核心主线", icon: BookMarked },
-  { path: "/trade-plan", label: "交易计划", icon: ClipboardList },
-  { path: "/settings", label: "设置", icon: Settings },
+const navItems: Array<{ path: string; labelKey: UIKey; icon: LucideIcon }> = [
+  { path: "/intraday", labelKey: "nav.intraday", icon: TrendingUp },
+  { path: "/dashboard", labelKey: "nav.dashboard", icon: BarChart3 },
+  { path: "/index-radar", labelKey: "nav.indexRadar", icon: Activity },
+  { path: "/watchlist", labelKey: "nav.watchlist", icon: Eye },
+  { path: "/bullcamp", labelKey: "nav.bullcamp", icon: Flame },
+  { path: "/hh-scan", labelKey: "nav.hhScan", icon: Crosshair },
+  { path: "/market-recap", labelKey: "nav.marketRecap", icon: FileText },
+  { path: "/morning-brief", labelKey: "nav.morningBrief", icon: Newspaper },
+  { path: "/stock-compare", labelKey: "nav.stockCompare", icon: GitCommit },
+  { path: "/core-mainline", labelKey: "nav.coreMainline", icon: BookMarked },
+  { path: "/trade-plan", labelKey: "nav.tradePlan", icon: ClipboardList },
+  { path: "/settings", labelKey: "nav.settings", icon: Settings },
 ];
 
-const navGroups = [
+const navGroups: Array<{ titleKey: UIKey; paths: string[] }> = [
   {
-    title: "实时",
+    titleKey: "nav.realtime",
     paths: ["/intraday", "/dashboard", "/index-radar"],
   },
   {
-    title: "交易",
+    titleKey: "nav.trading",
     paths: ["/watchlist", "/bullcamp", "/hh-scan", "/stock-compare", "/core-mainline", "/trade-plan"],
   },
   {
-    title: "复盘",
+    titleKey: "nav.review",
     paths: ["/market-recap", "/morning-brief"],
   },
   {
-    title: "系统",
+    titleKey: "nav.system",
     paths: ["/settings"],
   },
 ];
@@ -42,6 +43,8 @@ export function RootLayout() {
   const navigate = useNavigate();
   const location = useLocation();
   const { data: overview } = useMarketOverview();
+  const { t, locale } = useUII18n();
+  const hideTopSearch = location.pathname === "/morning-brief";
 
   // Prefetch: 后台预加载牛股集中营和自选股数据，切页时秒开
   useBullCamp();
@@ -57,17 +60,17 @@ export function RootLayout() {
   return (
     <AppShell
       topBar={
-        <TopBar title={overview?.tradeDate || ""} />
+        <TopBar title={overview?.tradeDate || ""} showSearch={!hideTopSearch} />
       }
       leftRail={
         <LeftRail
           sections={navGroups.map((group) => ({
-            title: group.title,
+            title: t(group.titleKey),
             items: group.paths
               .map((path) => navItems.find((item) => item.path === path))
               .filter((item): item is (typeof navItems)[number] => !!item)
               .map((item) => ({
-                label: item.label,
+                label: t(item.labelKey),
                 icon: <item.icon className="w-4 h-4" />,
                 active: isActive(item.path),
                 onClick: () => navigate(item.path),
@@ -79,7 +82,7 @@ export function RootLayout() {
         <BottomBar>
           <span>{overview?.tradeDate || "--"}</span>
           <span className="mx-2">|</span>
-          <span>{overview?.marketState?.label || "市场状态"}</span>
+          <span>{overview?.marketState?.label || (locale === "en-US" ? "Market State" : "市场状态")}</span>
         </BottomBar>
       }
     >

@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
+import { Info } from "lucide-react";
 import { useBullCamp, useStockSector, useStockFinancials } from "@/queries";
 import { DataTable, NumericCell, type Column } from "@/shared/table";
 import { fmtPct, fmtAmount, fmtYi, fmtQuarter } from "@/shared/utils/format";
@@ -13,6 +14,7 @@ import { StockTagsPanel } from "@/features/chart/components/stock-tags-panel";
 import { DrawingToolbar } from "@/features/chart/components/drawing-toolbar";
 import { DrawingsPanel } from "@/features/chart/components/drawings-panel";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/shared/ui/tabs";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
 import type { BullCampItem } from "@/shared/types";
 import { cn } from "@/lib/utils";
 import { useDashboardStore } from "@/store";
@@ -191,7 +193,25 @@ export default function BullcampPage() {
       {/* ══ 左列：牛股列表 ══ */}
       <div className="flex flex-col min-h-0 border-r border-border-default" style={{ width: leftWidth }}>
         <div className="px-3 py-2 border-b border-border-default">
-          <h2 className="text-sm font-medium">牛股集中营</h2>
+          <div className="flex items-center gap-1.5">
+            <h2 className="text-sm font-medium">牛股集中营</h2>
+            <Tooltip delayDuration={150}>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  aria-label="查看牛股集中营算法说明"
+                  className="inline-flex h-4.5 w-4.5 items-center justify-center rounded-full border border-border-default text-text-tertiary hover:text-text-primary hover:bg-surface-secondary"
+                >
+                  <Info className="h-3 w-3" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" align="start" className="max-w-[360px] p-3 text-xs leading-5">
+                <div>筛选：RPS250&gt;87（不可用时降级 RPS120 / RPS20）且成交额≥10亿，并且属于当日主线板块成分。</div>
+                <div className="mt-1">评分：campScore = 0.5×RPS分 + 0.2×成交额分 + 0.3×20日收益分（min-max 标准化）。</div>
+                <div className="mt-1">增强：连续在营天数、近7天公告、形态标签、近5天综合分趋势。</div>
+              </TooltipContent>
+            </Tooltip>
+          </div>
           <p className="text-xs text-text-tertiary">{items.length} 只</p>
         </div>
         <DataTable

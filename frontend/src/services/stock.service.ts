@@ -230,6 +230,28 @@ export function saveWebhookSettings(webhookUrl: string) {
   });
 }
 
+export function getPushplusSettings() {
+  return api<{ token: string; configured: boolean }>("/settings/pushplus");
+}
+
+export function savePushplusSettings(token: string) {
+  return api<{ ok: boolean; configured: boolean }>("/settings/pushplus", {
+    method: "PUT",
+    body: JSON.stringify({ token }),
+  });
+}
+
+export function getPriceMonitorStatus() {
+  return api<{ alive: boolean; enabled: boolean }>("/price-alerts/monitor-status");
+}
+
+export function setPriceMonitorEnabled(enabled: boolean) {
+  return api<{ ok: boolean; enabled: boolean; alive: boolean }>("/price-alerts/monitor-status", {
+    method: "POST",
+    body: JSON.stringify({ enabled }),
+  });
+}
+
 // ── HH 信号成功率统计 ──
 
 export function getStockHHStats(tsCode: string) {

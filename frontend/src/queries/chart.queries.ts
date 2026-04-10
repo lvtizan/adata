@@ -1,10 +1,14 @@
 import { useQuery } from "@tanstack/react-query";
 import { getStockChart, getSectorChart, getRelativeStrength } from "@/services";
 
-export function useStockChart(tsCode: string, bars = 120, frequency = "1d") {
+interface UseStockChartOptions {
+  realOnly?: boolean;
+}
+
+export function useStockChart(tsCode: string, bars = 120, frequency = "1d", options: UseStockChartOptions = {}) {
   return useQuery({
-    queryKey: ["chart", "stock", tsCode, bars, frequency],
-    queryFn: () => getStockChart(tsCode, bars, frequency),
+    queryKey: ["chart", "stock", tsCode, bars, frequency, options.realOnly ? "realOnly" : "all"],
+    queryFn: () => getStockChart(tsCode, bars, frequency, options),
     enabled: !!tsCode,
     staleTime: 60_000,
   });

@@ -3,7 +3,6 @@ import type { IntradayMarketContextProps } from "./types";
 import { formatDate, fmtAmount, fmtPct } from "@/shared/utils/format";
 import { clampScore, normalizePercentInput, scoreToneClass } from "./utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/shared/ui/tabs";
 import { ShanghaiIndex5mChart } from "./shanghai-index-chart";
 
 function MetricPill({ label, value, tone }: { label: string; value: string; tone?: string }) {
@@ -162,90 +161,69 @@ export function IntradayMarketContextBar({ overview, selectedSector, selectedSto
         </div>
       </div>
 
-      <Tabs defaultValue="chart" className="flex min-h-0 flex-1 flex-col">
-        <TabsList className="h-auto justify-start gap-0 rounded-none border-b border-border-default bg-surface px-4">
-          <TabsTrigger
-            value="chart"
-            className="rounded-none border-b-2 border-transparent px-4 py-2 text-sm shadow-none data-[state=active]:border-accent data-[state=active]:shadow-none"
-          >
-            上证5分钟
-          </TabsTrigger>
-          <TabsTrigger
-            value="summary"
-            className="rounded-none border-b-2 border-transparent px-4 py-2 text-sm shadow-none data-[state=active]:border-accent data-[state=active]:shadow-none"
-          >
-            摘要
-          </TabsTrigger>
-        </TabsList>
-
-        <TabsContent value="chart" className="mt-0 flex-1 min-h-0 overflow-auto">
-          <div className="p-4">
-            <ShanghaiIndex5mChart />
+      <div className="border-b border-border-default bg-surface px-4 py-2 text-sm font-medium">上证5分钟</div>
+      <div className="p-4">
+        <ShanghaiIndex5mChart />
+      </div>
+      <div className="px-4 pb-4 grid gap-3 xl:grid-cols-[minmax(0,1.15fr)_minmax(340px,0.85fr)]">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 text-xs text-text-tertiary mb-2">
+            <span>主线</span>
+            <span className="h-px flex-1 bg-border-default" />
           </div>
-        </TabsContent>
-
-        <TabsContent value="summary" className="mt-0 flex-1 min-h-0 overflow-auto">
-          <div className="px-4 py-3 grid gap-3 xl:grid-cols-[minmax(0,1.15fr)_minmax(340px,0.85fr)]">
-            <div className="min-w-0">
-              <div className="flex items-center gap-2 text-xs text-text-tertiary mb-2">
-                <span>主线</span>
-                <span className="h-px flex-1 bg-border-default" />
-              </div>
-              <div className="flex flex-wrap gap-2">
-                {mainlines.length > 0 ? (
-                  mainlines.map((line) => {
-                    const sector = line;
-                    return (
-                      <span
-                        key={`mainline-${sector.sectorCode}`}
-                        className="inline-flex items-center gap-2 rounded-full border border-border-default bg-surface-secondary/80 px-3 py-1 text-xs"
-                      >
-                        <span className="font-medium text-text-primary">
-                          {sector.sectorName}
-                        </span>
-                        <span className="text-text-tertiary">{line.status}</span>
-                        {typeof line.limitUpCount === "number" && line.limitUpCount > 0 && (
-                          <span className="text-state-up">{line.limitUpCount}↑</span>
-                        )}
-                      </span>
-                    );
-                  })
-                ) : (
-                  <span className="text-xs text-text-tertiary">暂无主线数据</span>
-                )}
-              </div>
-            </div>
-
-            <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-1 xl:min-w-[340px]">
-              {selectedSector ? (
-                <SelectedCard
-                  label="当前板块"
-                  title={selectedSector.sectorName}
-                  meta={`${selectedSector.sectorCode} · ${fmtPct(selectedSector.pctChange1d)} · ${selectedSector.limitUpCount} 连板/涨停`}
-                  highlight={selectedSector.status ? selectedSector.status : undefined}
-                />
-              ) : (
-                <SelectedCard label="当前板块" title="未选择" meta="选择板块后显示" />
-              )}
-
-              {selectedStock ? (
-                <SelectedCard
-                  label="当前个股"
-                  title={selectedStock.stockName}
-                  meta={`${selectedStock.tsCode} · ${fmtPct(selectedStock.pctChange1d)} · ${fmtAmount(selectedStock.amount)}`}
-                  highlight={
-                    selectedStock.score != null
-                      ? `${Math.round(selectedStock.score)}${selectedStock.grade ? ` · ${selectedStock.grade}` : ""}`
-                      : selectedStock.grade || undefined
-                  }
-                />
-              ) : (
-                <SelectedCard label="当前个股" title="未选择" meta="选择个股后显示" />
-              )}
-            </div>
+          <div className="flex flex-wrap gap-2">
+            {mainlines.length > 0 ? (
+              mainlines.map((line) => {
+                const sector = line;
+                return (
+                  <span
+                    key={`mainline-${sector.sectorCode}`}
+                    className="inline-flex items-center gap-2 rounded-full border border-border-default bg-surface-secondary/80 px-3 py-1 text-xs"
+                  >
+                    <span className="font-medium text-text-primary">
+                      {sector.sectorName}
+                    </span>
+                    <span className="text-text-tertiary">{line.status}</span>
+                    {typeof line.limitUpCount === "number" && line.limitUpCount > 0 && (
+                      <span className="text-state-up">{line.limitUpCount}↑</span>
+                    )}
+                  </span>
+                );
+              })
+            ) : (
+              <span className="text-xs text-text-tertiary">暂无主线数据</span>
+            )}
           </div>
-        </TabsContent>
-      </Tabs>
+        </div>
+
+        <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-1 xl:min-w-[340px]">
+          {selectedSector ? (
+            <SelectedCard
+              label="当前板块"
+              title={selectedSector.sectorName}
+              meta={`${selectedSector.sectorCode} · ${fmtPct(selectedSector.pctChange1d)} · ${selectedSector.limitUpCount} 连板/涨停`}
+              highlight={selectedSector.status ? selectedSector.status : undefined}
+            />
+          ) : (
+            <SelectedCard label="当前板块" title="未选择" meta="选择板块后显示" />
+          )}
+
+          {selectedStock ? (
+            <SelectedCard
+              label="当前个股"
+              title={selectedStock.stockName}
+              meta={`${selectedStock.tsCode} · ${fmtPct(selectedStock.pctChange1d)} · ${fmtAmount(selectedStock.amount)}`}
+              highlight={
+                selectedStock.score != null
+                  ? `${Math.round(selectedStock.score)}${selectedStock.grade ? ` · ${selectedStock.grade}` : ""}`
+                  : selectedStock.grade || undefined
+              }
+            />
+          ) : (
+            <SelectedCard label="当前个股" title="未选择" meta="选择个股后显示" />
+          )}
+        </div>
+      </div>
     </div>
   );
 }

@@ -64,8 +64,11 @@ async def get_market_overview(tradeDate: str = ""):
 @app.get("/api/sectors/rankings")
 async def get_sector_rankings(sortBy: str = "rps10", keyword: str = ""):
     date = engine.latest_data_trade_date()
-    items = engine.sector_rankings(date, sort_by=sortBy, keyword=keyword)
-    return {"items": items}
+    realtime = engine.intraday_sector_rankings(date)
+    items = list(realtime.get("items", []))
+    if keyword:
+        items = [x for x in items if keyword in str(x.get("sectorName", ""))]
+    return {"items": items, "dataMode": "realtime"}
 
 
 @app.get("/api/search")
@@ -78,14 +81,20 @@ async def search_market(q: str, limit: int = 12):
 @app.get("/api/sectors/{sector_code}/stocks")
 async def get_sector_stocks(sector_code: str, sortBy: str = "rps10"):
     date = engine.latest_data_trade_date()
-    items = engine.sector_stocks(sector_code, date, sort_by=sortBy)
-    return {"sectorCode": sector_code, "items": items}
+    items = engine.intraday_sector_stocks(sector_code, date)
+    return {"sectorCode": sector_code, "items": items, "dataMode": "realtime"}
 
 
 # ===== 个股K线 =====
 @app.get("/api/charts/stock/{ts_code}")
-async def get_stock_chart(ts_code: str, bars: int = 120):
+async def get_stock_chart(ts_code: str, bars: int = 120, frequency: str = "1d", realOnly: bool = False):
     date = engine.latest_data_trade_date()
+    if frequency in ("1d", "1w", "1M"):
+        return engine.stock_kline_ashare(ts_code, frequency, bars=bars)
+    if frequency == "5m":
+        if ts_code == "000001.SH":
+            return engine.stock_kline_5m_synthetic(ts_code, date, bars=bars, allow_daily_fallback=not realOnly)
+        return engine.stock_kline_ashare(ts_code, "1d", bars=bars)
     return engine.stock_kline(ts_code, date, bars=bars)
 
 

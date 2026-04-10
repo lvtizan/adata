@@ -1,6 +1,6 @@
 import { DataTable, NumericCell, type Column } from "@/shared/table";
 import { fmtPct, fmtAmount } from "@/shared/utils/format";
-import type { SectorStock } from "@/shared/types";
+import type { RealtimeQuote, SectorStock } from "@/shared/types";
 import { useAddToWatchlist, useRemoveFromWatchlist } from "@/queries";
 import { Star } from "lucide-react";
 
@@ -14,6 +14,7 @@ interface StockTableProps {
   watchlistCodes?: Set<string>;
   sectorCode?: string;
   sectorName?: string;
+  realtimeMap?: Map<string, RealtimeQuote>;
 }
 
 function numSort(a: number | null | undefined, b: number | null | undefined, dir: "asc" | "desc") {
@@ -34,7 +35,17 @@ function stockSortFn(a: SectorStock, b: SectorStock, key: string, dir: "asc" | "
   }
 }
 
-export function StockTable({ data, selectedCode, onSelect, onNameClick, loading, watchlistCodes = new Set(), sectorCode, sectorName }: StockTableProps) {
+export function StockTable({
+  data,
+  selectedCode,
+  onSelect,
+  onNameClick,
+  loading,
+  watchlistCodes = new Set(),
+  sectorCode,
+  sectorName,
+  realtimeMap,
+}: StockTableProps) {
   const addMutation = useAddToWatchlist();
   const removeMutation = useRemoveFromWatchlist();
 
@@ -84,8 +95,27 @@ export function StockTable({ data, selectedCode, onSelect, onNameClick, loading,
         </span>
       ),
     },
-    { key: "close", label: "现价", align: "right", sortable: true, render: (item) => <span className="text-sm font-mono">{item.close?.toFixed(2) ?? "-"}</span> },
-    { key: "pctChange1d", label: "1日", align: "right", sortable: true, render: (item) => <NumericCell value={item.pctChange1d} format={fmtPct} /> },
+    {
+      key: "close",
+      label: "现价",
+      align: "right",
+      sortable: true,
+      render: (item) => {
+        const rt = realtimeMap?.get(item.tsCode);
+        const price = rt?.price ?? item.close;
+        return <span className="text-sm font-mono">{price?.toFixed(2) ?? "-"}</span>;
+      },
+    },
+    {
+      key: "pctChange1d",
+      label: "1日",
+      align: "right",
+      sortable: true,
+      render: (item) => {
+        const rt = realtimeMap?.get(item.tsCode);
+        return <NumericCell value={rt?.pctChange ?? item.pctChange1d} format={fmtPct} />;
+      },
+    },
     { key: "pctChange5d", label: "5日", align: "right", sortable: true, render: (item) => <NumericCell value={item.pctChange5d} format={fmtPct} /> },
     { key: "pctChange10d", label: "10日", align: "right", sortable: true, render: (item) => <NumericCell value={item.pctChange10d} format={fmtPct} /> },
     { key: "amount", label: "成交额", align: "right", sortable: true, render: (item) => <span className="text-sm text-text-secondary">{fmtAmount(item.amount)}</span> },

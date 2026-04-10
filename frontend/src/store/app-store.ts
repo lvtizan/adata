@@ -1,6 +1,7 @@
 import { create } from "zustand";
 
 type Theme = "light" | "dark";
+type Locale = "zh-CN" | "en-US";
 
 /** 判断当前是否在工作时间 (工作日 9:00-17:30) */
 function isWorkHours(): boolean {
@@ -15,11 +16,13 @@ function isWorkHours(): boolean {
 
 interface AppState {
   theme: Theme;
+  locale: Locale;
   rightPanelOpen: boolean;
   leftRailCollapsed: boolean;
   stealthMode: boolean;
   toggleTheme: () => void;
   setTheme: (t: Theme) => void;
+  setLocale: (l: Locale) => void;
   toggleRightPanel: () => void;
   setLeftRailCollapsed: (v: boolean) => void;
   toggleStealthMode: () => void;
@@ -28,6 +31,7 @@ interface AppState {
 
 export const useAppStore = create<AppState>((set) => ({
   theme: (localStorage.getItem("theme") as Theme) || "light",
+  locale: (localStorage.getItem("locale") as Locale) || "zh-CN",
   rightPanelOpen: false,
   leftRailCollapsed: false,
   // 每次加载根据当前时间判断，工作时间自动开启摸鱼模式
@@ -43,6 +47,10 @@ export const useAppStore = create<AppState>((set) => ({
     localStorage.setItem("theme", t);
     document.documentElement.classList.toggle("dark", t === "dark");
     set({ theme: t });
+  },
+  setLocale: (l) => {
+    localStorage.setItem("locale", l);
+    set({ locale: l });
   },
   toggleRightPanel: () => set((s) => ({ rightPanelOpen: !s.rightPanelOpen })),
   setLeftRailCollapsed: (v) => set({ leftRailCollapsed: v }),

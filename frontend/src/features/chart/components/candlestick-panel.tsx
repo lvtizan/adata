@@ -1,6 +1,7 @@
 import { ChartShell, KlineChart } from "@/shared/charts";
 import { useStockChart, useSectorChart, useStockPatterns, useStockPredictions } from "@/queries";
 import type { PatternSignal, DrawdownMarker } from "@/services";
+import { StockKlineWorkbench } from "@/shared/charts/stock-kline-workbench";
 
 interface CandlestickPanelProps {
   kind: "sector" | "stock";
@@ -19,6 +20,28 @@ export function CandlestickPanel({ kind, code, label, title, emptyText = "请选
   const { data: patternData } = useStockPatterns(kind === "stock" ? code : "");
   // 形态预测数据
   const { data: predictionData } = useStockPredictions(kind === "stock" ? code : "");
+
+  if (kind === "stock") {
+    return (
+      <ChartShell
+        title={title}
+        subtitle={label}
+        empty={!code ? emptyText : undefined}
+        className="h-full"
+      >
+        {code ? (
+          <StockKlineWorkbench
+            tsCode={code}
+            sectorCode=""
+            stockName={title}
+            showDrawingsPanel={false}
+          />
+        ) : (
+          <div />
+        )}
+      </ChartShell>
+    );
+  }
 
   return (
     <ChartShell

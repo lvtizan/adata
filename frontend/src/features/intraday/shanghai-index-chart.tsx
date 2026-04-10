@@ -35,13 +35,12 @@ function SignalLegend() {
 }
 
 export function ShanghaiIndex5mChart() {
-  const { data, isLoading, error } = useStockChart(SHANGHAI_INDEX_CODE, 240, "5m");
-  const { data: fallbackDailyData } = useStockChart(SHANGHAI_INDEX_CODE, 90, "1d");
+  const { data, isLoading, error } = useStockChart(SHANGHAI_INDEX_CODE, 240, "5m", { realOnly: true });
 
   const hasIntradayData = Boolean(data?.points?.length);
-  const hasFallbackDailyData = Boolean(fallbackDailyData?.points?.length);
+  const hasSyntheticFallback = Boolean((data as any)?.synthetic);
 
-  if (isLoading && !hasFallbackDailyData) {
+  if (isLoading) {
     return (
       <div className="flex h-[360px] items-center justify-center rounded-xl border border-border-default bg-surface-secondary/40 text-sm text-text-tertiary">
         上证 5 分钟图加载中...
@@ -49,7 +48,7 @@ export function ShanghaiIndex5mChart() {
     );
   }
 
-  if (error && !hasFallbackDailyData) {
+  if (error) {
     return (
       <div className="flex h-[360px] items-center justify-center rounded-xl border border-border-default bg-surface-secondary/40 text-sm text-state-down">
         上证 5 分钟图加载失败：{error.message}
@@ -57,20 +56,17 @@ export function ShanghaiIndex5mChart() {
     );
   }
 
-  if (!hasIntradayData && !hasFallbackDailyData) {
+  if (!hasIntradayData) {
     return (
       <div className="flex h-[360px] items-center justify-center rounded-xl border border-border-default bg-surface-secondary/40 text-sm text-text-tertiary">
-        暂无上证 5 分钟数据
+        {hasSyntheticFallback ? "当前只拿到日线，未命中真实5分钟数据" : "暂无上证 5 分钟数据"}
       </div>
     );
   }
 
-  const chartData = hasIntradayData ? data : fallbackDailyData;
-  const frequency = hasIntradayData ? "5m" : "1d";
-  const title = hasIntradayData ? "上证指数 5 分钟" : "上证指数日线";
-  const subtitle = hasIntradayData
-    ? "000001.SH · 后端返回信号直接叠加到 K 线上"
-    : "000001.SH · 5 分钟数据不可用，已自动回退到日线";
+  const chartData = data;
+  const title = "上证指数 5 分钟";
+  const subtitle = "000001.SH · 真实分钟线（realOnly）";
 
   return (
     <div className="space-y-2">
@@ -91,8 +87,8 @@ export function ShanghaiIndex5mChart() {
       <div className="h-[360px] overflow-hidden rounded-2xl border border-border-default bg-surface-secondary/30 p-2">
         <KlineChart
           points={chartData?.points ?? []}
-          signals={hasIntradayData ? data?.signals : undefined}
-          frequency={frequency}
+          signals={data?.signals}
+          frequency="5m"
           height={340}
           showVolume={false}
         />

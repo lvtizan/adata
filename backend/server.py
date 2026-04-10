@@ -74,13 +74,30 @@ def get_webhook_url() -> str:
     s = _load_settings()
     return s.get("webhook_url", "") or os.getenv("WECHAT_WORK_WEBHOOK_URL", "")
 
+
+def get_pushplus_token() -> str:
+    s = _load_settings()
+    return s.get("pushplus_token", "") or os.getenv("PUSHPLUS_TOKEN", "")
+
+
+def get_notify_config() -> dict[str, str]:
+    return {
+        "pushplus_token": get_pushplus_token(),
+        "webhook_url": get_webhook_url(),
+    }
+
+
+def get_monitor_enabled() -> bool:
+    s = _load_settings()
+    return bool(s.get("monitor_enabled", True))
+
 # 预热缓存（后台线程）
 logger.info("启动缓存预热...")
 warmup_thread = threading.Thread(target=engine.warmup, daemon=True, name="WarmupThread")
 warmup_thread.start()
 
 # 启动价格监控线程
-price_monitor = PriceMonitor(alert_store, get_webhook_url)
+price_monitor = PriceMonitor(alert_store, get_notify_config, get_monitor_enabled)
 price_monitor.start()
 
 
@@ -254,7 +271,21 @@ class Handler(BaseHTTPRequestHandler):
             if len(parts) >= 4:
                 alert_id_str = parts[3]
                 if alert_id_str == "monitor-status":
-                    return json_response(self, {"alive": price_monitor.alive})
+                    if method == "GET":
+                        return json_response(
+                            self,
+                            {
+                                "alive": price_monitor.alive,
+                                "enabled": get_monitor_enabled(),
+                            },
+                        )
+                    if method in ("POST", "PUT"):
+                        enabled = bool((body or {}).get("enabled", True))
+                        settings = _load_settings()
+                        settings["monitor_enabled"] = enabled
+                        _save_settings(settings)
+                        return json_response(self, {"ok": True, "enabled": enabled, "alive": price_monitor.alive})
+                    return json_response(self, {"error": "method not allowed"}, 405)
                 try:
                     alert_id = int(alert_id_str)
                 except ValueError:
@@ -278,6 +309,19 @@ class Handler(BaseHTTPRequestHandler):
                 return json_response(self, {"ok": True, "configured": bool(url)})
             return json_response(self, {"error": "method not allowed"}, 405)
 
+        if path == "/api/settings/pushplus":
+            if method == "GET":
+                token = get_pushplus_token()
+                masked = f"{token[:6]}***{token[-4:]}" if len(token) > 12 else ("***" if token else "")
+                return json_response(self, {"token": masked, "configured": bool(token)})
+            if method == "PUT":
+                token = ((body or {}).get("token", "") or "").strip()
+                settings = _load_settings()
+                settings["pushplus_token"] = token
+                _save_settings(settings)
+                return json_response(self, {"ok": True, "configured": bool(token)})
+            return json_response(self, {"error": "method not allowed"}, 405)
+
         # 服务器状态（不需要预热即可返回）
         if path == "/api/status":
             return json_response(self, {
@@ -285,23 +329,52 @@ class Handler(BaseHTTPRequestHandler):
                 "message": "数据加载中..." if not engine._warmed else "就绪",
             })
 
+        if path == "/api/data-sources/status":
+            return json_response(self, engine.data_sources_status())
+
         # 实时行情API（不依赖 trade_date，独立于其他 GET 路由）
         if path == "/api/realtime/quotes":
             codes_str = q.get("codes", [""])[0]
             ts_codes = [c.strip() for c in codes_str.split(",") if c.strip()] if codes_str else []
             return json_response(self, engine.realtime_quotes(ts_codes))
 
-        # 获取交易日
-        trade_date = q.get("tradeDate", [engine.latest_data_trade_date()])[0]
+        # 获取交易日（优先请求参数；外部接口异常时降级本地快照日期）
+        trade_date = q.get("tradeDate", [""])[0]
+        if not trade_date:
+            try:
+                trade_date = engine.latest_data_trade_date()
+            except Exception as exc:
+                logger.warning(f"latest_data_trade_date 获取失败，回退本地快照: {exc}")
+                local_dates = engine._cached_snapshot_dates("stock_snapshot")  # noqa: SLF001
+                trade_date = local_dates[-1] if local_dates else ""
+        if not trade_date:
+            return json_response(self, {"error": "no trade date available"}, 500)
 
         # 盘中观察 - 同花顺概念板块排行
         if path == "/api/intraday/sectors":
-            return json_response(self, engine.intraday_sector_rankings(trade_date))
+            realtime = engine.intraday_sector_rankings(trade_date)
+            items = list(realtime.get("items", []))
+            if not items:
+                fallback_items = engine.sector_rankings(trade_date, sort_by="rps10")
+                return json_response(self, {"tradeDate": trade_date, "items": fallback_items, "dataMode": "snapshot-fallback"})
+            return json_response(self, {"tradeDate": trade_date, "items": items, "dataMode": "realtime"})
 
         # 盘中观察 - 概念板块成分股（实时行情）
         if path.startswith("/api/intraday/sectors/") and path.endswith("/stocks"):
             sector_code = path.split("/")[4]
-            return json_response(self, {"items": engine.intraday_sector_stocks(sector_code, trade_date)})
+            try:
+                realtime_items = engine.intraday_sector_stocks(sector_code, trade_date)
+            except Exception as exc:
+                logger.warning(f"intraday_sector_stocks 失败，降级快照: {sector_code}, {exc}")
+                realtime_items = []
+            if not realtime_items:
+                try:
+                    fallback_items = engine.sector_stocks(sector_code, trade_date, sort_by="rps10")
+                except Exception as exc:
+                    logger.warning(f"sector_stocks 失败，返回空列表: {sector_code}, {exc}")
+                    fallback_items = []
+                return json_response(self, {"items": fallback_items, "dataMode": "snapshot-fallback"})
+            return json_response(self, {"items": realtime_items, "dataMode": "realtime"})
 
         # 配置规则API
         if path == "/api/config/rules":
@@ -326,7 +399,26 @@ class Handler(BaseHTTPRequestHandler):
             sort_by = q.get("sortBy", ["rps10"])[0]
             keyword = q.get("keyword", [""])[0]
             logger.debug(f"获取板块排行: {trade_date}, sort={sort_by}, keyword={keyword}")
-            return json_response(self, {"items": engine.sector_rankings(trade_date, sort_by=sort_by, keyword=keyword)})
+            latest = engine.latest_data_trade_date()
+            if trade_date == latest:
+                try:
+                    realtime = engine.intraday_sector_rankings(trade_date)
+                    items = list(realtime.get("items", []))
+                except Exception as exc:
+                    logger.warning(f"intraday_sector_rankings 失败，降级快照: {exc}")
+                    items = []
+                if keyword:
+                    items = [x for x in items if keyword in str(x.get("sectorName", ""))]
+                # 盘中链路异常（如成分映射/代理失败）时，自动降级到本地快照，避免整页空白
+                if not items:
+                    try:
+                        fallback_items = engine.sector_rankings(trade_date, sort_by=sort_by, keyword=keyword)
+                    except Exception as exc:
+                        logger.warning(f"sector_rankings 失败，返回空列表: {exc}")
+                        fallback_items = []
+                    return json_response(self, {"items": fallback_items, "dataMode": "snapshot-fallback"})
+                return json_response(self, {"items": items, "dataMode": "realtime"})
+            return json_response(self, {"items": engine.sector_rankings(trade_date, sort_by=sort_by, keyword=keyword), "dataMode": "snapshot"})
 
         if path == "/api/search":
             query = q.get("q", [""])[0]
@@ -338,19 +430,47 @@ class Handler(BaseHTTPRequestHandler):
             sector_code = path.split("/")[3]
             sort_by = q.get("sortBy", ["rps10"])[0]
             logger.debug(f"获取板块成分股: {sector_code}, {trade_date}")
+            latest = engine.latest_data_trade_date()
+            if trade_date == latest:
+                try:
+                    realtime_items = engine.intraday_sector_stocks(sector_code, trade_date)
+                except Exception as exc:
+                    logger.warning(f"intraday_sector_stocks 失败，降级快照: {sector_code}, {exc}")
+                    realtime_items = []
+                if not realtime_items:
+                    try:
+                        fallback_items = engine.sector_stocks(sector_code, trade_date, sort_by=sort_by)
+                    except Exception as exc:
+                        logger.warning(f"sector_stocks 失败，返回空列表: {sector_code}, {exc}")
+                        fallback_items = []
+                    return json_response(
+                        self,
+                        {"sectorCode": sector_code, "items": fallback_items, "dataMode": "snapshot-fallback"},
+                    )
+                return json_response(
+                    self,
+                    {"sectorCode": sector_code, "items": realtime_items, "dataMode": "realtime"},
+                )
             return json_response(
                 self,
-                {"sectorCode": sector_code, "items": engine.sector_stocks(sector_code, trade_date, sort_by=sort_by)},
+                {"sectorCode": sector_code, "items": engine.sector_stocks(sector_code, trade_date, sort_by=sort_by), "dataMode": "snapshot"},
             )
 
-        # 个股K线API（支持 frequency=1d/1w/1M）
+        # 个股K线API（支持 frequency=1d/1w/1M/5m）
         if path.startswith("/api/charts/stock/"):
             ts_code = path.split("/")[4]
             bars = int(q.get("bars", ["180"])[0])
             frequency = q.get("frequency", ["1d"])[0]
+            real_only = q.get("realOnly", ["0"])[0] in ("1", "true", "True")
             if frequency in ("1d", "1w", "1M"):
                 logger.debug(f"获取个股K线(Ashare): {ts_code}, freq={frequency}, bars={bars}")
                 return json_response(self, engine.stock_kline_ashare(ts_code, frequency, bars=bars))
+            if frequency == "5m":
+                if ts_code == "000001.SH":
+                    logger.debug(f"获取上证K线(5m): {ts_code}, {trade_date}, bars={bars}, realOnly={real_only}")
+                    return json_response(self, engine.stock_kline_5m_synthetic(ts_code, trade_date, bars=bars, allow_daily_fallback=not real_only))
+                logger.debug(f"5m合成仅支持上证指数，回退日K: {ts_code}")
+                return json_response(self, engine.stock_kline_ashare(ts_code, "1d", bars=bars))
             logger.debug(f"获取个股K线: {ts_code}, {trade_date}, bars={bars}")
             return json_response(self, engine.stock_kline(ts_code, trade_date, bars=bars))
 

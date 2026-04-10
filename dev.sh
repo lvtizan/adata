@@ -17,7 +17,7 @@ NC='\033[0m'
 # ── 停止所有服务（只杀自己启动的进程）──
 stop_all() {
     local PID_DIR="$DIR/.pids"
-    for pf in backend.pid scheduler.pid news_daemon.pid frontend.pid langgraph.pid gateway.pid deerflow_frontend.pid; do
+    for pf in backend.pid scheduler.pid kline_scheduler.pid news_daemon.pid frontend.pid langgraph.pid gateway.pid deerflow_frontend.pid; do
         local pid_file="$PID_DIR/$pf"
         if [ -f "$pid_file" ]; then
             local pid=$(cat "$pid_file")
@@ -37,6 +37,7 @@ stop_all() {
     # 兜底：只杀包含项目路径的进程
     pkill -f "$DIR/backend/server.py" 2>/dev/null
     pkill -f "$DIR/backend/daily_scheduler.py" 2>/dev/null
+    pkill -f "$DIR/backend/daily_kline_scheduler.py" 2>/dev/null
     pkill -f "$DIR/backend/news_daemon.py" 2>/dev/null
     pkill -f "$DIR/frontend.*vite" 2>/dev/null
     pkill -f "langgraph dev" 2>/dev/null
@@ -103,6 +104,10 @@ echo $! > "$PID_DIR/backend.pid"
 # 启动定时调度器
 nohup python3 daily_scheduler.py --daemon > "$LOG_DIR/a-data-scheduler.log" 2>&1 &
 echo $! > "$PID_DIR/scheduler.pid"
+
+# 启动日K落库调度器（每天15点后自动跑）
+nohup python3 daily_kline_scheduler.py --daemon > "$LOG_DIR/a-data-kline-scheduler.log" 2>&1 &
+echo $! > "$PID_DIR/kline_scheduler.pid"
 
 # 启动新闻采集守护进程（每5分钟采集一次）
 nohup python3 news_daemon.py --daemon > "$LOG_DIR/a-data-news.log" 2>&1 &

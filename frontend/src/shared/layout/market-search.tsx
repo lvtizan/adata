@@ -7,8 +7,10 @@ import { useAddToWatchlist, useMarketSearch, useTradePlans, useWatchlist } from 
 import { useDashboardStore } from "@/store";
 import { fmtPct } from "@/shared/utils/format";
 import { cn } from "@/lib/utils";
+import { useUII18n } from "@/i18n/ui";
 
 export function MarketSearch() {
+  const { t } = useUII18n();
   const navigate = useNavigate();
   const location = useLocation();
   const { setSelectedSectorCode } = useDashboardStore();
@@ -119,7 +121,7 @@ export function MarketSearch() {
         <Input
           value={text}
           onChange={(e) => setText(e.target.value)}
-          placeholder="搜索股票/板块"
+          placeholder={t("search.placeholder")}
           className="h-8 pl-8 text-sm"
         />
       </div>
@@ -127,20 +129,20 @@ export function MarketSearch() {
       {open && (
         <div className="absolute top-[36px] left-0 right-0 z-50 rounded-md border border-border-default bg-canvas shadow-lg overflow-hidden">
           {!hasQuery && (
-            <div className="px-3 py-2 text-xs text-text-tertiary">输入至少 2 个字符</div>
+            <div className="px-3 py-2 text-xs text-text-tertiary">{t("search.minChars")}</div>
           )}
 
           {hasQuery && isFetching && !hasResults && !isLocalOnlyMode && (
-            <div className="px-3 py-2 text-xs text-text-tertiary">搜索中...</div>
+            <div className="px-3 py-2 text-xs text-text-tertiary">{t("search.loading")}</div>
           )}
 
           {hasQuery && !isFetching && !hasResults && (
-            <div className="px-3 py-2 text-xs text-text-tertiary">没有找到匹配的股票或板块</div>
+            <div className="px-3 py-2 text-xs text-text-tertiary">{t("search.noResult")}</div>
           )}
 
           {rows.sectors.length > 0 && (
             <div className="border-b border-border-subtle">
-              <div className="px-3 py-1.5 text-[11px] text-text-tertiary">板块</div>
+              <div className="px-3 py-1.5 text-[11px] text-text-tertiary">{t("search.sectors")}</div>
               {rows.sectors.map((item) => (
                 <button
                   key={item.sectorCode}
@@ -169,7 +171,7 @@ export function MarketSearch() {
 
           {rows.stocks.length > 0 && (
             <div>
-              <div className="px-3 py-1.5 text-[11px] text-text-tertiary">股票</div>
+              <div className="px-3 py-1.5 text-[11px] text-text-tertiary">{t("search.stocks")}</div>
               {rows.stocks.map((item) => (
                 <div key={item.tsCode} className="flex items-center gap-2 px-3 py-2 hover:bg-surface-hover transition-colors">
                   <button
@@ -189,7 +191,7 @@ export function MarketSearch() {
                     }}
                   >
                     <div className="text-sm truncate">{item.stockName}</div>
-                    <div className="text-[10px] text-text-tertiary font-mono truncate">{item.tsCode} · {item.sectorName || "未识别板块"}</div>
+                    <div className="text-[10px] text-text-tertiary font-mono truncate">{item.tsCode} · {item.sectorName || t("search.unknownSector")}</div>
                   </button>
                   <div className="text-right text-[11px] shrink-0">
                     <div className={cn(item.pctChange1d >= 0 ? "text-state-up" : "text-state-down")}>{fmtPct(item.pctChange1d)}</div>
@@ -218,8 +220,8 @@ export function MarketSearch() {
                       amount: item.amount,
                       });
                     }}
-                    title={watchlistSet.has(item.tsCode) ? "已在自选" : "加入自选"}
-                    aria-label={watchlistSet.has(item.tsCode) ? "已在自选" : "加入自选"}
+                    title={watchlistSet.has(item.tsCode) ? t("search.inWatchlist") : t("search.addToWatchlist")}
+                    aria-label={watchlistSet.has(item.tsCode) ? t("search.inWatchlist") : t("search.addToWatchlist")}
                   >
                     <Star className={cn("w-3.5 h-3.5", watchlistSet.has(item.tsCode) && "fill-current")} />
                   </Button>

@@ -1,8 +1,19 @@
 import { api } from "./api-client";
 import type { ChartData, RelativeStrengthData } from "@/shared/types";
 
-export function getStockChart(tsCode: string, bars = 120, frequency = "1d") {
-  return api<ChartData>(`/charts/stock/${tsCode}?bars=${bars}&frequency=${frequency}`, { cacheTTL: 300_000 });
+interface StockChartOptions {
+  realOnly?: boolean;
+}
+
+export function getStockChart(tsCode: string, bars = 120, frequency = "1d", options: StockChartOptions = {}) {
+  const params = new URLSearchParams({
+    bars: String(bars),
+    frequency,
+  });
+  if (options.realOnly) {
+    params.set("realOnly", "1");
+  }
+  return api<ChartData>(`/charts/stock/${tsCode}?${params.toString()}`, { cacheTTL: 300_000 });
 }
 
 export function getSectorChart(sectorCode: string, bars = 120) {

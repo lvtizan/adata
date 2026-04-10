@@ -1,4 +1,4 @@
-"""盘中价格监控 — 轮询实时价格，到价发企业微信通知"""
+"""盘中价格监控 — 轮询实时价格，到价发微信通知（PushPlus / 企业微信）"""
 from __future__ import annotations
 
 import json
@@ -67,20 +67,17 @@ def _check_alert(alert: dict[str, Any], current_price: float) -> str | None:
     return None
 
 
-def _send_wechat(webhook_url: str, alert: dict[str, Any], triggered_type: str, current_price: float) -> bool:
-    """发送企业微信群机器人消息"""
+def _build_message(alert: dict[str, Any], triggered_type: str, current_price: float) -> tuple[str, str]:
     type_labels = {"entry": "到达入场价", "sl": "触发止损", "tp": "触发止盈"}
-    type_colors = {"entry": "info", "sl": "warning", "tp": "info"}
     label = type_labels.get(triggered_type, triggered_type)
-
     stock_name = alert.get("stockName", "")
     ts_code = alert.get("tsCode", "")
     entry = alert.get("entryPrice", 0)
     sl = alert.get("stopLoss", 0)
     tp = alert.get("takeProfit", 0)
-
+    title = f"价格预警 · {label}"
     content = (
-        f"**价格预警 · {label}**\n"
+        f"**{title}**\n"
         f"> 股票: {stock_name}（{ts_code}）\n"
         f"> 当前价: <font color=\"warning\">{current_price}</font>\n"
         f"> 入场价: {entry}\n"
@@ -88,6 +85,12 @@ def _send_wechat(webhook_url: str, alert: dict[str, Any], triggered_type: str, c
         f"> 止盈价: {tp}\n"
         f"> 时间: {datetime.now().strftime('%H:%M:%S')}"
     )
+    return title, content
+
+
+def _send_wechat(webhook_url: str, alert: dict[str, Any], triggered_type: str, current_price: float) -> bool:
+    """发送企业微信群机器人消息"""
+    title, content = _build_message(alert, triggered_type, current_price)
 
     try:
         resp = requests.post(
@@ -98,7 +101,7 @@ def _send_wechat(webhook_url: str, alert: dict[str, Any], triggered_type: str, c
         if resp.status_code == 200:
             data = resp.json()
             if data.get("errcode") == 0:
-                logger.info(f"通知发送成功: {stock_name} {label}")
+                logger.info(f"企业微信通知发送成功: {title}")
                 return True
             logger.warning(f"企业微信返回错误: {data}")
         else:
@@ -108,12 +111,46 @@ def _send_wechat(webhook_url: str, alert: dict[str, Any], triggered_type: str, c
     return False
 
 
+def _send_pushplus(token: str, alert: dict[str, Any], triggered_type: str, current_price: float) -> bool:
+    """发送 PushPlus 微信通知"""
+    title, content = _build_message(alert, triggered_type, current_price)
+    try:
+        resp = requests.post(
+            "https://www.pushplus.plus/send",
+            json={
+                "token": token,
+                "title": title,
+                "content": content,
+                "template": "markdown",
+            },
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get("code") == 200:
+                logger.info(f"PushPlus 通知发送成功: {title}")
+                return True
+            logger.warning(f"PushPlus 返回错误: {data}")
+        else:
+            logger.warning(f"PushPlus 请求失败: HTTP {resp.status_code}")
+    except Exception as exc:
+        logger.warning(f"PushPlus 发送异常: {exc}")
+    return False
+
+
 class PriceMonitor:
     """盘中价格监控线程"""
 
-    def __init__(self, alert_store: Any, webhook_url_getter: Callable[[], str], interval: int = 10) -> None:
+    def __init__(
+        self,
+        alert_store: Any,
+        notify_config_getter: Callable[[], dict[str, str]],
+        enabled_getter: Callable[[], bool] | None = None,
+        interval: int = 10,
+    ) -> None:
         self.alert_store = alert_store
-        self.get_webhook_url = webhook_url_getter
+        self.get_notify_config = notify_config_getter
+        self.get_enabled = enabled_getter or (lambda: True)
         self.interval = interval
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
@@ -146,6 +183,8 @@ class PriceMonitor:
             self._stop_event.wait(self.interval)
 
     def _check_once(self) -> None:
+        if not self.get_enabled():
+            return
         alerts = self.alert_store.get_active_alerts()
         if not alerts:
             return
@@ -155,7 +194,9 @@ class PriceMonitor:
         if not prices:
             return
 
-        webhook_url = self.get_webhook_url()
+        notify_cfg = self.get_notify_config()
+        pushplus_token = notify_cfg.get("pushplus_token", "")
+        webhook_url = notify_cfg.get("webhook_url", "")
 
         for alert in alerts:
             price = prices.get(alert["tsCode"])
@@ -171,7 +212,10 @@ class PriceMonitor:
             logger.info(f"预警触发: {alert['stockName']} {triggered} @ {price}")
 
             # 发通知
+            if pushplus_token:
+                _send_pushplus(pushplus_token, alert, triggered, price)
+                continue
             if webhook_url:
                 _send_wechat(webhook_url, alert, triggered, price)
-            else:
-                logger.warning("未配置企业微信 Webhook URL，跳过通知")
+                continue
+            logger.warning("未配置 PushPlus Token / 企业微信 Webhook，跳过通知")

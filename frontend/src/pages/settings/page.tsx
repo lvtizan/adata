@@ -8,11 +8,28 @@ import { useAppStore } from "@/store";
 import { NotifySettings } from "@/features/settings/NotifySettings";
 import { isDesktop, onMonitorAlert, type MonitorAlert } from "@/lib/desktop";
 import { useState, useEffect } from "react";
-import { Moon, Sun, Monitor, Bell, Info, Key } from "lucide-react";
+import { Moon, Sun, Monitor, Bell, Info, Key, Shield, ShieldOff } from "lucide-react";
+import { useUII18n } from "@/i18n/ui";
+import {
+  getWebhookSettings,
+  saveWebhookSettings,
+  getPushplusSettings,
+  savePushplusSettings,
+  getPriceMonitorStatus,
+  setPriceMonitorEnabled,
+} from "@/services";
 
 export default function SettingsPage() {
-  const { theme, setTheme } = useAppStore();
+  const { theme, setTheme, stealthMode, setStealthMode, locale, setLocale } = useAppStore();
+  const { t } = useUII18n();
   const [recentAlerts, setRecentAlerts] = useState<MonitorAlert[]>([]);
+  const [webhookUrl, setWebhookUrl] = useState("");
+  const [webhookConfigured, setWebhookConfigured] = useState(false);
+  const [pushplusToken, setPushplusToken] = useState("");
+  const [pushplusConfigured, setPushplusConfigured] = useState(false);
+  const [monitorEnabled, setMonitorEnabled] = useState(true);
+  const [monitorAlive, setMonitorAlive] = useState(false);
+  const [alertSaving, setAlertSaving] = useState(false);
 
   // 监听通知事件，在设置页展示最近的通知记录
   useEffect(() => {
@@ -25,30 +42,82 @@ export default function SettingsPage() {
     return () => unlisten?.();
   }, []);
 
+  useEffect(() => {
+    getWebhookSettings()
+      .then((res) => {
+        setWebhookUrl(res.webhookUrl || "");
+        setWebhookConfigured(Boolean(res.configured));
+      })
+      .catch(() => undefined);
+    getPushplusSettings()
+      .then((res) => {
+        setPushplusToken(res.token || "");
+        setPushplusConfigured(Boolean(res.configured));
+      })
+      .catch(() => undefined);
+    getPriceMonitorStatus()
+      .then((res) => {
+        setMonitorEnabled(Boolean(res.enabled));
+        setMonitorAlive(Boolean(res.alive));
+      })
+      .catch(() => undefined);
+  }, []);
+
   return (
     <div className="h-full overflow-y-auto">
       <div className="max-w-2xl mx-auto py-6 px-4 space-y-8">
-        <h2 className="text-xl font-semibold">设置</h2>
+        <h2 className="text-xl font-semibold">{t("settings.title")}</h2>
 
         {/* 外观设置 */}
         <section className="space-y-3">
           <div className="flex items-center gap-2 text-sm font-medium text-text-secondary">
             <Monitor className="w-4 h-4" />
-            <span>外观</span>
+            <span>{t("settings.appearance")}</span>
           </div>
           <div className="flex gap-2">
             <ThemeButton
               active={theme === "light"}
               onClick={() => setTheme("light")}
               icon={<Sun className="w-4 h-4" />}
-              label="浅色"
+              label={t("settings.light")}
             />
             <ThemeButton
               active={theme === "dark"}
               onClick={() => setTheme("dark")}
               icon={<Moon className="w-4 h-4" />}
-              label="深色"
+              label={t("settings.dark")}
             />
+          </div>
+          <div className="rounded-lg border p-3">
+            <div className="text-sm mb-2">{t("settings.language")}</div>
+            <div className="flex gap-2">
+              <ThemeButton
+                active={locale === "zh-CN"}
+                onClick={() => setLocale("zh-CN")}
+                icon={null}
+                label={t("settings.locale.zh")}
+              />
+              <ThemeButton
+                active={locale === "en-US"}
+                onClick={() => setLocale("en-US")}
+                icon={null}
+                label={t("settings.locale.en")}
+              />
+            </div>
+          </div>
+          <div className="rounded-lg border p-3 flex items-center justify-between">
+            <div className="text-sm flex items-center gap-2">
+              {stealthMode ? <Shield className="w-4 h-4 text-accent" /> : <ShieldOff className="w-4 h-4 text-text-tertiary" />}
+              <span>{t("settings.stealth")}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setStealthMode(!stealthMode)}
+              className={`relative h-6 w-11 rounded-full transition ${stealthMode ? "bg-blue-600" : "bg-gray-300"}`}
+              aria-label="切换摸鱼模式"
+            >
+              <span className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white transition ${stealthMode ? "translate-x-5" : "translate-x-0"}`} />
+            </button>
           </div>
         </section>
 
@@ -62,6 +131,95 @@ export default function SettingsPage() {
             <NotifySettings />
           </section>
         )}
+
+        {/* 价格预警通知（Web + 桌面） */}
+        <section className="space-y-3">
+          <div className="flex items-center gap-2 text-sm font-medium text-text-secondary">
+            <Bell className="w-4 h-4" />
+            <span>价格预警微信通知</span>
+          </div>
+          <div className="rounded-lg border p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="text-sm">监控开关（触发止盈/止损/买入价）</div>
+              <button
+                type="button"
+                onClick={async () => {
+                  const next = !monitorEnabled;
+                  setMonitorEnabled(next);
+                  try {
+                    const res = await setPriceMonitorEnabled(next);
+                    setMonitorEnabled(Boolean(res.enabled));
+                    setMonitorAlive(Boolean(res.alive));
+                  } catch {
+                    setMonitorEnabled(!next);
+                  }
+                }}
+                className={`relative h-6 w-11 rounded-full transition ${monitorEnabled ? "bg-blue-600" : "bg-gray-300"}`}
+              >
+                <span className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white transition ${monitorEnabled ? "translate-x-5" : "translate-x-0"}`} />
+              </button>
+            </div>
+            <div className="text-xs text-text-tertiary">
+              监控线程：{monitorAlive ? "运行中" : "未运行"} · 当前状态：{monitorEnabled ? "已启用" : "已暂停"}
+            </div>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={pushplusToken}
+                onChange={(e) => setPushplusToken(e.target.value)}
+                placeholder="PushPlus Token（推荐）"
+                className="flex-1 rounded-lg border border-border-default bg-transparent px-3 py-2 text-sm placeholder:text-text-secondary/50 focus:outline-none focus:ring-1 focus:ring-accent"
+              />
+              <button
+                type="button"
+                disabled={alertSaving}
+                onClick={async () => {
+                  setAlertSaving(true);
+                  try {
+                    const res = await savePushplusSettings(pushplusToken.trim());
+                    setPushplusConfigured(Boolean(res.configured));
+                  } finally {
+                    setAlertSaving(false);
+                  }
+                }}
+                className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+              >
+                {alertSaving ? "保存中..." : "保存"}
+              </button>
+            </div>
+            <div className="text-xs text-text-tertiary">
+              PushPlus：{pushplusConfigured ? "已配置" : "未配置"}（已配置时优先使用）
+            </div>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={webhookUrl}
+                onChange={(e) => setWebhookUrl(e.target.value)}
+                placeholder="企业微信机器人 Webhook URL"
+                className="flex-1 rounded-lg border border-border-default bg-transparent px-3 py-2 text-sm placeholder:text-text-secondary/50 focus:outline-none focus:ring-1 focus:ring-accent"
+              />
+              <button
+                type="button"
+                disabled={alertSaving}
+                onClick={async () => {
+                  setAlertSaving(true);
+                  try {
+                    const res = await saveWebhookSettings(webhookUrl.trim());
+                    setWebhookConfigured(Boolean(res.configured));
+                  } finally {
+                    setAlertSaving(false);
+                  }
+                }}
+                className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+              >
+                {alertSaving ? "保存中..." : "保存"}
+              </button>
+            </div>
+            <div className="text-xs text-text-tertiary">
+              Webhook：{webhookConfigured ? "已配置" : "未配置"}。当 PushPlus 未配置时使用企微 webhook 兜底。
+            </div>
+          </div>
+        </section>
 
         {/* 最近通知记录 */}
         {isDesktop && recentAlerts.length > 0 && (
@@ -101,7 +259,7 @@ export default function SettingsPage() {
           </div>
           <div className="text-sm text-text-secondary space-y-1">
             <p>板块强度选股系统 v2.0</p>
-            <p>数据源: Tushare</p>
+            <p>数据源: Tushare / Sina / Eastmoney / Local Clusters</p>
             {isDesktop && <p>运行环境: 桌面客户端 (Tauri)</p>}
             {!isDesktop && <p>运行环境: 浏览器</p>}
           </div>

@@ -5,6 +5,10 @@ from __future__ import annotations
 import logging
 import re
 import time
+import json
+import ssl
+import urllib.request
+from urllib.parse import urlencode
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
@@ -46,8 +50,29 @@ class MarketEngine:
         self._data_store = MarketDataStore(Path(__file__).parent / "data" / "market_cache.db")
         self._precomputed = PrecomputedStore()
         self._warmed = False
+        self._source_status: dict[str, dict[str, Any]] = {}
 
         logger.info("MarketEngine初始化完成")
+
+    def _mark_source(self, name: str, ok: bool, *, detail: str = "", count: int | None = None) -> None:
+        self._source_status[name] = {
+            "ok": bool(ok),
+            "lastAt": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
+            "detail": detail,
+            "count": int(count) if count is not None else None,
+        }
+
+    def data_sources_status(self) -> dict[str, Any]:
+        return {
+            "tradeDate": self.latest_data_trade_date() if self._warmed else None,
+            "sources": {
+                "ths_members": self._source_status.get("ths_members"),
+                "eastmoney_members": self._source_status.get("eastmoney_members"),
+                "local_clusters": self._source_status.get("local_clusters"),
+                "sina_realtime": self._source_status.get("sina_realtime"),
+            },
+            "updatedAt": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
+        }
 
     @staticmethod
     def _is_rate_limit_error(exc: Exception) -> bool:
@@ -461,13 +486,18 @@ class MarketEngine:
         s["amount_est"] = s["vol"] * s["avg_price"] * 100
         if "name" not in s.columns:
             s["name"] = s["ts_code"]
+        else:
+            s["name"] = s["name"].fillna(s["ts_code"])
         if "type" not in s.columns:
             s["type"] = "N"
+        else:
+            s["type"] = s["type"].fillna("N")
         s["sector_name"] = s["name"].fillna(s["ts_code"])
         s["activity_base"] = s.get("turnover_rate", pd.Series(np.zeros(len(s))))
         s["above_ma30"] = s["close"] >= s["ma30"]
 
         # 细分题材池：优先 N 概念 + 部分 I 行业，过滤统计噪声板块
+        s_base = s.copy()
         noise_keywords = [
             "昨日",
             "连板",
@@ -498,6 +528,16 @@ class MarketEngine:
         not_too_broad = s["sector_name"].fillna("").str.len().between(2, 16)
         above_ma30 = s["above_ma30"] if self.rules.require_sector_above_ma30 else pd.Series(True, index=s.index)
         s = s[keep_type & no_noise & no_garbage & not_too_broad & above_ma30].copy()
+        if s.empty:
+            # 元数据异常/过滤过严时，回退到基础快照（保证页面不空白）
+            logger.warning("板块过滤后为空，回退到宽松过滤")
+            broad_keep = (
+                s_base["sector_name"].fillna("").str.len().between(2, 20)
+                & ~s_base["sector_name"].fillna("").str.contains("|".join(noise_keywords), regex=True)
+            )
+            s = s_base[broad_keep].copy()
+            if s.empty:
+                s = s_base.copy()
 
         for n in [5, 10]:
             r = s[["ts_code", f"ret{n}"]].sort_values(f"ret{n}", ascending=False).reset_index(drop=True)
@@ -1044,16 +1084,28 @@ class MarketEngine:
     def sector_stocks(self, sector_code: str, trade_date: str, sort_by: str = "rps10") -> list[dict[str, Any]]:
         stock_codes: list[str] = []
         if sector_code.endswith(".SI"):
-            members = self.pro.index_member(index_code=sector_code)
-            if members is not None and not members.empty:
-                m = members.copy()
-                # 当前交易日有效成分：未剔除或剔除日晚于当前日
-                cond = m["out_date"].isna() | (m["out_date"] == "") | (m["out_date"] > trade_date)
-                stock_codes = m[cond]["con_code"].dropna().unique().tolist()
+            try:
+                members = self.pro.index_member(index_code=sector_code)
+                if members is not None and not members.empty:
+                    m = members.copy()
+                    # 当前交易日有效成分：未剔除或剔除日晚于当前日
+                    cond = m["out_date"].isna() | (m["out_date"] == "") | (m["out_date"] > trade_date)
+                    stock_codes = m[cond]["con_code"].dropna().unique().tolist()
+            except Exception as exc:
+                logger.warning(f"index_member 拉取失败，尝试本地映射: {sector_code}, {exc}")
         else:
-            members = self.pro.ths_member(ts_code=sector_code)
-            if members is not None and not members.empty:
-                stock_codes = members["con_code"].dropna().unique().tolist()
+            try:
+                members = self.pro.ths_member(ts_code=sector_code)
+                if members is not None and not members.empty:
+                    stock_codes = members["con_code"].dropna().unique().tolist()
+            except Exception as exc:
+                logger.warning(f"ths_member 拉取失败，尝试本地映射: {sector_code}, {exc}")
+        if not stock_codes:
+            try:
+                mapping, _ = self._ensure_ths_member_cache()
+                stock_codes = list(mapping.get(sector_code, []))
+            except Exception:
+                stock_codes = []
         if not stock_codes:
             return []
         try:
@@ -1261,6 +1313,21 @@ class MarketEngine:
             if df.empty:
                 logger.info(f"牛股集中营: {rps_col}>87 且 amount>=10亿 过滤后无数据")
                 return []
+
+            # 过滤一字板：开高低收几乎一致且涨幅接近涨停，不纳入牛股集中营
+            if {"open", "high", "low", "close", "pct_chg"}.issubset(df.columns):
+                one_word_mask = (
+                    (df["pct_chg"].astype(float) >= 9.6)
+                    & ((df["high"].astype(float) - df["low"].astype(float)).abs() <= (df["close"].astype(float).abs() * 0.0008 + 1e-6))
+                    & ((df["open"].astype(float) - df["close"].astype(float)).abs() <= (df["close"].astype(float).abs() * 0.0008 + 1e-6))
+                )
+                if one_word_mask.any():
+                    removed = int(one_word_mask.sum())
+                    df = df[~one_word_mask].copy()
+                    logger.info(f"牛股集中营: 过滤一字板 {removed} 只")
+                if df.empty:
+                    logger.info("牛股集中营: 过滤一字板后无数据")
+                    return []
 
             # ── 条件 2: 属于主线板块 ──
             # 获取主线板块列表
@@ -1853,15 +1920,16 @@ class MarketEngine:
 
         # 查 SQLite
         stored = self._data_store.get_json("ths_members", "all", max_age_hours=24)
-        if stored:
+        if stored and (stored.get("mapping") or stored.get("names")):
             mapping = stored["mapping"]  # {sector_code: [stock_codes]}
             names = stored["names"]      # {sector_code: name}
             result = (mapping, names)
             self._cache["_ths_members"] = (time.time(), result)
             logger.info(f"同花顺成分股映射从缓存加载: {len(mapping)} 个板块")
+            self._mark_source("ths_members", True, detail="cache_hit", count=len(mapping))
             return result
 
-        # 全量拉取
+        # 全量拉取：优先同花顺
         logger.info("拉取同花顺概念板块成分股映射（首次约 55 秒）...")
         names: dict[str, str] = {}
         for idx_type in ["N", "I", "S", "R"]:  # 概念、行业、风格、地域
@@ -1893,12 +1961,228 @@ class MarketEngine:
             for sector_code, group in all_df.groupby("ts_code"):
                 mapping[str(sector_code)] = group["con_code"].dropna().unique().tolist()
             logger.info(f"同花顺成分股映射拉取完成: {len(mapping)} 个板块, {len(all_df)} 行")
+            self._mark_source("ths_members", True, detail="remote_fetch", count=len(mapping))
+        else:
+            self._mark_source("ths_members", False, detail="remote_empty", count=0)
 
-        # 存入 SQLite
-        self._data_store.set_json("ths_members", "all", {"mapping": mapping, "names": names})
+        # 次级数据源：东方财富公开接口（不依赖 tushare 配额）
+        if not mapping:
+            em_mapping, em_names = self._fetch_eastmoney_sector_members()
+            if em_mapping:
+                mapping, names = em_mapping, em_names
+                logger.info(f"东方财富成分股映射拉取完成: {len(mapping)} 个板块")
+                self._mark_source("eastmoney_members", True, detail="remote_fetch", count=len(mapping))
+            else:
+                self._mark_source("eastmoney_members", False, detail="remote_empty", count=0)
+
+        # 终极回退：仅用本地日K快照构建“联动簇”
+        if not mapping:
+            local_mapping, local_names = self._build_local_correlation_clusters()
+            if local_mapping:
+                mapping, names = local_mapping, local_names
+                logger.warning(f"启用本地联动簇映射: {len(mapping)} 个簇")
+                self._mark_source("local_clusters", True, detail="generated", count=len(mapping))
+            else:
+                self._mark_source("local_clusters", False, detail="generate_failed", count=0)
+
+        # 存入 SQLite（避免空结果覆盖掉历史可用缓存）
+        if mapping or names:
+            self._data_store.set_json("ths_members", "all", {"mapping": mapping, "names": names})
+        else:
+            stale = self._data_store.get_json("ths_members", "all", max_age_hours=24 * 3650)
+            if stale and (stale.get("mapping") or stale.get("names")):
+                mapping = stale.get("mapping", {})
+                names = stale.get("names", {})
+                logger.warning("同花顺成分缓存刷新失败，回退历史缓存")
         result = (mapping, names)
         self._cache["_ths_members"] = (time.time(), result)
         return result
+
+    def _http_get_json_direct(self, url: str, timeout: float = 8.0) -> dict[str, Any] | None:
+        """直连 HTTP GET（禁用系统代理），返回 JSON。"""
+        try:
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with opener.open(req, timeout=timeout) as resp:
+                raw = resp.read().decode("utf-8", errors="ignore")
+            return json.loads(raw)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _to_ts_code_from_em(market: Any, code: str) -> str:
+        mk = str(market)
+        # 东财常见 market: 1=SH, 0=SZ, 2/90 常见于 BJ 或其他，回退按代码规则推断
+        if mk == "1":
+            return f"{code}.SH"
+        if mk == "0":
+            return f"{code}.SZ"
+        if code.startswith(("60", "68", "90")):
+            return f"{code}.SH"
+        if code.startswith(("8", "4")):
+            return f"{code}.BJ"
+        return f"{code}.SZ"
+
+    def _fetch_eastmoney_sector_members(self) -> tuple[dict[str, list[str]], dict[str, str]]:
+        """
+        从东方财富公开接口拉板块及成分股。
+        返回格式与 ths_members 一致：sector_code -> [ts_code], sector_code -> name
+        """
+        mapping: dict[str, list[str]] = {}
+        names: dict[str, str] = {}
+        board_params = {
+            "pn": 1,
+            "pz": 2000,
+            "po": 1,
+            "np": 1,
+            "ut": "bd1d9ddb04089700cf9c27f6f7426281",
+            "fltt": 2,
+            "invt": 2,
+            "fid": "f3",
+            "fs": "m:90+t:3",  # 概念板块
+            "fields": "f12,f14",
+        }
+        board_url = f"https://79.push2.eastmoney.com/api/qt/clist/get?{urlencode(board_params)}"
+        board_payload = self._http_get_json_direct(board_url)
+        if not board_payload:
+            self._mark_source("eastmoney_members", False, detail="board_request_failed", count=0)
+            return mapping, names
+        boards = (board_payload.get("data") or {}).get("diff") or []
+        if not isinstance(boards, list):
+            self._mark_source("eastmoney_members", False, detail="board_payload_invalid", count=0)
+            return mapping, names
+
+        for item in boards:
+            board_code = str(item.get("f12", "")).strip()
+            board_name = str(item.get("f14", "")).strip() or board_code
+            if not board_code:
+                continue
+            sector_code = f"EM.{board_code}"
+            names[sector_code] = board_name
+
+            stock_params = {
+                "pn": 1,
+                "pz": 5000,
+                "po": 1,
+                "np": 1,
+                "ut": "bd1d9ddb04089700cf9c27f6f7426281",
+                "fltt": 2,
+                "invt": 2,
+                "fid": "f3",
+                "fs": f"b:{board_code}",
+                "fields": "f12,f13",
+            }
+            stock_url = f"https://29.push2.eastmoney.com/api/qt/clist/get?{urlencode(stock_params)}"
+            stock_payload = self._http_get_json_direct(stock_url)
+            stock_rows = (stock_payload or {}).get("data", {}).get("diff") or []
+            codes: list[str] = []
+            for row in stock_rows:
+                code = str(row.get("f12", "")).strip()
+                market = row.get("f13")
+                if not code:
+                    continue
+                codes.append(self._to_ts_code_from_em(market, code))
+            uniq_codes = sorted(set(codes))
+            if uniq_codes:
+                mapping[sector_code] = uniq_codes
+
+        return mapping, names
+
+    def _build_local_correlation_clusters(self, trade_date: str | None = None) -> tuple[dict[str, list[str]], dict[str, str]]:
+        """
+        基于本地日K快照构建“联动簇”板块：
+        - 取近20个交易日收益序列
+        - 用简化 k-means 聚类（纯 numpy）
+        """
+        target_date = trade_date
+        if not target_date:
+            try:
+                target_date = self.latest_data_trade_date()
+            except Exception:
+                snap_dates = self._cached_snapshot_dates("stock_snapshot")
+                target_date = snap_dates[-1] if snap_dates else None
+        if not target_date:
+            return {}, {}
+        try:
+            dates = self.trade_dates(target_date, need=35)
+        except Exception:
+            return {}, {}
+        if len(dates) < 20:
+            return {}, {}
+        lookback = dates[-20:]
+        latest = lookback[-1]
+        snaps = self.stock_snapshot_batch(lookback)
+        latest_snap = snaps.get(latest)
+        if latest_snap is None or latest_snap.empty:
+            return {}, {}
+
+        # 流动性前 1200 只，减少噪声
+        latest_liq = latest_snap[["ts_code", "amount"]].dropna().copy()
+        latest_liq["amount"] = pd.to_numeric(latest_liq["amount"], errors="coerce").fillna(0)
+        universe = latest_liq.sort_values("amount", ascending=False).head(1200)["ts_code"].astype(str).tolist()
+        if not universe:
+            return {}, {}
+        uni_set = set(universe)
+
+        rows: list[pd.DataFrame] = []
+        for d in lookback:
+            df = snaps.get(d)
+            if df is None or df.empty or "ts_code" not in df.columns:
+                continue
+            cols = ["ts_code", "pct_chg"] if "pct_chg" in df.columns else ["ts_code"]
+            part = df[cols].copy()
+            part = part[part["ts_code"].astype(str).isin(uni_set)]
+            if "pct_chg" not in part.columns:
+                part["pct_chg"] = 0.0
+            part["trade_date"] = d
+            rows.append(part)
+        if not rows:
+            return {}, {}
+        panel = pd.concat(rows, ignore_index=True)
+        pivot = panel.pivot_table(index="ts_code", columns="trade_date", values="pct_chg", aggfunc="mean")
+        pivot = pivot.reindex(columns=lookback)
+        pivot = pivot.dropna(thresh=max(12, int(len(lookback) * 0.7)))
+        if pivot.empty:
+            return {}, {}
+        X = pivot.fillna(0.0).to_numpy(dtype=float)
+        if X.shape[0] < 80:
+            return {}, {}
+
+        # 标准化到每只股票的相对波动特征
+        mu = X.mean(axis=1, keepdims=True)
+        sigma = X.std(axis=1, keepdims=True) + 1e-6
+        Xn = (X - mu) / sigma
+
+        n = Xn.shape[0]
+        k = max(12, min(36, n // 35))
+        # 线性抽样初始化中心
+        seed_idx = np.linspace(0, n - 1, k, dtype=int)
+        centers = Xn[seed_idx].copy()
+        labels = np.zeros(n, dtype=int)
+        for _ in range(8):
+            # 欧式距离分配
+            dist = ((Xn[:, None, :] - centers[None, :, :]) ** 2).sum(axis=2)
+            labels = dist.argmin(axis=1)
+            # 更新中心
+            for cid in range(k):
+                mask = labels == cid
+                if mask.any():
+                    centers[cid] = Xn[mask].mean(axis=0)
+
+        ts_codes = pivot.index.astype(str).tolist()
+        mapping: dict[str, list[str]] = {}
+        names: dict[str, str] = {}
+        cluster_id = 1
+        for cid in range(k):
+            members = [ts_codes[i] for i in range(n) if labels[i] == cid]
+            if len(members) < 8:
+                continue
+            sector_code = f"LCL{cluster_id:03d}.CL"
+            mapping[sector_code] = sorted(members)
+            names[sector_code] = f"本地联动簇{cluster_id}"
+            cluster_id += 1
+
+        return mapping, names
 
     def _get_stock_sector_map(self, trade_date: str) -> dict[str, dict[str, str]]:
         """构建 stock→sector 反向映射（基于板块 RPS 选最强板块），缓存到内存"""
@@ -2114,7 +2398,9 @@ class MarketEngine:
         def _load():
             if not ts_codes:
                 return {"items": []}
-            return {"items": self._fetch_sina_quotes(ts_codes)}
+            items = self._fetch_sina_quotes(ts_codes)
+            self._mark_source("sina_realtime", bool(items), detail="quotes_fetch", count=len(items))
+            return {"items": items}
 
         cache_key = ",".join(sorted(ts_codes)) if ts_codes else "__none__"
         return self._cached(f"realtime_quotes:{cache_key}", 15, _load)
@@ -2508,15 +2794,24 @@ class MarketEngine:
 
         return signals
 
-    def stock_kline_5m_synthetic(self, ts_code: str, trade_date: str, bars: int = 240) -> dict[str, Any]:
-        """上证5分钟：优先真实分钟线，失败时回退日K合成"""
-        cache_key = f"kline_5m_synth:{ts_code}:{trade_date}:{bars}"
+    def stock_kline_5m_synthetic(self, ts_code: str, trade_date: str, bars: int = 240, allow_daily_fallback: bool = True) -> dict[str, Any]:
+        """上证5分钟：优先真实分钟线；可按参数禁止回退日K合成"""
+        cache_key = f"kline_5m_synth:{ts_code}:{trade_date}:{bars}:{1 if allow_daily_fallback else 0}"
 
         def _load() -> dict[str, Any]:
             try:
                 # 1) 优先用真实5分钟
                 real_5m = self.stock_kline_ashare(ts_code, "5m", bars=bars)
                 real_points = list(real_5m.get("points", [])) if isinstance(real_5m, dict) else []
+                if not real_points:
+                    # 1.1 腾讯直连兜底（禁用系统代理）
+                    real_points = self._fetch_5m_tencent_direct(ts_code, bars=bars)
+                    if real_points:
+                        real_5m = {
+                            "code": ts_code,
+                            "name": self.stock_name_map().get(ts_code, ts_code),
+                            "points": real_points,
+                        }
                 if real_points and any(len(str(p.get("time", ""))) >= 12 for p in real_points):
                     signals = self._detect_5m_patterns(real_points)
                     return {
@@ -2527,6 +2822,17 @@ class MarketEngine:
                         "frequency": "5m",
                         "synthetic": False,
                         "sourceFrequency": "5m",
+                    }
+
+                if not allow_daily_fallback:
+                    return {
+                        "code": real_5m.get("code", ts_code),
+                        "name": real_5m.get("name", ts_code),
+                        "points": [],
+                        "signals": [],
+                        "frequency": "5m",
+                        "synthetic": True,
+                        "sourceFrequency": "none",
                     }
 
                 # 2) 回退为日K合成5分钟
@@ -2676,6 +2982,41 @@ class MarketEngine:
             }
 
         return self._cached(cache_key, 60, _load)
+
+    def _fetch_5m_tencent_direct(self, ts_code: str, bars: int = 240) -> list[dict[str, Any]]:
+        """腾讯 5 分钟直连兜底：仅返回真实分钟线，不做日线合成。"""
+        pure = ts_code.split(".")[0]
+        suffix = ts_code.split(".")[-1] if "." in ts_code else ""
+        code = ("sh" if suffix == "SH" else "sz") + pure
+        url = f"http://ifzq.gtimg.cn/appstock/app/kline/mkline?param={code},m5,,{max(60, bars)}"
+        try:
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with opener.open(req, timeout=8) as resp:
+                payload = resp.read().decode("utf-8", errors="ignore")
+            data = json.loads(payload)
+            rows = data.get("data", {}).get(code, {}).get("m5", [])
+            out: list[dict[str, Any]] = []
+            for row in rows:
+                if len(row) < 6:
+                    continue
+                t = str(row[0]).replace("-", "").replace(":", "").replace(" ", "")[:12]
+                o = float(row[1]); c = float(row[2]); h = float(row[3]); l = float(row[4]); v = float(row[5])
+                if not t or o <= 0 or h <= 0 or l <= 0 or c <= 0:
+                    continue
+                out.append({
+                    "time": t,
+                    "open": o,
+                    "high": h,
+                    "low": l,
+                    "close": c,
+                    "volume": v,
+                    "amount": 0.0,
+                })
+            return out[-bars:]
+        except Exception as exc:
+            logger.debug(f"腾讯5m直连失败: {ts_code}, 错误: {exc}")
+            return []
 
     def index_kline(self, ts_code: str, trade_date: str, bars: int = 180) -> dict[str, Any]:
         """获取指数K线数据，支持 A 股指数 (.SH/.SZ/.CSI) 和同花顺指数 (.TI)"""

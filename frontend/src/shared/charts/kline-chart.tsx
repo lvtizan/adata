@@ -210,7 +210,10 @@ function ensureOverlays() {
     createPointFigures: ({ coordinates }) => {
       const point = coordinates[0];
       if (!point) return [];
-      return [{ type: "text", attrs: { x: point.x, y: point.y + 10, text: "W", align: "center" as const, baseline: "top" as const }, styles: { color: "#FF9800", size: 13, weight: 800 }, ignoreEvent: true }];
+      return [
+        { type: "text", attrs: { x: point.x, y: point.y + 8, text: "W", align: "center" as const, baseline: "top" as const }, styles: { color: "#FF9800", size: 13, weight: 800 }, ignoreEvent: true },
+        { type: "text", attrs: { x: point.x, y: point.y - 2, text: "↑", align: "center" as const, baseline: "bottom" as const }, styles: { color: "#f59e0b", size: 12, weight: 900 }, ignoreEvent: true },
+      ];
     },
   });
 

@@ -5,8 +5,7 @@ import { useIntradayStore } from "@/store";
 import { DataTable, NumericCell, type Column } from "@/shared/table";
 import { fmtPct } from "@/shared/utils/format";
 import { ChartShell } from "@/shared/charts";
-import { WatchlistChart } from "@/features/watchlist/components/watchlist-chart";
-import { ShanghaiIndex5mChart } from "@/features/intraday/shanghai-index-chart";
+import { StockKlineWorkbench } from "@/shared/charts/stock-kline-workbench";
 import {
   IntradayMarketContextBar,
   IntradayStockResearchPanel,
@@ -247,8 +246,7 @@ export default function IntradayPage() {
             className="h-full"
           >
             {selectedStock?.tsCode ? (
-              <WatchlistChart
-                key={selectedStock.tsCode}
+              <StockKlineWorkbench
                 tsCode={selectedStock.tsCode}
                 sectorCode={selectedSector?.sectorCode || ""}
                 stockName={selectedStock.stockName}
@@ -278,9 +276,6 @@ export default function IntradayPage() {
 
             <div className="min-h-0 flex-1 overflow-auto p-3">
               <div className="flex min-h-full flex-col gap-3">
-                <div className="shrink-0" style={{ height: "280px" }}>
-                  <ShanghaiIndex5mChart />
-                </div>
                 <IntradayMarketContextBar
                   overview={overview}
                   selectedSector={selectedSectorOverview}

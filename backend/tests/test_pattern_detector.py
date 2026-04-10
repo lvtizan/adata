@@ -14,6 +14,7 @@ from pattern_detector import (
     _ensure_sorted,
     _find_rally_start,
     detect_hh_signals,
+    detect_feng_signals,
     _find_swing_highs,
     _find_swing_lows,
     _ma,
@@ -38,6 +39,19 @@ def _make_df(closes, vol=1e6):
         "high": [c * 1.01 for c in closes],
         "low": [c * 0.98 for c in closes],
         "close": closes,
+        "vol": [vol] * n,
+    })
+
+
+def _make_ohlc_df(rows, vol=1e6):
+    n = len(rows)
+    dates = pd.date_range("20240101", periods=n, freq="B").strftime("%Y%m%d").tolist()
+    return pd.DataFrame({
+        "trade_date": dates,
+        "open": [float(r[0]) for r in rows],
+        "high": [float(r[1]) for r in rows],
+        "low": [float(r[2]) for r in rows],
+        "close": [float(r[3]) for r in rows],
         "vol": [vol] * n,
     })
 
@@ -292,6 +306,61 @@ class TestHHSignals(unittest.TestCase):
         df = _make_df([50.0] * 10)
         result = detect_hh_signals(df)
         self.assertIsNone(result["latestHH"])
+
+
+class TestFengSignals(unittest.TestCase):
+    def test_h1_h2_single_sequence_no_duplicates(self):
+        """同一段行情只应得到一组 H1/H2，不重复计数。"""
+        warmup = [(13.0, 13.2, 12.8, 13.0)] * 16
+        rows = warmup + [
+            (12.2, 12.4, 12.0, 12.1), (12.0, 12.1, 11.6, 11.7), (11.8, 12.0, 11.2, 11.3),
+            (11.4, 11.6, 10.8, 10.9), (11.0, 11.2, 10.2, 10.3), (10.4, 10.7, 10.0, 10.6),
+            (10.7, 11.0, 10.5, 10.9), (11.0, 11.3, 10.8, 11.1), (11.0, 11.1, 10.4, 10.5),
+            (10.5, 10.6, 10.1, 10.2), (10.2, 10.8, 10.1, 10.7),  # 下跌K
+            (10.7, 11.4, 10.6, 11.1),  # H1: 收盘上破上一根高点
+            (11.0, 11.1, 10.5, 10.6),  # 回落
+            (10.5, 10.7, 10.2, 10.3),  # 下跌K
+            (10.3, 11.6, 10.2, 11.2),  # H2: 再次反包上破
+            (11.1, 11.4, 10.9, 11.0), (11.0, 11.3, 10.8, 11.2), (11.2, 11.5, 11.0, 11.3),
+        ]
+        df = _make_ohlc_df(rows)
+        result = detect_feng_signals(df)
+        h1 = [s for s in result["signals"] if s.get("type") == "h1"]
+        h2 = [s for s in result["signals"] if s.get("type") == "h2_w"]
+        self.assertEqual(1, len(h1))
+        self.assertEqual(1, len(h2))
+
+    def test_h2_requires_pullback_after_h1(self):
+        """H1 后若没有回落，不应直接计为 H2。"""
+        warmup = [(13.0, 13.2, 12.8, 13.0)] * 20
+        rows = warmup + [
+            (12.0, 12.2, 11.8, 11.9), (11.9, 12.0, 11.3, 11.4), (11.4, 11.6, 10.8, 10.9),
+            (10.9, 11.1, 10.2, 10.3), (10.3, 10.6, 10.0, 10.5), (10.5, 10.8, 10.4, 10.7),
+            (10.6, 10.7, 10.1, 10.2), (10.2, 11.1, 10.1, 10.9),  # H1
+            (10.9, 11.4, 10.8, 11.2),  # 继续上攻（无回落）
+            (11.2, 11.6, 11.0, 11.4),  # 继续上攻（无回落）
+            (11.4, 11.7, 11.2, 11.5),
+        ]
+        df = _make_ohlc_df(rows)
+        result = detect_feng_signals(df)
+        h1 = [s for s in result["signals"] if s.get("type") == "h1"]
+        h2 = [s for s in result["signals"] if s.get("type") == "h2_w"]
+        self.assertEqual(1, len(h1))
+        self.assertEqual(0, len(h2))
+
+    def test_requires_support_stop_and_rebound_context(self):
+        """若不存在“支撑止跌后反弹”上下文，不应产生 H1/H2。"""
+        warmup = [(11.5, 11.7, 11.3, 11.5)] * 20
+        rows = warmup + [
+            (12.0, 12.2, 11.9, 12.1), (12.1, 12.4, 12.0, 12.3), (12.3, 12.6, 12.2, 12.5),
+            (12.5, 12.8, 12.4, 12.7), (12.7, 13.0, 12.6, 12.9), (12.9, 13.1, 12.7, 12.8),
+            (12.8, 13.0, 12.6, 12.7), (12.7, 13.1, 12.6, 13.0), (13.0, 13.3, 12.9, 13.2),
+            (13.2, 13.4, 13.0, 13.1), (13.1, 13.3, 12.9, 13.0), (13.0, 13.4, 12.8, 13.3),
+        ]
+        df = _make_ohlc_df(rows)
+        result = detect_feng_signals(df)
+        self.assertEqual([], result["signals"])
+        self.assertEqual([], result["buySignals"])
 
 
 if __name__ == "__main__":

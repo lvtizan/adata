@@ -198,5 +198,10 @@ export function dateToTimestamp(yyyymmdd: string): number {
   const y = parseInt(clean.slice(0, 4), 10);
   const m = parseInt(clean.slice(4, 6), 10) - 1;
   const d = parseInt(clean.slice(6, 8), 10);
+  if (clean.length >= 12) {
+    const hh = parseInt(clean.slice(8, 10), 10) || 0;
+    const mm = parseInt(clean.slice(10, 12), 10) || 0;
+    return Date.UTC(y, m, d, hh, mm, 0, 0);
+  }
   return Date.UTC(y, m, d);
 }

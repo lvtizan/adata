@@ -67,6 +67,15 @@ class PriceAlertStore:
     ) -> dict[str, Any]:
         now = self._now()
         with self._connect() as conn:
+            # 同一股票仅保留一条 active 预警，避免拖线时产生大量重复记录
+            conn.execute(
+                """
+                UPDATE price_alerts
+                SET status = 'replaced', updated_at = ?
+                WHERE ts_code = ? AND status = 'active'
+                """,
+                (now, ts_code),
+            )
             cur = conn.execute(
                 """
                 INSERT INTO price_alerts (ts_code, stock_name, entry_price, stop_loss, take_profit, status, created_at, updated_at)

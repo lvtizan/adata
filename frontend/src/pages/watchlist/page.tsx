@@ -76,7 +76,7 @@ export default function WatchlistPage() {
       align: "right",
       render: (item) => {
         const rt = realtimeMap?.get(item.tsCode);
-        const val = rt ?? item.pctChange1d;
+        const val = rt?.pctChange ?? item.pctChange1d;
         return <NumericCell value={val} format={fmtPct} />;
       },
     },
