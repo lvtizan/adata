@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { Info } from "lucide-react";
 import { useBullCamp, useStockSector, useStockFinancials } from "@/queries";
@@ -18,6 +18,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
 import type { BullCampItem } from "@/shared/types";
 import { cn } from "@/lib/utils";
 import { useDashboardStore } from "@/store";
+import { Resizer, useResizablePx, useResizableRightPx } from "@/shared/layout";
 
 function compareValues(a: any, b: any, key: string, dir: "asc" | "desc"): number {
   let va = a[key], vb = b[key];
@@ -81,12 +82,8 @@ export default function BullcampPage() {
   const [drawingTool, setDrawingTool] = useState<string | null>(null);
   const [selectedOverlay, setSelectedOverlay] = useState<{ id: string | null; locked: boolean; name: string | null }>({ id: null, locked: false, name: null });
   const [drawings, setDrawings] = useState<Array<{ id: string; name: string; lock: boolean; points: number; label?: string }>>([]);
-  // 左列宽度
-  const [leftWidth, setLeftWidth] = useState(520);
-  const draggingLeft = useRef(false);
-  // 右列宽度
-  const [rightWidth, setRightWidth] = useState(300);
-  const draggingRight = useRef(false);
+  const leftCol = useResizablePx(520, 420, 760);
+  const rightCol = useResizableRightPx(300, 240, 460);
 
   const selected = items.find((i) => i.tsCode === selectedCode) || items[0];
 
@@ -141,42 +138,6 @@ export default function BullcampPage() {
     { key: "campScoreHistory" as any, label: "趋势", width: "56px", align: "center", sortable: false, render: (item) => <ScoreSparkline data={item.campScoreHistory ?? []} /> },
   ];
 
-  function startResizeLeft(e: React.MouseEvent) {
-    e.preventDefault();
-    draggingLeft.current = true;
-    const startX = e.clientX;
-    const startW = leftWidth;
-    function onMove(ev: MouseEvent) {
-      if (!draggingLeft.current) return;
-      setLeftWidth(Math.min(760, Math.max(420, startW + ev.clientX - startX)));
-    }
-    function onUp() {
-      draggingLeft.current = false;
-      document.removeEventListener("mousemove", onMove);
-      document.removeEventListener("mouseup", onUp);
-    }
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", onUp);
-  }
-
-  function startResizeRight(e: React.MouseEvent) {
-    e.preventDefault();
-    draggingRight.current = true;
-    const startX = e.clientX;
-    const startW = rightWidth;
-    function onMove(ev: MouseEvent) {
-      if (!draggingRight.current) return;
-      setRightWidth(Math.min(460, Math.max(240, startW - (ev.clientX - startX))));
-    }
-    function onUp() {
-      draggingRight.current = false;
-      document.removeEventListener("mousemove", onMove);
-      document.removeEventListener("mouseup", onUp);
-    }
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", onUp);
-  }
-
   function emitDrawingAction(
     action: "deleteSelected" | "clearAll" | "toggleLock" | "addSupportAtClose" | "addResistanceAtClose" | "addTagAtLatest" | "deleteById" | "toggleLockById",
     detail: Record<string, unknown> = {},
@@ -191,7 +152,7 @@ export default function BullcampPage() {
   return (
     <div className="flex h-full">
       {/* ══ 左列：牛股列表 ══ */}
-      <div className="flex flex-col min-h-0 border-r border-border-default" style={{ width: leftWidth }}>
+      <div className="flex flex-col min-h-0 border-r border-border-default" style={{ width: leftCol.width }}>
         <div className="px-3 py-2 border-b border-border-default">
           <div className="flex items-center gap-1.5">
             <h2 className="text-sm font-medium">牛股集中营</h2>
@@ -227,10 +188,7 @@ export default function BullcampPage() {
         />
       </div>
 
-      {/* 左 resize handle */}
-      <div className="w-[8px] cursor-col-resize relative shrink-0 group flex items-center justify-center" onMouseDown={startResizeLeft}>
-        <div className="w-[4px] h-8 rounded-full bg-border-default/60 group-hover:bg-text-tertiary group-hover:h-12 transition-all" />
-      </div>
+      <Resizer onMouseDown={leftCol.onMouseDown} />
 
       {/* ══ 中列：K 线图 + 财务/新闻 ══ */}
       <div className="flex-1 flex flex-col min-w-0 min-h-0">
@@ -339,13 +297,10 @@ export default function BullcampPage() {
         )}
       </div>
 
-      {/* 右 resize handle */}
-      <div className="w-[8px] cursor-col-resize relative shrink-0 group flex items-center justify-center" onMouseDown={startResizeRight}>
-        <div className="w-[4px] h-8 rounded-full bg-border-default/60 group-hover:bg-text-tertiary group-hover:h-12 transition-all" />
-      </div>
+      <Resizer onMouseDown={rightCol.onMouseDown} />
 
       {/* ══ 右列：上涨归因 + 个股标签 ══ */}
-      <div className="flex flex-col min-h-0 border-l border-border-default overflow-auto" style={{ width: rightWidth }}>
+      <div className="flex flex-col min-h-0 border-l border-border-default overflow-auto" style={{ width: rightCol.width }}>
         {selected ? (
           <div className="space-y-4 p-3">
             <DrawingsPanel

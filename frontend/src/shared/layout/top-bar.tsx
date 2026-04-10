@@ -8,14 +8,18 @@ interface TopBarProps {
 
 export function TopBar({ title, showSearch = true, children }: TopBarProps) {
   return (
-    <header className="h-12 flex items-center gap-3 px-3 border-b border-border-default bg-[#f8fafc] shrink-0">
+    <header className="h-12 flex items-center gap-3 px-3 border-b border-border-default bg-surface shrink-0">
       <nav className="flex gap-1">
         {children}
       </nav>
 
-      <div className="ml-auto flex items-center gap-2 min-w-0">
+      <div className="ml-auto flex items-center gap-3 min-w-0">
         {showSearch && <MarketSearch />}
-        {title && <span className="text-[#64748b] text-xs font-mono tracking-[0.04em]">{title}</span>}
+        {title && (
+          <span className="text-text-quaternary text-[11px] font-mono tracking-[0.04em] tabular-nums">
+            {title}
+          </span>
+        )}
       </div>
     </header>
   );

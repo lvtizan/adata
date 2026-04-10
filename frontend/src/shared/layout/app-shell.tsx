@@ -8,7 +8,7 @@ interface AppShellProps {
 
 export function AppShell({ topBar, leftRail, rightPanel, bottomBar, children }: AppShellProps) {
   return (
-    <div className="h-screen overflow-hidden bg-[#f6f7fb]">
+    <div className="h-screen overflow-hidden bg-surface-secondary">
       <div className="flex h-full min-h-0">
         {leftRail}
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">

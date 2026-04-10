@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback, useState } from "react";
+import { useEffect, useRef } from "react";
 import { useMarketOverview, useSectorRankings, useSectorStocks, useWatchlist, useRealtimeQuotes } from "@/queries";
 import { useDashboardStore, useAppStore } from "@/store";
 import { MarketSummary } from "@/features/market/components/market-summary";
@@ -9,51 +9,7 @@ import { ChartShell } from "@/shared/charts";
 import { useNavigate } from "react-router-dom";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { StockKlineWorkbench } from "@/shared/charts/stock-kline-workbench";
-
-/**
- * 基于百分比的弹性列宽 hook。
- * pct: 0-1 (列宽占容器百分比)，拖拽改变百分比而非像素。
- * 这样窗口缩放时列会等比例缩放。
- */
-function useResizablePct(initialPct: number, minPct: number, maxPct: number, containerRef: React.RefObject<HTMLDivElement | null>) {
-  const [pct, setPct] = useState(initialPct);
-  const dragging = useRef(false);
-
-  const onMouseDown = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    dragging.current = true;
-    const startX = e.clientX;
-    const startPct = pct;
-    const containerWidth = containerRef.current?.clientWidth || 1200;
-
-    function onMove(ev: MouseEvent) {
-      if (!dragging.current) return;
-      const dx = ev.clientX - startX;
-      const dPct = dx / containerWidth;
-      setPct(Math.min(maxPct, Math.max(minPct, startPct + dPct)));
-    }
-    function onUp() {
-      dragging.current = false;
-      document.removeEventListener("mousemove", onMove);
-      document.removeEventListener("mouseup", onUp);
-    }
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", onUp);
-  }, [pct, minPct, maxPct, containerRef]);
-
-  return { pct, onMouseDown };
-}
-
-function Resizer({ onMouseDown }: { onMouseDown: (e: React.MouseEvent) => void }) {
-  return (
-    <div
-      className="w-[8px] cursor-col-resize relative shrink-0 group flex items-center justify-center"
-      onMouseDown={onMouseDown}
-    >
-      <div className="w-[4px] h-8 rounded-full bg-border-default/60 group-hover:bg-text-tertiary group-hover:h-12 transition-all" />
-    </div>
-  );
-}
+import { Resizer, useResizablePct } from "@/shared/layout";
 
 // 初始比例: 板块 33%, 个股 30%, 图表 37% (余量)
 const COL1_PCT = 0.33;

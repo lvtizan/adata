@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { useIntradaySectors, useIntradaySectorStocks, useMarketOverview } from "@/queries";
 import { useIntradayStore } from "@/store";
@@ -15,44 +15,7 @@ import {
   type IntradayStockOverview,
 } from "@/features/intraday";
 import type { SectorRanking, SectorStock } from "@/shared/types";
-
-function useResizablePct(initialPct: number, minPct: number, maxPct: number, containerRef: React.RefObject<HTMLDivElement | null>) {
-  const [pct, setPct] = useState(initialPct);
-  const dragging = useRef(false);
-
-  const onMouseDown = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    dragging.current = true;
-    const startX = e.clientX;
-    const startPct = pct;
-    const containerWidth = containerRef.current?.clientWidth || 1200;
-
-    function onMove(ev: MouseEvent) {
-      if (!dragging.current) return;
-      const dx = ev.clientX - startX;
-      const dPct = dx / containerWidth;
-      setPct(Math.min(maxPct, Math.max(minPct, startPct + dPct)));
-    }
-    function onUp() {
-      dragging.current = false;
-      document.removeEventListener("mousemove", onMove);
-      document.removeEventListener("mouseup", onUp);
-    }
-
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", onUp);
-  }, [pct, minPct, maxPct, containerRef]);
-
-  return { pct, onMouseDown };
-}
-
-function Resizer({ onMouseDown }: { onMouseDown: (e: React.MouseEvent) => void }) {
-  return (
-    <div className="relative flex w-[8px] shrink-0 cursor-col-resize items-center justify-center" onMouseDown={onMouseDown}>
-      <div className="h-8 w-[4px] rounded-full bg-border-default/60 transition-all group-hover:h-12 group-hover:bg-text-tertiary" />
-    </div>
-  );
-}
+import { Resizer, useResizablePct } from "@/shared/layout";
 
 const sectorColumns: Column<SectorRanking>[] = [
   {

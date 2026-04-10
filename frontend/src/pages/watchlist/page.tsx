@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { useWatchlist, useUpdateWatchlist, useRemoveFromWatchlist, useStockSector, useStockFinancials, useRealtimeQuotes } from "@/queries";
 import { DataTable, NumericCell, type Column } from "@/shared/table";
@@ -13,6 +13,7 @@ import { Input } from "@/shared/ui/input";
 import type { WatchlistItem } from "@/shared/types";
 import { cn } from "@/lib/utils";
 import { useDashboardStore } from "@/store";
+import { Resizer, useResizablePx, useResizableRightPx } from "@/shared/layout";
 
 const FREQ_OPTIONS = [
   { value: "1d", label: "日" },
@@ -36,12 +37,8 @@ export default function WatchlistPage() {
   const [selectedOverlay, setSelectedOverlay] = useState<{ id: string | null; locked: boolean; name: string | null }>({ id: null, locked: false, name: null });
   const [drawings, setDrawings] = useState<Array<{ id: string; name: string; lock: boolean; points: number; label?: string }>>([]);
 
-  // 左列宽度拖拽
-  const [leftWidth, setLeftWidth] = useState(260);
-  const draggingLeft = useRef(false);
-  // 右列宽度拖拽
-  const [rightWidth, setRightWidth] = useState(300);
-  const draggingRight = useRef(false);
+  const leftCol = useResizablePx(260, 200, 400);
+  const rightCol = useResizableRightPx(300, 240, 460);
 
   const selected = items.find((i) => i.tsCode === selectedCode) || items[0];
 
@@ -89,43 +86,6 @@ export default function WatchlistPage() {
     },
   ];
 
-  function startResizeLeft(e: React.MouseEvent) {
-    e.preventDefault();
-    draggingLeft.current = true;
-    const startX = e.clientX;
-    const startW = leftWidth;
-    function onMove(ev: MouseEvent) {
-      if (!draggingLeft.current) return;
-      setLeftWidth(Math.min(400, Math.max(200, startW + ev.clientX - startX)));
-    }
-    function onUp() {
-      draggingLeft.current = false;
-      document.removeEventListener("mousemove", onMove);
-      document.removeEventListener("mouseup", onUp);
-    }
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", onUp);
-  }
-
-  function startResizeRight(e: React.MouseEvent) {
-    e.preventDefault();
-    draggingRight.current = true;
-    const startX = e.clientX;
-    const startW = rightWidth;
-    function onMove(ev: MouseEvent) {
-      if (!draggingRight.current) return;
-      // 注意：右侧拖拽方向相反，往左拖 = 宽度变大
-      setRightWidth(Math.min(460, Math.max(240, startW - (ev.clientX - startX))));
-    }
-    function onUp() {
-      draggingRight.current = false;
-      document.removeEventListener("mousemove", onMove);
-      document.removeEventListener("mouseup", onUp);
-    }
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", onUp);
-  }
-
   async function handleSaveSubgroup() {
     if (!selected) return;
     await updateMutation.mutateAsync({ tsCode: selected.tsCode, data: { subgroup: subgroupValue } });
@@ -149,7 +109,7 @@ export default function WatchlistPage() {
   return (
     <div className="flex h-full">
       {/* ══ 左列：自选股列表 ══ */}
-      <div className="flex flex-col min-h-0 border-r border-border-default" style={{ width: leftWidth }}>
+      <div className="flex flex-col min-h-0 border-r border-border-default" style={{ width: leftCol.width }}>
         <div className="px-3 py-2 border-b border-border-default">
           <h2 className="text-sm font-medium">自选股</h2>
           <p className="text-[10px] text-text-tertiary">{items.length} 只</p>
@@ -165,10 +125,7 @@ export default function WatchlistPage() {
         />
       </div>
 
-      {/* 左 resize handle */}
-      <div className="w-[8px] cursor-col-resize relative shrink-0 group flex items-center justify-center" onMouseDown={startResizeLeft}>
-        <div className="w-[4px] h-8 rounded-full bg-border-default/60 group-hover:bg-text-tertiary group-hover:h-12 transition-all" />
-      </div>
+      <Resizer onMouseDown={leftCol.onMouseDown} />
 
       {/* ══ 中列：K 线图 ══ */}
       <div className="flex-1 flex flex-col min-w-0 min-h-0">
@@ -317,13 +274,10 @@ export default function WatchlistPage() {
         )}
       </div>
 
-      {/* 右 resize handle */}
-      <div className="w-[8px] cursor-col-resize relative shrink-0 group flex items-center justify-center" onMouseDown={startResizeRight}>
-        <div className="w-[4px] h-8 rounded-full bg-border-default/60 group-hover:bg-text-tertiary group-hover:h-12 transition-all" />
-      </div>
+      <Resizer onMouseDown={rightCol.onMouseDown} />
 
       {/* ══ 右列：上涨归因 + 详细标签 ══ */}
-      <div className="flex flex-col min-h-0 border-l border-border-default overflow-auto" style={{ width: rightWidth }}>
+      <div className="flex flex-col min-h-0 border-l border-border-default overflow-auto" style={{ width: rightCol.width }}>
         {selected ? (
           <div className="space-y-4 p-3">
             <DrawingsPanel

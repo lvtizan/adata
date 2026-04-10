@@ -21,7 +21,7 @@ interface LeftRailProps {
 export function LeftRail({ items = [], sections = [], children }: LeftRailProps) {
   const grouped = sections.length > 0;
   return (
-    <aside className="w-[204px] border-r border-[#dfe4ee] bg-[#f3f5fa] flex flex-col py-2.5 px-2 gap-1 shrink-0">
+    <aside className="w-[204px] border-r border-border-default bg-surface-secondary flex flex-col py-2.5 px-2 gap-1 shrink-0">
       <div className="mb-2 flex items-center gap-2 px-2">
         <div className="w-8 h-8 rounded-md bg-gradient-to-br from-[#111827] to-[#2563eb] flex items-center justify-center shadow-sm">
           <svg viewBox="0 0 32 32" className="w-5 h-5" aria-hidden="true">
@@ -34,20 +34,20 @@ export function LeftRail({ items = [], sections = [], children }: LeftRailProps)
           </svg>
         </div>
         <div className="min-w-0">
-          <div className="text-[13px] font-semibold leading-tight text-[#0f172a] truncate tracking-[0.02em]">A-Data Terminal</div>
+          <div className="text-[13px] font-semibold leading-tight text-text-primary truncate tracking-[0.02em]">A-Data Terminal</div>
         </div>
       </div>
       {grouped ? (
         sections.map((section) => (
           <div key={section.title} className="mb-1">
-            <div className="px-2.5 py-1 text-[10px] text-[#8b94a7] tracking-[0.08em] uppercase">{section.title}</div>
+            <div className="px-2.5 py-1 text-[10px] text-text-quaternary tracking-[0.08em] uppercase">{section.title}</div>
             {section.items.map((item, i) => (
               <button
                 key={`${section.title}-${i}`}
                 onClick={item.onClick}
                 className={cn(
-                  "w-full h-9 px-2.5 flex items-center gap-2.5 rounded-md text-left text-[#3f4654] hover:text-[#0f172a] hover:bg-white transition-colors",
-                  item.active && "text-[#0f172a] bg-white border border-[#dfe6f3] shadow-[0_1px_2px_rgba(15,23,42,0.06)]"
+                  "w-full h-9 px-2.5 flex items-center gap-2.5 rounded-md text-left text-text-secondary hover:text-text-primary hover:bg-surface-hover transition-colors",
+                  item.active && "text-text-primary bg-canvas border border-border-default shadow-[0_1px_2px_rgba(15,23,42,0.06)]"
                 )}
               >
                 <span className="w-4 h-4 inline-flex items-center justify-center">{item.icon}</span>
@@ -62,8 +62,8 @@ export function LeftRail({ items = [], sections = [], children }: LeftRailProps)
             key={i}
             onClick={item.onClick}
             className={cn(
-              "w-full h-9 px-2.5 flex items-center gap-2.5 rounded-md text-left text-[#3f4654] hover:text-[#0f172a] hover:bg-white transition-colors",
-              item.active && "text-[#0f172a] bg-white border border-[#dfe6f3] shadow-[0_1px_2px_rgba(15,23,42,0.06)]"
+              "w-full h-9 px-2.5 flex items-center gap-2.5 rounded-md text-left text-text-secondary hover:text-text-primary hover:bg-surface-hover transition-colors",
+              item.active && "text-text-primary bg-canvas border border-border-default shadow-[0_1px_2px_rgba(15,23,42,0.06)]"
             )}
           >
             <span className="w-4 h-4 inline-flex items-center justify-center">{item.icon}</span>

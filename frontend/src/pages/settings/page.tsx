@@ -18,6 +18,7 @@ import {
   getPriceMonitorStatus,
   setPriceMonitorEnabled,
 } from "@/services";
+import { Switch } from "@/shared/ui/switch";
 
 export default function SettingsPage() {
   const { theme, setTheme, stealthMode, setStealthMode, locale, setLocale } = useAppStore();
@@ -110,14 +111,7 @@ export default function SettingsPage() {
               {stealthMode ? <Shield className="w-4 h-4 text-accent" /> : <ShieldOff className="w-4 h-4 text-text-tertiary" />}
               <span>{t("settings.stealth")}</span>
             </div>
-            <button
-              type="button"
-              onClick={() => setStealthMode(!stealthMode)}
-              className={`relative h-6 w-11 rounded-full transition ${stealthMode ? "bg-blue-600" : "bg-gray-300"}`}
-              aria-label="切换摸鱼模式"
-            >
-              <span className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white transition ${stealthMode ? "translate-x-5" : "translate-x-0"}`} />
-            </button>
+            <Switch checked={stealthMode} onChange={setStealthMode} label="切换摸鱼模式" />
           </div>
         </section>
 
@@ -141,10 +135,9 @@ export default function SettingsPage() {
           <div className="rounded-lg border p-4 space-y-3">
             <div className="flex items-center justify-between">
               <div className="text-sm">监控开关（触发止盈/止损/买入价）</div>
-              <button
-                type="button"
-                onClick={async () => {
-                  const next = !monitorEnabled;
+              <Switch
+                checked={monitorEnabled}
+                onChange={async (next) => {
                   setMonitorEnabled(next);
                   try {
                     const res = await setPriceMonitorEnabled(next);
@@ -154,10 +147,8 @@ export default function SettingsPage() {
                     setMonitorEnabled(!next);
                   }
                 }}
-                className={`relative h-6 w-11 rounded-full transition ${monitorEnabled ? "bg-blue-600" : "bg-gray-300"}`}
-              >
-                <span className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white transition ${monitorEnabled ? "translate-x-5" : "translate-x-0"}`} />
-              </button>
+                label="切换价格预警监控"
+              />
             </div>
             <div className="text-xs text-text-tertiary">
               监控线程：{monitorAlive ? "运行中" : "未运行"} · 当前状态：{monitorEnabled ? "已启用" : "已暂停"}
