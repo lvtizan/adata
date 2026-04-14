@@ -24,9 +24,13 @@ from news_aggregator import (
     init_db as init_news_db, fetch_all as fetch_all_news, query_news, generate_brief_summary,
     fetch_zsxq, save_zsxq_topics, query_zsxq_topics, query_zsxq_stock_stats, query_zsxq_summary, init_zsxq_db,
     save_zsxq_cookies, _load_zsxq_cookies, search_zsxq_topics, query_zsxq_stock_detail,
-    reindex_zsxq_stock_mentions,
+    reindex_zsxq_stock_mentions, compute_zsxq_mainlines,
 )
 from pattern_predictor import predict_patterns
+from hot_rank_proxy import (
+    fetch_eastmoney_hot_rank, fetch_ths_hot_rank,
+    fetch_eastmoney_hot_themes, fetch_eastmoney_theme_stocks,
+)
 
 # 初始化日志和配置
 init_logging()
@@ -399,26 +403,11 @@ class Handler(BaseHTTPRequestHandler):
             sort_by = q.get("sortBy", ["rps10"])[0]
             keyword = q.get("keyword", [""])[0]
             logger.debug(f"获取板块排行: {trade_date}, sort={sort_by}, keyword={keyword}")
-            latest = engine.latest_data_trade_date()
-            if trade_date == latest:
-                try:
-                    realtime = engine.intraday_sector_rankings(trade_date)
-                    items = list(realtime.get("items", []))
-                except Exception as exc:
-                    logger.warning(f"intraday_sector_rankings 失败，降级快照: {exc}")
-                    items = []
-                if keyword:
-                    items = [x for x in items if keyword in str(x.get("sectorName", ""))]
-                # 盘中链路异常（如成分映射/代理失败）时，自动降级到本地快照，避免整页空白
-                if not items:
-                    try:
-                        fallback_items = engine.sector_rankings(trade_date, sort_by=sort_by, keyword=keyword)
-                    except Exception as exc:
-                        logger.warning(f"sector_rankings 失败，返回空列表: {exc}")
-                        fallback_items = []
-                    return json_response(self, {"items": fallback_items, "dataMode": "snapshot-fallback"})
-                return json_response(self, {"items": items, "dataMode": "realtime"})
-            return json_response(self, {"items": engine.sector_rankings(trade_date, sort_by=sort_by, keyword=keyword), "dataMode": "snapshot"})
+            # 强制走本地快照，避免实时链路受限流/代理波动影响导致页面空白
+            return json_response(
+                self,
+                {"items": engine.sector_rankings(trade_date, sort_by=sort_by, keyword=keyword), "dataMode": "snapshot"},
+            )
 
         if path == "/api/search":
             query = q.get("q", [""])[0]
@@ -430,47 +419,21 @@ class Handler(BaseHTTPRequestHandler):
             sector_code = path.split("/")[3]
             sort_by = q.get("sortBy", ["rps10"])[0]
             logger.debug(f"获取板块成分股: {sector_code}, {trade_date}")
-            latest = engine.latest_data_trade_date()
-            if trade_date == latest:
-                try:
-                    realtime_items = engine.intraday_sector_stocks(sector_code, trade_date)
-                except Exception as exc:
-                    logger.warning(f"intraday_sector_stocks 失败，降级快照: {sector_code}, {exc}")
-                    realtime_items = []
-                if not realtime_items:
-                    try:
-                        fallback_items = engine.sector_stocks(sector_code, trade_date, sort_by=sort_by)
-                    except Exception as exc:
-                        logger.warning(f"sector_stocks 失败，返回空列表: {sector_code}, {exc}")
-                        fallback_items = []
-                    return json_response(
-                        self,
-                        {"sectorCode": sector_code, "items": fallback_items, "dataMode": "snapshot-fallback"},
-                    )
-                return json_response(
-                    self,
-                    {"sectorCode": sector_code, "items": realtime_items, "dataMode": "realtime"},
-                )
             return json_response(
                 self,
                 {"sectorCode": sector_code, "items": engine.sector_stocks(sector_code, trade_date, sort_by=sort_by), "dataMode": "snapshot"},
             )
 
-        # 个股K线API（支持 frequency=1d/1w/1M/5m）
+        # 个股K线API（支持 frequency=1d/1w/1M/1m/5m/15m/30m/60m）
         if path.startswith("/api/charts/stock/"):
             ts_code = path.split("/")[4]
             bars = int(q.get("bars", ["180"])[0])
             frequency = q.get("frequency", ["1d"])[0]
             real_only = q.get("realOnly", ["0"])[0] in ("1", "true", "True")
-            if frequency in ("1d", "1w", "1M"):
+            import re as _re
+            if frequency in ("1d", "1w", "1M") or _re.match(r"^\d+m$", frequency):
                 logger.debug(f"获取个股K线(Ashare): {ts_code}, freq={frequency}, bars={bars}")
                 return json_response(self, engine.stock_kline_ashare(ts_code, frequency, bars=bars))
-            if frequency == "5m":
-                if ts_code == "000001.SH":
-                    logger.debug(f"获取上证K线(5m): {ts_code}, {trade_date}, bars={bars}, realOnly={real_only}")
-                    return json_response(self, engine.stock_kline_5m_synthetic(ts_code, trade_date, bars=bars, allow_daily_fallback=not real_only))
-                logger.debug(f"5m合成仅支持上证指数，回退日K: {ts_code}")
-                return json_response(self, engine.stock_kline_ashare(ts_code, "1d", bars=bars))
             logger.debug(f"获取个股K线: {ts_code}, {trade_date}, bars={bars}")
             return json_response(self, engine.stock_kline(ts_code, trade_date, bars=bars))
 
@@ -496,6 +459,24 @@ class Handler(BaseHTTPRequestHandler):
                 return json_response(self, {"error": "missing tsCode or sectorCode"}, 400)
             logger.debug(f"获取相对强弱: {ts_code} vs {sector_code}")
             return json_response(self, engine.relative_strength(ts_code, sector_code, trade_date))
+
+        # 在 Parallels Windows VM 的远航同花顺中打开个股
+        if path == "/api/open-ths":
+            ts_code = q.get("code", [""])[0]
+            pure = ts_code.split(".")[0]
+            if pure:
+                import subprocess
+                try:
+                    subprocess.Popen(
+                        ["prlctl", "exec", "Windows 11", "cmd", "/c",
+                         f"start C:\\goldsun\\TdxW.exe /Stock {pure}"],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    )
+                    return json_response(self, {"ok": True, "code": pure})
+                except Exception as exc:
+                    logger.warning(f"启动远航同花顺失败: {exc}")
+                    return json_response(self, {"ok": False, "error": str(exc)})
+            return json_response(self, {"ok": False, "error": "missing code"})
 
         # 指数风险雷达API
         if path == "/api/index-risk":
@@ -812,6 +793,14 @@ class Handler(BaseHTTPRequestHandler):
             stats = query_zsxq_stock_stats(limit=limit)
             return json_response(self, {"items": stats})
 
+        # 知识星球市场主线
+        if path == "/api/zsxq/mainlines":
+            days = int(q.get("days", ["7"])[0])
+            limit = int(q.get("limit", ["30"])[0])
+            logger.debug(f"获取知识星球主线: days={days}, limit={limit}")
+            result = compute_zsxq_mainlines(days=days, limit=limit)
+            return json_response(self, result)
+
         # 知识星球智能汇总
         if path == "/api/zsxq/summary":
             logger.debug("获取知识星球汇总")
@@ -869,6 +858,20 @@ class Handler(BaseHTTPRequestHandler):
                     logger.error(f"知识星球采集失败: {exc}")
             _thr.Thread(target=_do_zsxq, daemon=True).start()
             return json_response(self, {"ok": True, "message": "采集已触发"})
+
+        # ── 热门看板：外部数据代理 ──────────────────────────
+        if path == "/api/hot-rank/eastmoney":
+            return json_response(self, {"items": fetch_eastmoney_hot_rank()})
+
+        if path == "/api/hot-rank/ths":
+            return json_response(self, {"items": fetch_ths_hot_rank()})
+
+        if path == "/api/hot-themes":
+            return json_response(self, {"items": fetch_eastmoney_hot_themes()})
+
+        if path.startswith("/api/hot-themes/") and path.endswith("/stocks"):
+            board_code = path.split("/")[3]
+            return json_response(self, {"items": fetch_eastmoney_theme_stocks(board_code)})
 
         # 未找到API
         logger.warning(f"未找到API: {path}")

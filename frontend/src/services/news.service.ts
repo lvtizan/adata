@@ -89,6 +89,45 @@ export interface ZsxqStockDetail {
   related_stocks: Array<{ name: string; count: number }>;
 }
 
+export type ZsxqStage = "萌芽" | "发酵" | "共识" | "退潮" | "平稳";
+
+export interface ZsxqMainlineItem {
+  name: string;
+  recent: number;
+  prior: number;
+  total: number;
+  last_pub: string;
+  topic_ids: string[];
+  snippets: string[];
+  stage: ZsxqStage;
+  score: number;
+  cooccur?: Array<{ name: string; count: number }>;
+}
+
+export interface ZsxqMainlineCluster {
+  theme: string;
+  theme_candidates?: Array<{ theme: string; hits: number }>;
+  leader: string;
+  members: string[];
+  size: number;
+  total_recent: number;
+  total_prior: number;
+  stage: ZsxqStage;
+  score: number;
+}
+
+export interface ZsxqMainlinesResult {
+  days: number;
+  count: number;
+  items: ZsxqMainlineItem[];
+  clusters: ZsxqMainlineCluster[];
+  updated_at: string;
+}
+
+export function getZsxqMainlines(days = 7, limit = 30) {
+  return api<ZsxqMainlinesResult>(`/zsxq/mainlines?days=${days}&limit=${limit}`, { cacheTTL: 60_000 });
+}
+
 export function getZsxqStockDetail(name: string) {
   return api<ZsxqStockDetail>(`/zsxq/stock-detail?name=${encodeURIComponent(name)}`, { cacheTTL: 30_000 });
 }

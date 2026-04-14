@@ -13,6 +13,8 @@ import SettingsPage from "@/pages/settings/page";
 import StockComparePage from "@/pages/stock-compare/page";
 import DebugPage from "@/pages/debug/page";
 import CoreMainlinePage from "@/pages/core-mainline/page";
+import HotBoardPage from "@/pages/hot-board/page";
+import ZsxqMainlinesPage from "@/pages/zsxq-mainlines/page";
 
 export const router = createBrowserRouter([
   {
@@ -32,6 +34,8 @@ export const router = createBrowserRouter([
       { path: "morning-brief", element: <MorningBriefPage /> },
       { path: "stock-compare", element: <StockComparePage /> },
       { path: "core-mainline", element: <CoreMainlinePage /> },
+      { path: "hot-board", element: <HotBoardPage /> },
+      { path: "zsxq-mainlines", element: <ZsxqMainlinesPage /> },
       { path: "debug", element: <DebugPage /> },
       { path: "settings", element: <SettingsPage /> },
     ],

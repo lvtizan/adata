@@ -18,6 +18,8 @@ export type UIKey =
   | "nav.stockCompare"
   | "nav.coreMainline"
   | "nav.tradePlan"
+  | "nav.hotBoard"
+  | "nav.zsxqMainlines"
   | "nav.settings"
   | "search.placeholder"
   | "search.minChars"
@@ -54,6 +56,8 @@ const messages: Record<Locale, Record<UIKey, string>> = {
     "nav.stockCompare": "股票对比",
     "nav.coreMainline": "核心主线",
     "nav.tradePlan": "交易计划",
+    "nav.hotBoard": "热门看板",
+    "nav.zsxqMainlines": "星球主线",
     "nav.settings": "设置",
     "search.placeholder": "搜索股票/板块",
     "search.minChars": "输入至少 2 个字符",
@@ -89,6 +93,8 @@ const messages: Record<Locale, Record<UIKey, string>> = {
     "nav.stockCompare": "Stock Compare",
     "nav.coreMainline": "Core Themes",
     "nav.tradePlan": "Trade Plan",
+    "nav.hotBoard": "Hot Board",
+    "nav.zsxqMainlines": "ZSXQ Mainlines",
     "nav.settings": "Settings",
     "search.placeholder": "Search symbol/sector",
     "search.minChars": "Enter at least 2 characters",

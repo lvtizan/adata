@@ -705,6 +705,264 @@ def reindex_zsxq_stock_mentions() -> int:
     return updated
 
 
+# ── 主线分析 ──
+# 题材/板块关键词库（手工策展，按 A 股市场热门方向）
+# 优先级从上到下：越具体的题材越优先命中
+# (题材, 权重, 关键词列表) —— 权重用于抵消宽泛词被高频命中的偏差
+_THEME_KEYWORDS: list[tuple[str, float, list[str]]] = [
+    ("核电/可控核聚变", 3.0, ["核电", "四代核电", "高温堆", "可控核聚变", "核聚变", "聚变堆", "核岛"]),
+    ("燃机/航发出海", 3.0, ["燃机", "航发", "燃气轮机", "航空发动机", "航改燃"]),
+    ("军工-无人机", 2.5, ["无人机", "察打一体", "无人装备"]),
+    ("军工-军贸/整机", 2.5, ["军贸", "军工出口"]),
+    ("商业航天/卫星", 2.5, ["商业航天", "可回收火箭", "长征", "星舰", "太空光伏", "Globalstar", "卫星互联网"]),
+    ("低空经济", 2.5, ["低空经济", "eVTOL", "飞行汽车"]),
+    ("人形机器人", 2.5, ["人形机器人", "具身智能", "Optimus", "灵巧手", "减速器"]),
+    ("AI算力-液冷", 2.0, ["液冷", "冷板", "浸没式"]),
+    ("AI算力-光模块/CPO", 2.0, ["光模块", "CPO", "硅光", "光芯片", "LPO"]),
+    ("AI算力-PCB/CCL", 2.0, ["PCB", "CCL", "覆铜板", "M7+", "M8"]),
+    ("AI算力-HBM/存储涨价", 2.0, ["HBM", "存储涨价", "DRAM涨价", "NAND涨价", "三星存储"]),
+    ("AI算力-国产芯片", 2.0, ["国产算力", "国产芯片", "寒武纪", "华为昇腾", "海光", "云端芯片"]),
+    ("AI算力-算力租赁", 2.0, ["算力租赁", "智算中心"]),
+    ("AI算力-服务器/IDC", 1.0, ["服务器", "数据中心", "AIDC"]),  # 宽泛词，权重低
+    ("AI应用-端侧", 2.0, ["端侧AI", "AI眼镜", "AI手机", "AIPC"]),
+    ("AI应用-Agent", 2.0, ["Agent", "智能体", "MCP", "豆包", "DeepSeek", "OpenAI"]),
+    ("工程机械出海", 2.5, ["工程机械", "挖掘机", "推土机", "装载机"]),
+    ("电网/特高压", 2.0, ["特高压", "柔直", "配网"]),
+    ("半导体-设备", 2.0, ["半导体设备", "光刻机", "刻蚀", "CMP", "封测设备"]),
+    ("半导体-材料", 2.0, ["半导体材料", "光刻胶", "电子化学品", "大硅片"]),
+    ("半导体-先进封装", 2.0, ["先进封装", "Chiplet", "CoWoS", "HBM封装"]),
+    ("消费电子-苹果链", 2.0, ["苹果链", "iPhone", "折叠屏", "MR头显"]),
+    ("消费电子-华为链", 2.0, ["华为链", "鸿蒙", "Mate"]),
+    ("创新药-减肥药", 2.5, ["减肥药", "GLP-1", "司美格鲁肽"]),
+    ("创新药-BD/出海", 2.5, ["License-out", "出海授权", "BD交易"]),
+    ("新能源-固态电池", 2.5, ["固态电池", "硫化物", "半固态"]),
+    ("新能源-储能", 2.0, ["储能", "工商业储能", "大储", "构网"]),
+    ("新能源-光伏设备", 2.0, ["光伏设备", "HJT", "钙钛矿", "TOPCon"]),
+    ("新能源-风电", 2.0, ["风电", "海风", "海上风电"]),
+    ("券商/并购重组", 2.0, ["券商合并", "并购重组", "借壳", "资产注入"]),
+    ("信创/国产替代", 2.0, ["信创", "国产替代", "操作系统"]),
+    ("反制/稀土管制", 2.5, ["反制", "稀土", "出口管制"]),
+    ("央国企改革", 2.0, ["央企改革", "国企改革", "市值管理"]),
+]
+
+_MAINLINE_BLOCKLIST = {
+    # 券商团队/研报前缀（被误识为个股）
+    "天风电子", "天风机械", "天风通信", "天风食品", "天风汽车", "天风传媒",
+    "广发机械", "广发食品", "广发电子", "广发通信", "广发传媒",
+    "中泰电子", "中泰传媒", "中泰机械", "中泰通信", "中泰食品",
+    "华福电子", "华福机械", "申万电子", "华创电子", "中金电子",
+    "公司股份", "公司半导体", "公司电子", "公司通信", "公司机械",
+    "中信证券",  # 常作为券商名出现
+}
+
+
+def compute_zsxq_mainlines(days: int = 7, limit: int = 30) -> dict[str, Any]:
+    """从知识星球内容计算"市场主线"。
+
+    对最近 N 天的内容：
+    - 统计每个股票/概念在"近半段"和"前半段"的提及次数
+    - 按趋势分阶段：萌芽 / 发酵 / 共识 / 退潮
+    - 返回排序的主线列表，每条包含样例帖子
+    """
+    if not ZSXQ_DB_PATH.exists():
+        return {"days": days, "items": [], "updated_at": datetime.now().isoformat(timespec="seconds")}
+
+    from datetime import timedelta
+    now = datetime.now()
+    start = (now - timedelta(days=days)).isoformat()
+    mid = (now - timedelta(days=days / 2)).isoformat()
+
+    conn = sqlite3.connect(ZSXQ_DB_PATH)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        "SELECT topic_id, content, published, likes_count, stock_mentions FROM zsxq_topics "
+        "WHERE published >= ? ORDER BY published DESC",
+        (start,),
+    ).fetchall()
+
+    def _valid(name: str) -> bool:
+        if len(name) < 2 or len(name) > 6:
+            return False
+        if name in _MAINLINE_BLOCKLIST:
+            return False
+        if name.isdigit():
+            return False
+        if any(bad in name for bad in ("普遍", "启动", "认为", "关注", "欢迎", "坚定", "详情")):
+            return False
+        return True
+
+    # 聚合每个股票的提及 + 共现
+    agg: dict[str, dict[str, Any]] = {}
+    co_occur: dict[str, dict[str, int]] = {}  # {name: {other_name: co_count}}
+    for r in rows:
+        try:
+            mentions = json.loads(r["stock_mentions"] or "[]")
+        except Exception:
+            mentions = []
+        valid_mentions = [m for m in mentions if _valid(m)]
+        pub = r["published"] or ""
+        is_recent = pub >= mid
+        for name in valid_mentions:
+            entry = agg.setdefault(name, {
+                "name": name,
+                "recent": 0,
+                "prior": 0,
+                "total": 0,
+                "last_pub": "",
+                "topic_ids": [],
+                "snippets": [],
+                "cooccur": [],
+            })
+            if is_recent:
+                entry["recent"] += 1
+            else:
+                entry["prior"] += 1
+            entry["total"] += 1
+            if pub > entry["last_pub"]:
+                entry["last_pub"] = pub
+            if len(entry["topic_ids"]) < 3:
+                entry["topic_ids"].append(r["topic_id"])
+                snippet = (r["content"] or "").strip().replace("\n", " ")[:120]
+                entry["snippets"].append(snippet)
+        # 共现计数
+        for i, a in enumerate(valid_mentions):
+            for b in valid_mentions[i + 1:]:
+                if a == b:
+                    continue
+                co_occur.setdefault(a, {})[b] = co_occur.setdefault(a, {}).get(b, 0) + 1
+                co_occur.setdefault(b, {})[a] = co_occur.setdefault(b, {}).get(a, 0) + 1
+
+    # 分阶段
+    def classify(recent: int, prior: int) -> str:
+        if prior == 0 and recent >= 2:
+            return "萌芽"
+        if prior >= 1 and recent >= max(3, prior * 2):
+            return "发酵"
+        if recent >= 5 and prior >= 3 and 0.7 <= recent / max(prior, 1) <= 1.5:
+            return "共识"
+        if prior >= 3 and recent < prior * 0.5:
+            return "退潮"
+        return "平稳"
+
+    items = []
+    for entry in agg.values():
+        if entry["total"] < 3:  # 过滤低频噪音
+            continue
+        entry["stage"] = classify(entry["recent"], entry["prior"])
+        # 热度分: 近期权重更高 + 一定程度考虑趋势
+        momentum = (entry["recent"] - entry["prior"]) / max(entry["prior"], 1)
+        entry["score"] = round(entry["recent"] * 2 + entry["prior"] + momentum * 3, 2)
+        items.append(entry)
+
+    # 填充共现 Top3
+    for entry in items:
+        pairs = co_occur.get(entry["name"], {})
+        top_co = sorted(pairs.items(), key=lambda x: -x[1])[:3]
+        entry["cooccur"] = [{"name": n, "count": c} for n, c in top_co if c >= 2]
+
+    # 按 score 排序
+    items.sort(key=lambda x: (-x["score"], -x["total"]))
+    items = items[:limit]
+
+    # 主线聚团：并查集 on 共现强度 >= 3
+    name_to_entry = {e["name"]: e for e in items}
+    parent: dict[str, str] = {n: n for n in name_to_entry}
+
+    def find(x: str) -> str:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a: str, b: str) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    for name in list(name_to_entry.keys()):
+        for other, cnt in co_occur.get(name, {}).items():
+            if other in name_to_entry and cnt >= 3:
+                union(name, other)
+
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for name, entry in name_to_entry.items():
+        groups.setdefault(find(name), []).append(entry)
+
+    # 为聚团打题材标签：收集成员所涉全部帖子内容，扫描关键词库
+    member_to_topics: dict[str, list[str]] = {e["name"]: list(e["topic_ids"]) for e in items}
+    # 取每个成员的原文内容（扩展采样以提高命中率）
+    all_member_names = set(name_to_entry.keys())
+    content_cache: dict[str, str] = {}
+    if all_member_names:
+        placeholder = ",".join("?" * len(all_member_names))
+        # 拉成员关联的 topic 原文
+        all_topic_ids: set[str] = set()
+        for tids in member_to_topics.values():
+            all_topic_ids.update(tids)
+        if all_topic_ids:
+            q_placeholder = ",".join("?" * len(all_topic_ids))
+            for tid, cnt in conn.execute(
+                f"SELECT topic_id, content FROM zsxq_topics WHERE topic_id IN ({q_placeholder})",
+                tuple(all_topic_ids),
+            ).fetchall():
+                content_cache[tid] = cnt or ""
+
+    def label_cluster(member_names: list[str]) -> tuple[str, list[tuple[str, float]]]:
+        """扫描成员所在帖子的内容，返回 (主题标签, 候选列表)。按 命中数×主题权重 排序。"""
+        counts: dict[str, int] = {}
+        seen_topics: set[str] = set()
+        for m in member_names:
+            for tid in member_to_topics.get(m, []):
+                if tid in seen_topics:
+                    continue
+                seen_topics.add(tid)
+                text = content_cache.get(tid, "")
+                if not text:
+                    continue
+                for theme, _w, kws in _THEME_KEYWORDS:
+                    if any(kw in text for kw in kws):
+                        counts[theme] = counts.get(theme, 0) + 1
+        theme_weight = {t: w for t, w, _ in _THEME_KEYWORDS}
+        scored = [(t, c * theme_weight.get(t, 1.0)) for t, c in counts.items()]
+        scored.sort(key=lambda x: -x[1])
+        top = scored[0][0] if scored else ""
+        return top, scored[:3]
+
+    clusters: list[dict[str, Any]] = []
+    for members in groups.values():
+        if len(members) < 2:
+            continue
+        members_sorted = sorted(members, key=lambda x: -x["score"])
+        total_recent = sum(m["recent"] for m in members_sorted)
+        total_prior = sum(m["prior"] for m in members_sorted)
+        stages = [m["stage"] for m in members_sorted]
+        from collections import Counter
+        dom_stage = Counter(stages).most_common(1)[0][0]
+        member_names = [m["name"] for m in members_sorted]
+        theme_label, theme_candidates = label_cluster(member_names)
+        clusters.append({
+            "theme": theme_label or members_sorted[0]["name"],
+            "theme_candidates": [{"theme": t, "hits": c} for t, c in theme_candidates],
+            "leader": members_sorted[0]["name"],
+            "members": member_names,
+            "size": len(members_sorted),
+            "total_recent": total_recent,
+            "total_prior": total_prior,
+            "stage": dom_stage,
+            "score": round(sum(m["score"] for m in members_sorted), 2),
+        })
+    clusters.sort(key=lambda x: -x["score"])
+
+    conn.close()
+    return {
+        "days": days,
+        "count": len(items),
+        "items": items,
+        "clusters": clusters,
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+    }
+
+
 def search_zsxq_topics(keyword: str, limit: int = 50) -> list[dict[str, Any]]:
     """搜索知识星球内容，按时间倒序。"""
     if not ZSXQ_DB_PATH.exists() or not keyword.strip():

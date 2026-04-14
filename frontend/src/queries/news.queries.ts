@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { getNewsFeed, getNewsBrief, refreshNewsFeed, getZsxqTopics, getZsxqStockStats, refreshZsxq, searchZsxqTopics, getZsxqStockDetail } from "@/services";
+import { getNewsFeed, getNewsBrief, refreshNewsFeed, getZsxqTopics, getZsxqStockStats, refreshZsxq, searchZsxqTopics, getZsxqStockDetail, getZsxqMainlines } from "@/services";
 
 export function useNewsFeed(params?: { source?: string; category?: string; limit?: number }) {
   return useQuery({
@@ -67,6 +67,14 @@ export function useZsxqStockDetail(name: string | null) {
     queryFn: () => getZsxqStockDetail(name!),
     enabled: !!name,
     staleTime: 30_000,
+  });
+}
+
+export function useZsxqMainlines(days = 7, limit = 30) {
+  return useQuery({
+    queryKey: ["zsxq-mainlines", days, limit],
+    queryFn: () => getZsxqMainlines(days, limit),
+    staleTime: 60_000,
   });
 }
 
