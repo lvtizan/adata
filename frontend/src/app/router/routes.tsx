@@ -15,6 +15,7 @@ import DebugPage from "@/pages/debug/page";
 import CoreMainlinePage from "@/pages/core-mainline/page";
 import HotBoardPage from "@/pages/hot-board/page";
 import ZsxqMainlinesPage from "@/pages/zsxq-mainlines/page";
+import ThsDashboardPage from "@/pages/ths-dashboard/page";
 
 export const router = createBrowserRouter([
   {
@@ -36,6 +37,7 @@ export const router = createBrowserRouter([
       { path: "core-mainline", element: <CoreMainlinePage /> },
       { path: "hot-board", element: <HotBoardPage /> },
       { path: "zsxq-mainlines", element: <ZsxqMainlinesPage /> },
+      { path: "ths-dashboard", element: <ThsDashboardPage /> },
       { path: "debug", element: <DebugPage /> },
       { path: "settings", element: <SettingsPage /> },
     ],

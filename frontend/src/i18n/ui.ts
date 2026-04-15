@@ -20,6 +20,7 @@ export type UIKey =
   | "nav.tradePlan"
   | "nav.hotBoard"
   | "nav.zsxqMainlines"
+  | "nav.thsDashboard"
   | "nav.settings"
   | "search.placeholder"
   | "search.minChars"
@@ -58,6 +59,7 @@ const messages: Record<Locale, Record<UIKey, string>> = {
     "nav.tradePlan": "交易计划",
     "nav.hotBoard": "热门看板",
     "nav.zsxqMainlines": "星球主线",
+    "nav.thsDashboard": "同花顺看板",
     "nav.settings": "设置",
     "search.placeholder": "搜索股票/板块",
     "search.minChars": "输入至少 2 个字符",
@@ -95,6 +97,7 @@ const messages: Record<Locale, Record<UIKey, string>> = {
     "nav.tradePlan": "Trade Plan",
     "nav.hotBoard": "Hot Board",
     "nav.zsxqMainlines": "ZSXQ Mainlines",
+    "nav.thsDashboard": "THS Dashboard",
     "nav.settings": "Settings",
     "search.placeholder": "Search symbol/sector",
     "search.minChars": "Enter at least 2 characters",

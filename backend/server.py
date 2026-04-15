@@ -26,6 +26,7 @@ from news_aggregator import (
     save_zsxq_cookies, _load_zsxq_cookies, search_zsxq_topics, query_zsxq_stock_detail,
     reindex_zsxq_stock_mentions, compute_zsxq_mainlines,
 )
+from ths_proxy import fetch_ths_kline
 from pattern_predictor import predict_patterns
 from hot_rank_proxy import (
     fetch_eastmoney_hot_rank, fetch_ths_hot_rank,
@@ -801,6 +802,21 @@ class Handler(BaseHTTPRequestHandler):
             logger.debug(f"获取知识星球股票统计: limit={limit}")
             stats = query_zsxq_stock_stats(limit=limit)
             return json_response(self, {"items": stats})
+
+        # 同花顺 K线代理（code/market/freq）
+        if path == "/api/ths/kline":
+            code = q.get("code", [""])[0]
+            market = q.get("market", ["stock"])[0]
+            freq = q.get("freq", ["1d"])[0]
+            bars = int(q.get("bars", ["240"])[0])
+            if not code:
+                return json_response(self, {"error": "missing code"}, 400)
+            try:
+                result = fetch_ths_kline(code, market=market, freq=freq, bars=bars)
+                return json_response(self, result)
+            except Exception as exc:
+                logger.warning(f"THS kline error: {exc}")
+                return json_response(self, {"error": str(exc)}, 500)
 
         # 知识星球市场主线
         if path == "/api/zsxq/mainlines":

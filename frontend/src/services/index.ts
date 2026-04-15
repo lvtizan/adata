@@ -7,3 +7,5 @@ export * from "./chart.service";
 export * from "./index-risk.service";
 export * from "./news.service";
 export * from "./prediction.service";
+export * from "./hot-rank.service";
+export * from "./ths.service";
