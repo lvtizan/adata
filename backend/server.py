@@ -431,6 +431,15 @@ class Handler(BaseHTTPRequestHandler):
             frequency = q.get("frequency", ["1d"])[0]
             real_only = q.get("realOnly", ["0"])[0] in ("1", "true", "True")
             import re as _re
+            # 上证指数 5m：走带兜底的 synthetic 路径（真实5m → 腾讯直连 → 日K合成）
+            if frequency == "5m" and ts_code == "000001.SH":
+                logger.debug(f"获取上证5m(synthetic): {ts_code}, bars={bars}, realOnly={real_only}")
+                return json_response(
+                    self,
+                    engine.stock_kline_5m_synthetic(
+                        ts_code, trade_date, bars=bars, allow_daily_fallback=not real_only,
+                    ),
+                )
             if frequency in ("1d", "1w", "1M") or _re.match(r"^\d+m$", frequency):
                 logger.debug(f"获取个股K线(Ashare): {ts_code}, freq={frequency}, bars={bars}")
                 return json_response(self, engine.stock_kline_ashare(ts_code, frequency, bars=bars))
