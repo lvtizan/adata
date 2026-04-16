@@ -1929,7 +1929,7 @@ class MarketEngine:
         if cached:
             age = time.time() - cached[0]
             mapping_cached, names_cached = cached[1]
-            # 非空映射缓存 24h；空映射只短缓存，避免“空结果锁死一天”
+            # 非空映射缓存 24h；空映射只短缓存，避免"空结果锁死一天"
             max_age = 86400 if (mapping_cached or names_cached) else 60
             if age < max_age:
                 return cached[1]
@@ -1944,7 +1944,7 @@ class MarketEngine:
             logger.info(f"同花顺成分股映射从缓存加载: {len(mapping)} 个板块")
             self._mark_source("ths_members", True, detail="cache_hit", count=len(mapping))
             return result
-        # 如果明确缓存为“空映射”，优先走本地联动簇，避免频繁打远端接口造成卡顿
+        # 如果明确缓存为"空映射"，优先走本地联动簇，避免频繁打远端接口造成卡顿
         if stored and not (stored.get("mapping") or stored.get("names")):
             local_mapping, local_names = self._build_local_correlation_clusters()
             if local_mapping:
@@ -2001,7 +2001,17 @@ class MarketEngine:
             else:
                 self._mark_source("eastmoney_members", False, detail="remote_empty", count=0)
 
-        # 终极回退：仅用本地日K快照构建“联动簇”
+        # 三级兜底：THS 爬虫（不依赖 Tushare 配额，实测可拿 ~90 个板块）
+        if not mapping:
+            ths_mapping, ths_names = self._fetch_ths_scraper_members()
+            if ths_mapping:
+                mapping, names = ths_mapping, ths_names
+                logger.info(f"THS 爬虫成分股映射拉取完成: {len(mapping)} 个板块")
+                self._mark_source("ths_scraper", True, detail="scraper_fetch", count=len(mapping))
+            else:
+                self._mark_source("ths_scraper", False, detail="scraper_empty", count=0)
+
+        # 终极回退：仅用本地日K快照构建"联动簇"
         if not mapping:
             local_mapping, local_names = self._build_local_correlation_clusters()
             if local_mapping:
@@ -2114,9 +2124,58 @@ class MarketEngine:
 
         return mapping, names
 
+    def _fetch_ths_scraper_members(self) -> tuple[dict[str, list[str]], dict[str, str]]:
+        """用 ths_proxy 的网页爬虫获取板块成分股映射。
+
+        不依赖 Tushare 配额。约 90 个板块，每个 ~1 秒，首次约 90 秒。
+        """
+        try:
+            from ths_proxy import fetch_ths_sector_list, fetch_ths_sector_members
+        except ImportError:
+            logger.warning("ths_proxy 不可用")
+            return {}, {}
+
+        sectors = fetch_ths_sector_list()
+        if not sectors:
+            logger.warning("THS 爬虫板块列表为空")
+            return {}, {}
+
+        mapping: dict[str, list[str]] = {}
+        names: dict[str, str] = {}
+        for i, s in enumerate(sectors):
+            code = s["code"]
+            try:
+                members = fetch_ths_sector_members(code)
+                if not members:
+                    continue
+                # 把 6 位裸代码转成 ts_code 格式（沪/深/北）
+                normalized: list[str] = []
+                for m in members:
+                    sc = m["code"].strip()
+                    if not sc or len(sc) != 6:
+                        continue
+                    if sc.startswith(("6", "9")):
+                        normalized.append(f"{sc}.SH")
+                    elif sc.startswith(("4", "8")):
+                        normalized.append(f"{sc}.BJ")
+                    else:
+                        normalized.append(f"{sc}.SZ")
+                if normalized:
+                    mapping[code] = normalized
+                    names[code] = s["name"]
+            except Exception as exc:
+                logger.warning(f"ths scraper for {code} failed: {exc}")
+                continue
+            # 进度日志（每 20 个）
+            if (i + 1) % 20 == 0:
+                logger.info(f"THS 爬虫: {i+1}/{len(sectors)} 板块")
+
+        logger.info(f"THS 爬虫完成: {len(mapping)}/{len(sectors)} 板块成功")
+        return mapping, names
+
     def _build_local_correlation_clusters(self, trade_date: str | None = None) -> tuple[dict[str, list[str]], dict[str, str]]:
         """
-        基于本地日K快照构建“联动簇”板块：
+        基于本地日K快照构建"联动簇"板块：
         - 取近20个交易日收益序列
         - 用简化 k-means 聚类（纯 numpy）
         """
@@ -2926,7 +2985,7 @@ class MarketEngine:
                 if h < l:
                     h, l = l, h
 
-                # 先构造“收盘轨迹”：经过 O/H/L/C，保持每日日K一致
+                # 先构造"收盘轨迹"：经过 O/H/L/C，保持每日日K一致
                 if c >= o:
                     low_slot, high_slot = 6, 36
                     anchors = [(0, o), (low_slot, l), (high_slot, h), (47, c)]
@@ -2943,7 +3002,7 @@ class MarketEngine:
                     seg = np.linspace(s_val, e_val, e_idx - s_idx + 1)
                     close_path[s_idx : e_idx + 1] = seg
 
-                # 轻微波动，避免生成“机械直线”
+                # 轻微波动，避免生成"机械直线"
                 amp = max((h - l) * 0.02, 0.001)
                 noise = np.sin(np.linspace(0, np.pi * 2, 48)) * amp
                 close_path = np.clip(close_path + noise, l, h)
