@@ -1944,14 +1944,22 @@ class MarketEngine:
             logger.info(f"同花顺成分股映射从缓存加载: {len(mapping)} 个板块")
             self._mark_source("ths_members", True, detail="cache_hit", count=len(mapping))
             return result
-        # 如果明确缓存为"空映射"，优先走本地联动簇，避免频繁打远端接口造成卡顿
+        # 如果明确缓存为"空映射"，先尝试 THS 爬虫（不耗 Tushare 配额），失败再走本地联动簇
         if stored and not (stored.get("mapping") or stored.get("names")):
+            ths_mapping, ths_names = self._fetch_ths_scraper_members()
+            if ths_mapping:
+                self._data_store.set_json("ths_members", "all", {"mapping": ths_mapping, "names": ths_names})
+                result = (ths_mapping, ths_names)
+                self._cache["_ths_members"] = (time.time(), result)
+                logger.info(f"ths_members 缓存为空，THS 爬虫拉取成功: {len(ths_mapping)} 板块")
+                self._mark_source("ths_scraper", True, detail="scraper_from_empty_cache", count=len(ths_mapping))
+                return result
             local_mapping, local_names = self._build_local_correlation_clusters()
             if local_mapping:
                 self._data_store.set_json("ths_members", "all", {"mapping": local_mapping, "names": local_names})
                 result = (local_mapping, local_names)
                 self._cache["_ths_members"] = (time.time(), result)
-                logger.warning(f"ths_members 缓存为空，启用本地联动簇映射: {len(local_mapping)} 个簇")
+                logger.warning(f"ths_members 缓存为空，THS 爬虫也失败，启用本地联动簇映射: {len(local_mapping)} 个簇")
                 self._mark_source("local_clusters", True, detail="generated_from_empty_cache", count=len(local_mapping))
                 return result
 
