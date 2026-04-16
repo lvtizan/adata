@@ -817,29 +817,75 @@ class Handler(BaseHTTPRequestHandler):
                 logger.warning(f"THS kline error: {exc}")
                 return json_response(self, {"error": str(exc)}, 500)
 
-        # GET /api/ths/sectors - 按 RS120 降序的板块列表
+        # GET /api/ths/sectors - 双数据源合并（THS 881xxx + 新浪 new_/sw2_/gn_）
         if path == "/api/ths/sectors":
-            sectors = fetch_ths_sector_list()
+            ths_sectors = fetch_ths_sector_list()
+            # 新浪补充/兜底
+            try:
+                from sina_proxy import fetch_sina_sector_list
+                sina_sectors = fetch_sina_sector_list()
+            except ImportError:
+                sina_sectors = []
+
             rs_map = load_cached_sector_rs120()
-            enriched = []
-            for s in sectors:
-                rs = rs_map.get(s["code"])
+            enriched: list[dict[str, Any]] = []
+            # THS 优先
+            ths_names_seen: set[str] = set()
+            for s in ths_sectors:
+                ths_names_seen.add(s["name"])
                 enriched.append({
                     "code": s["code"],
                     "name": s["name"],
-                    "rs120": rs,
+                    "rs120": rs_map.get(s["code"]),
+                    "source": "ths",
+                })
+            # 新浪补充（按名去重：已在 THS 出现的不再加）
+            for s in sina_sectors:
+                if s["name"] in ths_names_seen:
+                    continue
+                enriched.append({
+                    "code": s["code"],
+                    "name": s["name"],
+                    "rs120": None,  # 新浪 code 和 THS 不同，没 RS120 可查
+                    "source": "sina",
                 })
             # RS120 降序（None 排最后）
             enriched.sort(key=lambda x: (x["rs120"] is None, -(x["rs120"] or 0)))
             return json_response(self, {"items": enriched})
 
-        # GET /api/ths/sectors/{code}/members - 板块成分股
+        # GET /api/ths/sectors/{code}/members - 板块成分股（按 code 前缀派发到不同数据源）
         if path.startswith("/api/ths/sectors/") and path.endswith("/members"):
             sector_code = path.split("/")[4]
-            if not sector_code.startswith("881") or len(sector_code) != 6:
+            members: list[dict[str, Any]] = []
+
+            # THS 881xxx
+            if sector_code.startswith("881") and len(sector_code) == 6:
+                members = fetch_ths_sector_members(sector_code)
+            # 新浪 new_/sw_/sw2_/gn_
+            elif sector_code.startswith(("new_", "sw2_", "sw_", "gn_")):
+                try:
+                    from sina_proxy import fetch_sina_sector_members
+                    raw_members = fetch_sina_sector_members(sector_code)
+                    # 新浪返回 {code, tsCode, name, price, pctChange, amount}
+                    # THS 返回 {code, name, price, pctChange, amount}
+                    # 统一成 THS 字段集（保留 tsCode 供前端可选使用）
+                    members = [
+                        {
+                            "code": m["code"],
+                            "name": m.get("name", ""),
+                            "price": m.get("price", 0),
+                            "pctChange": m.get("pctChange", 0),
+                            "amount": m.get("amount", 0),
+                            "tsCode": m.get("tsCode", ""),
+                        }
+                        for m in raw_members
+                    ]
+                except ImportError:
+                    members = []
+            else:
                 return json_response(self, {"error": "invalid sector code"}, 400)
-            members = fetch_ths_sector_members(sector_code)
-            # 计算板块内 RS（按 pctChange 百分位，简化版，不读 K线）
+
+            # 计算板块内 RS（按 pctChange 百分位）
             if members:
                 sorted_by_pct = sorted(members, key=lambda m: m.get("pctChange", 0))
                 n = len(sorted_by_pct)
