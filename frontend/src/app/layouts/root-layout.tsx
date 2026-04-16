@@ -2,8 +2,9 @@ import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import { AppShell, TopBar, BottomBar, LeftRail } from "@/shared/layout";
 import { AiResearchPanel } from "@/shared/layout/ai-research-panel";
 import { useMarketOverview, useBullCamp, useWatchlist } from "@/queries";
-import { Activity, BarChart3, Eye, Flame, Settings, Crosshair, FileText, TrendingUp, GitCommit, Newspaper, ClipboardList, BookMarked, Sparkles, type LucideIcon } from "lucide-react";
+import { Activity, BarChart3, Eye, Flame, Settings, Crosshair, FileText, TrendingUp, GitCommit, Newspaper, ClipboardList, BookMarked, Sparkles, PanelLeftClose, PanelLeftOpen, type LucideIcon } from "lucide-react";
 import { useUII18n, type UIKey } from "@/i18n/ui";
+import { useAppStore } from "@/store/app-store";
 
 const navItems: Array<{ path: string; labelKey: UIKey; icon: LucideIcon }> = [
   { path: "/intraday", labelKey: "nav.intraday", icon: TrendingUp },
@@ -46,6 +47,8 @@ export function RootLayout() {
   const { data: overview } = useMarketOverview();
   const { t, locale } = useUII18n();
   const hideTopSearch = location.pathname === "/morning-brief";
+  const leftRailCollapsed = useAppStore((s) => s.leftRailCollapsed);
+  const toggleLeftRailCollapsed = useAppStore((s) => s.toggleLeftRailCollapsed);
 
   // Prefetch: 后台预加载牛股集中营和自选股数据，切页时秒开
   useBullCamp();
@@ -65,6 +68,7 @@ export function RootLayout() {
       }
       leftRail={
         <LeftRail
+          collapsed={leftRailCollapsed}
           sections={navGroups.map((group) => ({
             title: t(group.titleKey),
             items: group.paths
@@ -77,7 +81,18 @@ export function RootLayout() {
                 onClick: () => navigate(item.path),
               })),
           }))}
-        />
+        >
+          <button
+            onClick={toggleLeftRailCollapsed}
+            className="mt-auto w-full h-8 flex items-center justify-center rounded-md text-text-tertiary hover:text-text-secondary hover:bg-surface-hover transition-colors"
+            title={leftRailCollapsed ? "展开导航" : "折叠导航"}
+          >
+            {leftRailCollapsed
+              ? <PanelLeftOpen className="w-4 h-4" />
+              : <PanelLeftClose className="w-4 h-4" />
+            }
+          </button>
+        </LeftRail>
       }
       bottomBar={
         <BottomBar>
