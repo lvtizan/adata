@@ -1,8 +1,10 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMarketOverview, useSectorRankings, useSectorStocks, useWatchlist, useRealtimeQuotes } from "@/queries";
 import { useDashboardStore, useAppStore } from "@/store";
 import { MarketSummary } from "@/features/market/components/market-summary";
 import { SectorTable } from "@/features/sectors/components/sector-table";
+import { SectorListPanel } from "@/features/sectors/components/sector-list-panel";
+import { MySectorsDialog } from "@/features/sectors/components/my-sectors-dialog";
 import { StockTable } from "@/features/stocks/components/stock-table";
 import { CandlestickPanel } from "@/features/chart/components/candlestick-panel";
 import { ChartShell } from "@/shared/charts";
@@ -17,6 +19,7 @@ const COL2_PCT = 0.30;
 
 export default function DashboardPage() {
   const navigate = useNavigate();
+  const [myDialogOpen, setMyDialogOpen] = useState(false);
   const { data: overview } = useMarketOverview();
   const { data: rankings = [] } = useSectorRankings();
   const { selectedSectorCode, selectedStockCode, setSelectedSectorCode, setSelectedStockCode } = useDashboardStore();
@@ -56,16 +59,16 @@ export default function DashboardPage() {
 
       {/* Main layout: 3-column */}
       <div ref={containerRef} className="flex-1 flex min-h-0 border-t border-border-default overflow-hidden">
-        {/* Column 1: Sector rankings */}
+        {/* Column 1: Sector list panel */}
         <div
           className="flex flex-col min-h-0 border-r border-border-default overflow-hidden"
           style={stealthMode ? { flex: "1 1 50%" } : { flex: `0 1 ${col1.pct * 100}%`, minWidth: 220 }}
         >
-          <div className="px-3 py-2 border-b border-border-default shrink-0">
-            <h2 className="text-sm font-medium">板块列表</h2>
-            <p className="text-xs text-text-tertiary">{rankings.length} 个候选板块</p>
-          </div>
-          <SectorTable data={rankings} selectedCode={selectedSectorCode} onSelect={setSelectedSectorCode} />
+          <SectorListPanel
+            selectedCode={selectedSectorCode}
+            onSelect={(code) => setSelectedSectorCode(code)}
+            onManageClick={() => setMyDialogOpen(true)}
+          />
         </div>
 
         {!stealthMode && <Resizer onMouseDown={col1.onMouseDown} />}
@@ -143,6 +146,7 @@ export default function DashboardPage() {
           </div>
         )}
       </div>
+      <MySectorsDialog open={myDialogOpen} onClose={() => setMyDialogOpen(false)} />
     </div>
   );
 }
