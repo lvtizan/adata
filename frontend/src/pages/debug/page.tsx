@@ -1,4 +1,6 @@
 import * as React from "react";
+import { Inbox, Search, AlertCircle } from "lucide-react";
+import { EmptyState } from "@/shared/ui/empty-state";
 import { FilterChip, FilterBar } from "@/shared/ui/filter-chip";
 import { SegmentedControl } from "@/shared/ui/segmented-control";
 import { ThresholdInput } from "@/shared/ui/threshold-input";
@@ -139,6 +141,41 @@ export default function DebugPage() {
       <section>
         <h2 className="text-sm font-semibold text-text-primary mb-3">ThresholdInput</h2>
         <ThresholdDemo />
+      </section>
+
+      <section>
+        <h2 className="text-sm font-semibold text-text-primary mb-3">EmptyState</h2>
+        <div className="grid grid-cols-2 gap-4">
+          <div className="border border-border-default rounded-md">
+            <EmptyState
+              icon={<Inbox className="w-10 h-10" />}
+              title="暂无数据"
+              description="当前筛选条件下没有符合的股票，尝试放宽阈值"
+            />
+          </div>
+          <div className="border border-border-default rounded-md">
+            <EmptyState
+              size="sm"
+              icon={<Search className="w-7 h-7" />}
+              title="未找到结果"
+              description="换个关键词试试"
+            />
+          </div>
+          <div className="border border-border-default rounded-md">
+            <EmptyState
+              icon={<AlertCircle className="w-10 h-10" />}
+              title="加载失败"
+              description="请检查网络或稍后重试"
+              action={<button className="h-7 px-3 text-[11px] border border-border-default rounded hover:bg-surface-hover">重试</button>}
+            />
+          </div>
+          <div className="border border-border-default rounded-md">
+            <EmptyState
+              title="未选择股票"
+              description="从左侧列表选择一只股票查看详情"
+            />
+          </div>
+        </div>
       </section>
 
       <section>
