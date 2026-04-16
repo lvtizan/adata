@@ -1,5 +1,6 @@
 import { Panel } from "@/shared/ui/panel";
 import { PageHeader } from "@/shared/ui/page-header";
+import { StatStrip } from "@/shared/ui/stat-strip";
 
 export default function DebugPage() {
   return (
@@ -33,6 +34,35 @@ export default function DebugPage() {
               }
             />
             <div className="p-3 text-[11px] text-text-tertiary">（带操作按钮）</div>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <h2 className="text-sm font-semibold text-text-primary mb-3">StatStrip</h2>
+        <div className="space-y-3">
+          <div>
+            <div className="text-[11px] text-text-tertiary mb-1">normal（默认）</div>
+            <StatStrip
+              stats={[
+                { label: "RS120", value: 92 },
+                { label: "5日", value: "+2.35%", tone: "up" },
+                { label: "10日", value: "-1.20%", tone: "down" },
+                { label: "成交额", value: "12.3亿" },
+              ]}
+            />
+          </div>
+          <div>
+            <div className="text-[11px] text-text-tertiary mb-1">compact</div>
+            <StatStrip
+              density="compact"
+              stats={[
+                { label: "开", value: "1688.00" },
+                { label: "高", value: "1692.50", tone: "up" },
+                { label: "低", value: "1680.30", tone: "down" },
+                { label: "收", value: "1685.00" },
+              ]}
+            />
           </div>
         </div>
       </section>
