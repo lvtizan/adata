@@ -192,52 +192,102 @@ def fetch_ths_kline(code: str, market: str = "stock", freq: str = "1d", bars: in
 _sector_list_cache: tuple[float, list[dict[str, Any]]] | None = None
 _SECTOR_LIST_TTL = 86400  # 24 小时（板块列表基本一天内不变）
 
-# 以任意一个已知板块详情页为入口，其侧栏含有全量板块列表
-_SECTOR_BOOTSTRAP_URL = "https://q.10jqka.com.cn/thshy/detail/code/881121/"
+# 多个引导页 URL 防单点失败/限频（任一个能访问就能拿到完整侧栏列表）
+_SECTOR_BOOTSTRAP_URLS = [
+    "https://q.10jqka.com.cn/thshy/detail/code/881121/",  # 半导体
+    "https://q.10jqka.com.cn/thshy/detail/code/881273/",  # 白酒
+    "https://q.10jqka.com.cn/thshy/detail/code/881155/",  # 银行
+    "https://q.10jqka.com.cn/thshy/detail/code/881281/",  # 电池
+]
+
+# 持久化文件缓存路径（板块列表很少变，跨重启保留）
+from pathlib import Path as _Path
+_SECTOR_LIST_FILE = _Path(__file__).parent / "data" / "ths_sector_list.json"
+
+
+def _load_sector_list_from_file() -> list[dict[str, Any]] | None:
+    """从持久化文件读板块列表。"""
+    if not _SECTOR_LIST_FILE.exists():
+        return None
+    try:
+        return json.loads(_SECTOR_LIST_FILE.read_text(encoding="utf-8"))
+    except Exception as exc:
+        logger.warning(f"sector list file read failed: {exc}")
+        return None
+
+
+def _save_sector_list_to_file(data: list[dict[str, Any]]) -> None:
+    """写持久化文件。"""
+    try:
+        _SECTOR_LIST_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _SECTOR_LIST_FILE.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception as exc:
+        logger.warning(f"sector list file write failed: {exc}")
 
 
 def fetch_ths_sector_list() -> list[dict[str, Any]]:
-    """从 q.10jqka.com.cn 爬取全量 881xxx 板块列表（24h 缓存）。
+    """从 q.10jqka.com.cn 爬取全量 881xxx 板块列表。
 
-    使用板块详情页侧栏作为入口，该侧栏包含所有行业板块的链接。
+    缓存层次（从快到慢）：
+    1. 内存缓存（24h TTL）
+    2. JSON 文件缓存（持久化，跨重启）
+    3. 多个引导 URL 轮询爬取
+    4. 全失败：返回内存或文件中的旧数据
 
     返回: [{"code": "881121", "name": "半导体"}, ...]
     """
     global _sector_list_cache
+
+    # 1. 内存缓存
     if _sector_list_cache is not None:
         ts, data = _sector_list_cache
         if time.time() - ts < _SECTOR_LIST_TTL:
             return data
 
-    try:
-        resp = requests.get(_SECTOR_BOOTSTRAP_URL, headers=_THS_HEADERS, timeout=10)
-        resp.encoding = "gbk"
-        html = resp.text
-    except Exception as exc:
-        logger.warning(f"THS sector list fetch failed: {exc}")
-        # 失败时返回上次缓存（即使过期）
-        return _sector_list_cache[1] if _sector_list_cache else []
+    # 2. 文件缓存（重启后第一次使用）
+    file_data = _load_sector_list_from_file()
+    if file_data:
+        _sector_list_cache = (time.time(), file_data)
+        # 已读到文件后仍异步重新爬一次没意义，文件够用
+        return file_data
 
-    # 侧栏链接格式:
-    #   <a href="http://q.10jqka.com.cn/thshy/detail/code/881121/" target="_blank">半导体</a>
+    # 3. 网络爬取，多个引导 URL 轮询
     pattern = r'href="[^"]*code/(881\d{3})/?"[^>]*>([^<]+)</a>'
-    matches = re.findall(pattern, html)
-    seen: set[str] = set()
-    result: list[dict[str, Any]] = []
-    for code, name in matches:
-        if code in seen:
+    for url in _SECTOR_BOOTSTRAP_URLS:
+        try:
+            resp = requests.get(url, headers=_THS_HEADERS, timeout=10)
+            resp.encoding = "gbk"
+            html = resp.text
+        except Exception as exc:
+            logger.warning(f"THS sector list fetch failed: url={url} err={exc}")
             continue
-        name = name.strip()
-        if not name:
-            continue
-        seen.add(code)
-        result.append({"code": code, "name": name})
 
-    if result:
-        _sector_list_cache = (time.time(), result)
-    else:
-        logger.warning("THS sector list: no sectors parsed from HTML")
-    return result
+        matches = re.findall(pattern, html)
+        seen: set[str] = set()
+        result: list[dict[str, Any]] = []
+        for code, name in matches:
+            if code in seen:
+                continue
+            name = name.strip()
+            if not name:
+                continue
+            seen.add(code)
+            result.append({"code": code, "name": name})
+
+        if len(result) >= 50:  # 至少 50 个才算成功（防部分爬到）
+            _sector_list_cache = (time.time(), result)
+            _save_sector_list_to_file(result)
+            logger.info(f"THS sector list: {len(result)} sectors from {url}")
+            return result
+        else:
+            logger.warning(f"THS sector list partial: only {len(result)} from {url}, retry next URL")
+
+    # 4. 全失败兜底
+    logger.warning("THS sector list: all bootstrap URLs failed")
+    return _sector_list_cache[1] if _sector_list_cache else []
 
 
 # ── 板块成分股爬虫 ────────────────────────────────────────
