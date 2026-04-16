@@ -1,14 +1,12 @@
-import { useEffect, useRef, useState } from "react";
-import { useMarketOverview, useSectorRankings, useSectorStocks } from "@/queries";
+import { useRef, useState } from "react";
+import { useMarketOverview } from "@/queries";
 import { useDashboardStore, useAppStore } from "@/store";
 import { MarketSummary } from "@/features/market/components/market-summary";
 import { SectorListPanel } from "@/features/sectors/components/sector-list-panel";
 import { MySectorsDialog } from "@/features/sectors/components/my-sectors-dialog";
 import { SectorMembersPanel } from "@/features/stocks/components/sector-members-panel";
-import { CandlestickPanel } from "@/features/chart/components/candlestick-panel";
-import { ChartShell } from "@/shared/charts";
+import { DashboardChartColumn } from "@/features/chart/components/dashboard-chart-column";
 import { ChevronLeft, ChevronRight } from "lucide-react";
-import { StockKlineWorkbench } from "@/shared/charts/stock-kline-workbench";
 import { Resizer, useResizablePct } from "@/shared/layout";
 
 // 初始比例: 板块 33%, 个股 30%, 图表 37% (余量)
@@ -18,30 +16,13 @@ const COL2_PCT = 0.30;
 export default function DashboardPage() {
   const [myDialogOpen, setMyDialogOpen] = useState(false);
   const { data: overview } = useMarketOverview();
-  const { data: rankings = [] } = useSectorRankings();
   const { selectedSectorCode, selectedStockCode, setSelectedSectorCode, setSelectedStockCode } = useDashboardStore();
-  const { data: stocks = [] } = useSectorStocks(selectedSectorCode);
   const stealthMode = useAppStore((s) => s.stealthMode);
   const toggleStealth = useAppStore((s) => s.toggleStealthMode);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const col1 = useResizablePct(COL1_PCT, 0.18, 0.45, containerRef);
   const col2 = useResizablePct(COL2_PCT, 0.18, 0.42, containerRef);
-
-  useEffect(() => {
-    if (!selectedSectorCode && rankings.length > 0) {
-      setSelectedSectorCode(rankings[0].sectorCode);
-    }
-  }, [rankings, selectedSectorCode, setSelectedSectorCode]);
-
-  useEffect(() => {
-    if (stocks.length > 0 && !stocks.some((s) => s.tsCode === selectedStockCode)) {
-      setSelectedStockCode(stocks[0].tsCode);
-    }
-  }, [stocks, selectedStockCode, setSelectedStockCode]);
-
-  const selectedSector = rankings.find((s) => s.sectorCode === selectedSectorCode);
-  const selectedStock = stocks.find((s) => s.tsCode === selectedStockCode);
 
   return (
     <div className="flex flex-col h-full">
@@ -100,28 +81,10 @@ export default function DashboardPage() {
             >
               <ChevronRight className="w-3.5 h-3.5" />
             </button>
-            <div className="flex-1 min-h-0">
-              <CandlestickPanel kind="sector" code={selectedSector?.sectorCode || ""} label={selectedSector?.sectorName || ""} title="细分板块 K 线" emptyText="选择板块后显示" />
-            </div>
-            <div className="flex-1 min-h-0">
-              <ChartShell
-                title="选中个股 K 线"
-                subtitle={selectedStock?.stockName || ""}
-                empty={!selectedStock?.tsCode ? "选择个股后显示" : undefined}
-                className="h-full"
-              >
-                {selectedStock?.tsCode ? (
-                  <StockKlineWorkbench
-                    tsCode={selectedStock.tsCode}
-                    sectorCode={selectedSector?.sectorCode || ""}
-                    stockName={selectedStock.stockName}
-                    showDrawingsPanel
-                  />
-                ) : (
-                  <div />
-                )}
-              </ChartShell>
-            </div>
+            <DashboardChartColumn
+              sectorCode={selectedSectorCode || undefined}
+              stockCode={selectedStockCode || undefined}
+            />
           </div>
         )}
       </div>
