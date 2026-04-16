@@ -446,12 +446,28 @@ class Handler(BaseHTTPRequestHandler):
             logger.debug(f"获取个股K线: {ts_code}, {trade_date}, bars={bars}")
             return json_response(self, engine.stock_kline(ts_code, trade_date, bars=bars))
 
-        # 板块K线API
+        # 板块K线API（Tushare 主路径 + THS JSONP 兜底）
         if path.startswith("/api/charts/sector/"):
             sector_code = path.split("/")[4]
             bars = int(q.get("bars", ["180"])[0])
             logger.debug(f"获取板块K线: {sector_code}, {trade_date}, bars={bars}")
-            return json_response(self, engine.sector_kline(sector_code, trade_date, bars=bars))
+            result = engine.sector_kline(sector_code, trade_date, bars=bars)
+            # Tushare 返回空 → THS JSONP 兜底（仅对 881xxx 有效）
+            if not result.get("points") and sector_code.startswith("881") and len(sector_code) == 6:
+                try:
+                    ths_result = fetch_ths_kline(sector_code, market="sector", freq="1d", bars=bars)
+                    ths_points = ths_result.get("points", [])
+                    if ths_points:
+                        logger.info(f"板块K线 {sector_code} Tushare 空，THS 兜底成功: {len(ths_points)} 根")
+                        result = {
+                            "code": sector_code,
+                            "name": ths_result.get("name", sector_code),
+                            "points": ths_points,
+                            "source": "ths_fallback",
+                        }
+                except Exception as exc:
+                    logger.warning(f"板块K线 THS 兜底失败 {sector_code}: {exc}")
+            return json_response(self, result)
 
         # 指数K线API（用于指数对比图表）
         if path.startswith("/api/charts/index/"):
