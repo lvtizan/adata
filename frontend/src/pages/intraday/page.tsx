@@ -1,5 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { useEffect, useMemo, useRef } from "react";
 import { useIntradaySectors, useIntradaySectorStocks, useMarketOverview } from "@/queries";
 import { useIntradayStore } from "@/store";
 import { DataTable, NumericCell, type Column } from "@/shared/table";
@@ -7,13 +6,16 @@ import { fmtPct } from "@/shared/utils/format";
 import { ChartShell } from "@/shared/charts";
 import { StockKlineWorkbench } from "@/shared/charts/stock-kline-workbench";
 import {
-  IntradayMarketContextBar,
-  IntradayStockResearchPanel,
   scoreIntradayStock,
+  clampScore,
+  normalizePercentInput,
+  scoreToneClass,
   type IntradayScoreResult,
   type IntradaySectorOverview,
   type IntradayStockOverview,
 } from "@/features/intraday";
+import { ShanghaiIndex5mChart } from "@/features/intraday/shanghai-index-chart";
+import { cn } from "@/lib/utils";
 import type { SectorRanking, SectorStock } from "@/shared/types";
 import { Resizer, useResizablePct } from "@/shared/layout";
 
@@ -91,7 +93,6 @@ export default function IntradayPage() {
   const containerRef = useRef<HTMLDivElement>(null);
   const col1 = useResizablePct(0.24, 0.18, 0.34, containerRef);
   const col2 = useResizablePct(0.26, 0.18, 0.36, containerRef);
-  const [overviewOpen, setOverviewOpen] = useState(true);
 
   useEffect(() => {
     if (!selectedSectorCode && rankings.length > 0) {
@@ -148,15 +149,98 @@ export default function IntradayPage() {
     };
   }, [selectedStock, selectedScore]);
 
+  // Compute env score for top bar (same logic as MarketScoreTooltip)
+  const envScore = useMemo<number | null>(() => {
+    if (!overview) return null;
+    const breadth = overview.breadth;
+    const breadthDiffScore = clampScore(50 + ((breadth.upCount - breadth.downCount) / 4000) * 100);
+    const highLowScore = clampScore(50 + ((breadth.newHighCount - breadth.newLowCount) / 200) * 50);
+    const maScore = clampScore((normalizePercentInput(breadth.aboveMa20Ratio) + normalizePercentInput(breadth.aboveMa60Ratio)) / 2);
+    const breadthScore = clampScore(breadthDiffScore * 0.45 + highLowScore * 0.25 + maScore * 0.3);
+    const riskConverted = clampScore(100 - (overview.marketRisk.pointerValue ?? overview.marketRisk.score));
+    return clampScore(
+      clampScore(overview.marketState.score) * 0.35 +
+      clampScore(overview.emotionState.score) * 0.25 +
+      breadthScore * 0.25 +
+      riskConverted * 0.15,
+    );
+  }, [overview]);
+
   return (
     <div className="flex h-full flex-col">
-      <div className="flex items-center gap-2 border-b border-border-default px-3 py-1.5">
-        <h1 className="text-sm font-semibold">盘中观察</h1>
-        <span className="text-xs text-text-tertiary">同花顺概念板块 · 一列板块涨跌 · 一列个股 · 一列K线</span>
-        {isLoading && <span className="animate-pulse text-xs text-accent">加载中...</span>}
+      {/* 顶部盘中环境横排 bar */}
+      <div className="shrink-0 border-b border-border-default px-3 py-1.5 flex items-center gap-1 overflow-x-auto">
+        <span className="text-sm font-semibold mr-2 shrink-0">盘中观察</span>
+        {isLoading && <span className="animate-pulse text-xs text-accent mr-2 shrink-0">加载中...</span>}
+        {overview ? (
+          <div className="flex items-center gap-4 min-w-0">
+            {/* 环境分 */}
+            <div className="flex items-center gap-1 shrink-0">
+              <span className="text-[11px] text-text-tertiary">环境分</span>
+              <span className={cn("text-[12px] font-semibold font-mono tabular-nums", scoreToneClass(envScore))}>
+                {envScore != null ? Math.round(envScore) : "—"}
+              </span>
+            </div>
+            <span className="h-3 w-px bg-border-default shrink-0" />
+            {/* 市场状态 */}
+            <div className="flex items-center gap-1 shrink-0">
+              <span className="text-[11px] text-text-tertiary">状态</span>
+              <span className={cn(
+                "text-[12px] font-semibold",
+                overview.marketState.openPermissionLight === "green"
+                  ? "text-state-up"
+                  : overview.marketState.openPermissionLight === "yellow"
+                  ? "text-state-warning"
+                  : "text-state-down",
+              )}>
+                {overview.marketState.label}
+              </span>
+            </div>
+            <span className="h-3 w-px bg-border-default shrink-0" />
+            {/* 情绪 */}
+            <div className="flex items-center gap-1 shrink-0">
+              <span className="text-[11px] text-text-tertiary">情绪</span>
+              <span className={cn("text-[12px] font-semibold font-mono tabular-nums", scoreToneClass(overview.emotionState.score))}>
+                {overview.emotionState.label} {Math.round(clampScore(overview.emotionState.score))}
+              </span>
+            </div>
+            <span className="h-3 w-px bg-border-default shrink-0" />
+            {/* 风险 */}
+            <div className="flex items-center gap-1 shrink-0">
+              <span className="text-[11px] text-text-tertiary">风险</span>
+              <span className={cn("text-[12px] font-semibold font-mono tabular-nums", scoreToneClass(overview.marketRisk.pointerValue ?? overview.marketRisk.score))}>
+                {overview.marketRisk.label} {Math.round(clampScore(overview.marketRisk.pointerValue ?? overview.marketRisk.score))}
+              </span>
+            </div>
+            <span className="h-3 w-px bg-border-default shrink-0" />
+            {/* 涨跌家数 */}
+            <div className="flex items-center gap-1 shrink-0">
+              <span className="text-[11px] text-text-tertiary">涨跌家数</span>
+              <span className="text-[12px] font-mono tabular-nums">
+                <span className="text-state-up">{overview.breadth.upCount}</span>
+                <span className="text-text-quaternary">/</span>
+                <span className="text-state-down">{overview.breadth.downCount}</span>
+              </span>
+            </div>
+            <span className="h-3 w-px bg-border-default shrink-0" />
+            {/* 连板/跌停 */}
+            <div className="flex items-center gap-1 shrink-0">
+              <span className="text-[11px] text-text-tertiary">连板/跌停</span>
+              <span className="text-[12px] font-mono tabular-nums">
+                <span className="text-state-up">{overview.breadth.limitUpCount}</span>
+                <span className="text-text-quaternary">/</span>
+                <span className="text-state-down">{overview.breadth.limitDownCount}</span>
+              </span>
+            </div>
+          </div>
+        ) : (
+          <span className="text-xs text-text-tertiary">市场数据加载中...</span>
+        )}
       </div>
 
-      <div ref={containerRef} className="flex min-h-0 flex-1 overflow-hidden border-t border-border-default">
+      {/* 主区：3 列 */}
+      <div ref={containerRef} className="flex min-h-0 flex-1 overflow-hidden">
+        {/* 列 1：概念板块 */}
         <div
           className="flex min-h-0 flex-col overflow-hidden border-r border-border-default"
           style={{ flex: `0 1 ${col1.pct * 100}%`, minWidth: 220 }}
@@ -178,6 +262,7 @@ export default function IntradayPage() {
 
         <Resizer onMouseDown={col1.onMouseDown} />
 
+        {/* 列 2：板块个股 */}
         <div
           className="flex min-h-0 flex-col overflow-hidden border-r border-border-default"
           style={{ flex: `0 1 ${col2.pct * 100}%`, minWidth: 200 }}
@@ -201,72 +286,66 @@ export default function IntradayPage() {
 
         <Resizer onMouseDown={col2.onMouseDown} />
 
+        {/* 列 3：上证5分钟（上）+ 个股K线（下），各占 50% */}
         <div className="flex min-h-0 min-w-[320px] flex-1 flex-col overflow-hidden border-r border-border-default">
-          <ChartShell
-            title="个股 K 线"
-            subtitle={selectedStock ? `${selectedStock.stockName} · ${selectedSector?.sectorName || ""}` : ""}
-            empty={!selectedStock?.tsCode ? "选择个股后显示" : undefined}
-            className="h-full"
-          >
-            {selectedStock?.tsCode ? (
-              <StockKlineWorkbench
-                tsCode={selectedStock.tsCode}
-                sectorCode={selectedSector?.sectorCode || ""}
-                stockName={selectedStock.stockName}
-              />
-            ) : (
-              <div />
-            )}
-          </ChartShell>
+          {/* 上：上证5分钟 */}
+          <div className="flex-1 min-h-0 border-b border-border-default overflow-hidden">
+            <div className="h-full overflow-auto p-2">
+              <ShanghaiIndex5mChart />
+            </div>
+          </div>
+          {/* 下：个股K线 */}
+          <div className="flex-1 min-h-0 overflow-hidden">
+            <ChartShell
+              title="个股 K 线"
+              subtitle={selectedStock ? `${selectedStock.stockName} · ${selectedSector?.sectorName || ""}` : ""}
+              empty={!selectedStock?.tsCode ? "选择个股后显示" : undefined}
+              className="h-full"
+            >
+              {selectedStock?.tsCode ? (
+                <StockKlineWorkbench
+                  tsCode={selectedStock.tsCode}
+                  sectorCode={selectedSector?.sectorCode || ""}
+                  stockName={selectedStock.stockName}
+                />
+              ) : (
+                <div />
+              )}
+            </ChartShell>
+          </div>
         </div>
 
-        {overviewOpen ? (
-          <div className="flex min-h-0 w-[420px] min-w-[360px] max-w-[480px] flex-col overflow-hidden bg-canvas">
-            <div className="flex items-center justify-between border-b border-border-default px-3 py-2">
-              <div>
-                <h2 className="text-sm font-medium">市场总览</h2>
-                <p className="text-xs text-text-tertiary">今晚新增内容独立放侧栏，不占用盘中主视图</p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setOverviewOpen(false)}
-                className="flex h-7 w-7 items-center justify-center rounded bg-surface-subtle text-text-tertiary transition-colors hover:bg-surface-hover hover:text-text-primary"
-                title="收起市场总览"
-              >
-                <ChevronRight className="h-4 w-4" />
-              </button>
-            </div>
-
-            <div className="min-h-0 flex-1 overflow-auto p-3">
-              <div className="flex min-h-full flex-col gap-3">
-                <IntradayMarketContextBar
-                  overview={overview}
-                  selectedSector={selectedSectorOverview}
-                  selectedStock={selectedStockOverview}
-                />
-                <div className="min-h-0 flex-1">
-                  <IntradayStockResearchPanel
-                    score={selectedScore}
-                    stock={selectedStockOverview}
-                    sector={selectedSectorOverview}
-                    className="h-full"
-                  />
+        {/* 列 4（窄）：主营业务 */}
+        <div className="w-[220px] shrink-0 border-l border-border-default flex flex-col min-h-0 overflow-hidden">
+          <div className="shrink-0 border-b border-border-default px-3 py-2">
+            <h2 className="text-sm font-medium">主营业务</h2>
+            <p className="text-xs text-text-tertiary">{selectedStock?.stockName || "选择个股后显示"}</p>
+          </div>
+          <div className="flex-1 overflow-auto p-3">
+            {selectedStock ? (
+              <div className="space-y-2">
+                <div className="text-[11px] text-text-tertiary leading-relaxed">
+                  {selectedScore?.verdict || ""}
                 </div>
+                <div className="flex flex-wrap gap-1.5 mt-2">
+                  {(selectedScore?.tags ?? selectedStockOverview?.tags ?? []).map((tag) => (
+                    <span
+                      key={tag}
+                      className="inline-flex items-center rounded-full border border-border-default bg-surface-secondary px-2 py-0.5 text-[10px] text-text-secondary"
+                    >
+                      {tag}
+                    </span>
+                  ))}
+                </div>
+                <p className="mt-3 text-[11px] text-text-quaternary italic">
+                  主营业务详情待接入
+                </p>
               </div>
-            </div>
+            ) : (
+              <p className="text-xs text-text-tertiary">选择个股后显示主营业务</p>
+            )}
           </div>
-        ) : (
-          <div
-            className="group flex w-9 shrink-0 cursor-pointer flex-col items-center justify-center border-l border-border-default bg-surface-subtle transition-colors hover:bg-surface-hover"
-            onClick={() => setOverviewOpen(true)}
-            title="展开市场总览"
-          >
-            <ChevronLeft className="h-4 w-4 text-text-tertiary transition-colors group-hover:text-text-primary" />
-            <span className="mt-1 text-[10px] text-text-tertiary group-hover:text-text-secondary" style={{ writingMode: "vertical-rl" }}>
-              市场总览
-            </span>
-          </div>
-        )}
+        </div>
       </div>
     </div>
   );
