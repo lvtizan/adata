@@ -1944,8 +1944,18 @@ class MarketEngine:
             logger.info(f"同花顺成分股映射从缓存加载: {len(mapping)} 个板块")
             self._mark_source("ths_members", True, detail="cache_hit", count=len(mapping))
             return result
-        # 如果明确缓存为"空映射"，先尝试 THS 爬虫（不耗 Tushare 配额），失败再走本地联动簇
+        # 如果明确缓存为"空映射"，按优先级尝试: 新浪 → THS 爬虫 → 本地联动簇
         if stored and not (stored.get("mapping") or stored.get("names")):
+            # 先试新浪
+            sina_mapping, sina_names = self._fetch_sina_sector_members()
+            if sina_mapping:
+                self._data_store.set_json("ths_members", "all", {"mapping": sina_mapping, "names": sina_names})
+                result = (sina_mapping, sina_names)
+                self._cache["_ths_members"] = (time.time(), result)
+                logger.info(f"ths_members 缓存为空，新浪拉取成功: {len(sina_mapping)} 板块")
+                self._mark_source("sina_members", True, detail="sina_from_empty_cache", count=len(sina_mapping))
+                return result
+            # 再试 THS 爬虫
             ths_mapping, ths_names = self._fetch_ths_scraper_members()
             if ths_mapping:
                 self._data_store.set_json("ths_members", "all", {"mapping": ths_mapping, "names": ths_names})
@@ -1954,12 +1964,13 @@ class MarketEngine:
                 logger.info(f"ths_members 缓存为空，THS 爬虫拉取成功: {len(ths_mapping)} 板块")
                 self._mark_source("ths_scraper", True, detail="scraper_from_empty_cache", count=len(ths_mapping))
                 return result
+            # 最后本地联动簇
             local_mapping, local_names = self._build_local_correlation_clusters()
             if local_mapping:
                 self._data_store.set_json("ths_members", "all", {"mapping": local_mapping, "names": local_names})
                 result = (local_mapping, local_names)
                 self._cache["_ths_members"] = (time.time(), result)
-                logger.warning(f"ths_members 缓存为空，THS 爬虫也失败，启用本地联动簇映射: {len(local_mapping)} 个簇")
+                logger.warning(f"ths_members 缓存为空，新浪/THS 都失败，启用本地联动簇映射: {len(local_mapping)} 个簇")
                 self._mark_source("local_clusters", True, detail="generated_from_empty_cache", count=len(local_mapping))
                 return result
 
@@ -1999,7 +2010,17 @@ class MarketEngine:
         else:
             self._mark_source("ths_members", False, detail="remote_empty", count=0)
 
-        # 次级数据源：东方财富公开接口（不依赖 tushare 配额）
+        # 次级数据源：新浪财经板块 API（稳定、覆盖 392 个板块，不依赖 Tushare 配额）
+        if not mapping:
+            sina_mapping, sina_names = self._fetch_sina_sector_members()
+            if sina_mapping:
+                mapping, names = sina_mapping, sina_names
+                logger.info(f"新浪财经板块成分股拉取完成: {len(mapping)} 个板块")
+                self._mark_source("sina_members", True, detail="remote_fetch", count=len(mapping))
+            else:
+                self._mark_source("sina_members", False, detail="remote_empty", count=0)
+
+        # 三级兜底：东方财富公开接口
         if not mapping:
             em_mapping, em_names = self._fetch_eastmoney_sector_members()
             if em_mapping:
@@ -2009,7 +2030,7 @@ class MarketEngine:
             else:
                 self._mark_source("eastmoney_members", False, detail="remote_empty", count=0)
 
-        # 三级兜底：THS 爬虫（不依赖 Tushare 配额，实测可拿 ~90 个板块）
+        # 四级兜底：THS 爬虫（不依赖 Tushare 配额，实测可拿 ~90 个板块）
         if not mapping:
             ths_mapping, ths_names = self._fetch_ths_scraper_members()
             if ths_mapping:
@@ -2130,6 +2151,47 @@ class MarketEngine:
             if uniq_codes:
                 mapping[sector_code] = uniq_codes
 
+        return mapping, names
+
+    def _fetch_sina_sector_members(self) -> tuple[dict[str, list[str]], dict[str, str]]:
+        """用新浪财经 API 获取板块成分股映射。
+
+        不依赖 Tushare 配额。新浪提供 392 个板块（新浪行业 + 申万二级 + 概念板块）。
+        每个板块 0.3s 间隔，完整跑约 2 分钟。
+        """
+        try:
+            from sina_proxy import fetch_sina_sector_list, fetch_sina_sector_members
+        except ImportError:
+            logger.warning("sina_proxy 不可用")
+            return {}, {}
+
+        sectors = fetch_sina_sector_list()
+        if not sectors:
+            logger.warning("新浪板块列表为空")
+            return {}, {}
+
+        mapping: dict[str, list[str]] = {}
+        names: dict[str, str] = {}
+        import time as _time
+
+        for i, s in enumerate(sectors):
+            code = s["code"]
+            try:
+                members = fetch_sina_sector_members(code)
+                if not members:
+                    continue
+                ts_codes = [m["tsCode"] for m in members if m.get("tsCode")]
+                if ts_codes:
+                    mapping[code] = ts_codes
+                    names[code] = s["name"]
+            except Exception as exc:
+                logger.warning(f"sina members for {code} failed: {exc}")
+                continue
+            _time.sleep(0.3)  # 保守限速
+            if (i + 1) % 50 == 0:
+                logger.info(f"新浪板块爬取进度: {i+1}/{len(sectors)}, 成功 {len(mapping)}")
+
+        logger.info(f"新浪板块爬取完成: {len(mapping)}/{len(sectors)} 板块成功")
         return mapping, names
 
     def _fetch_ths_scraper_members(self) -> tuple[dict[str, list[str]], dict[str, str]]:
