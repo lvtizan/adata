@@ -1,6 +1,7 @@
 import { Panel } from "@/shared/ui/panel";
 import { PageHeader } from "@/shared/ui/page-header";
 import { StatStrip } from "@/shared/ui/stat-strip";
+import { StockTag } from "@/shared/ui/stock-tag";
 
 export default function DebugPage() {
   return (
@@ -63,6 +64,32 @@ export default function DebugPage() {
                 { label: "收", value: "1685.00" },
               ]}
             />
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <h2 className="text-sm font-semibold text-text-primary mb-3">StockTag</h2>
+        <div className="space-y-3">
+          <div>
+            <div className="text-[11px] text-text-tertiary mb-1">md（默认）· 可点击</div>
+            <div className="flex flex-wrap gap-1.5">
+              <StockTag code="600519" name="贵州茅台" pctChange={2.35} rs={92} onClick={() => alert("点击 茅台")} />
+              <StockTag code="000858" name="五粮液" pctChange={-1.8} rs={78} onClick={() => {}} />
+              <StockTag code="688981" name="中芯国际" pctChange={4.3} rs={95} onClick={() => {}} />
+              <StockTag code="300750" name="宁德时代" pctChange={-3.2} rs={45} onClick={() => {}} />
+              <StockTag code="002594" name="比亚迪" rs={87} onClick={() => {}} />
+              <StockTag code="601318" name="中国平安" pctChange={0.7} onClick={() => {}} />
+              <StockTag code="600036" name="招商银行" onClick={() => {}} />
+            </div>
+          </div>
+          <div>
+            <div className="text-[11px] text-text-tertiary mb-1">sm · 纯展示（无 onClick）</div>
+            <div className="flex flex-wrap gap-1">
+              <StockTag size="sm" code="600519" name="贵州茅台" pctChange={2.35} rs={92} />
+              <StockTag size="sm" code="000858" name="五粮液" pctChange={-1.8} rs={78} />
+              <StockTag size="sm" code="688981" name="中芯国际" pctChange={4.3} rs={95} />
+            </div>
           </div>
         </div>
       </section>
