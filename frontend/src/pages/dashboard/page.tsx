@@ -1,14 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import { useMarketOverview, useSectorRankings, useSectorStocks, useWatchlist, useRealtimeQuotes } from "@/queries";
+import { useMarketOverview, useSectorRankings, useSectorStocks } from "@/queries";
 import { useDashboardStore, useAppStore } from "@/store";
 import { MarketSummary } from "@/features/market/components/market-summary";
-import { SectorTable } from "@/features/sectors/components/sector-table";
 import { SectorListPanel } from "@/features/sectors/components/sector-list-panel";
 import { MySectorsDialog } from "@/features/sectors/components/my-sectors-dialog";
-import { StockTable } from "@/features/stocks/components/stock-table";
+import { SectorMembersPanel } from "@/features/stocks/components/sector-members-panel";
 import { CandlestickPanel } from "@/features/chart/components/candlestick-panel";
 import { ChartShell } from "@/shared/charts";
-import { useNavigate } from "react-router-dom";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { StockKlineWorkbench } from "@/shared/charts/stock-kline-workbench";
 import { Resizer, useResizablePct } from "@/shared/layout";
@@ -18,18 +16,13 @@ const COL1_PCT = 0.33;
 const COL2_PCT = 0.30;
 
 export default function DashboardPage() {
-  const navigate = useNavigate();
   const [myDialogOpen, setMyDialogOpen] = useState(false);
   const { data: overview } = useMarketOverview();
   const { data: rankings = [] } = useSectorRankings();
   const { selectedSectorCode, selectedStockCode, setSelectedSectorCode, setSelectedStockCode } = useDashboardStore();
-  const { data: stocks = [], isLoading: stocksLoading } = useSectorStocks(selectedSectorCode);
-  const { data: watchlistItems = [] } = useWatchlist();
-  const { data: realtimeMap } = useRealtimeQuotes(stocks.map((s) => s.tsCode));
+  const { data: stocks = [] } = useSectorStocks(selectedSectorCode);
   const stealthMode = useAppStore((s) => s.stealthMode);
   const toggleStealth = useAppStore((s) => s.toggleStealthMode);
-
-  const watchlistCodes = new Set(watchlistItems.map((w) => w.tsCode));
 
   const containerRef = useRef<HTMLDivElement>(null);
   const col1 = useResizablePct(COL1_PCT, 0.18, 0.45, containerRef);
@@ -73,29 +66,15 @@ export default function DashboardPage() {
 
         {!stealthMode && <Resizer onMouseDown={col1.onMouseDown} />}
 
-        {/* Column 2: Sector stocks */}
+        {/* Column 2: Sector members with filter */}
         <div
           className={`flex flex-col min-h-0 overflow-hidden ${stealthMode ? "" : "border-r border-border-default"}`}
           style={stealthMode ? { flex: "1 1 50%" } : { flex: `0 1 ${col2.pct * 100}%`, minWidth: 220 }}
         >
-          <div className="px-3 py-2 border-b border-border-default shrink-0">
-            <h2 className="text-sm font-medium">板块内个股</h2>
-            <p className="text-xs text-text-tertiary">
-              {selectedSector ? `${selectedSector.sectorName} · ${stocks.length} 只` : "选择板块后加载"}
-            </p>
-          </div>
-          <StockTable
-            data={stocks}
-            selectedCode={selectedStockCode}
-            onSelect={setSelectedStockCode}
-            onNameClick={(item) => {
-              navigate(`/sector-workbench?sectorCode=${encodeURIComponent(selectedSector?.sectorCode || "")}&sectorName=${encodeURIComponent(selectedSector?.sectorName || "")}&stockCode=${encodeURIComponent(item.tsCode)}`);
-            }}
-            loading={stocksLoading}
-            watchlistCodes={watchlistCodes}
-            sectorCode={selectedSector?.sectorCode}
-            sectorName={selectedSector?.sectorName}
-            realtimeMap={realtimeMap}
+          <SectorMembersPanel
+            sectorCode={selectedSectorCode}
+            selectedStockCode={selectedStockCode}
+            onSelectStock={(code) => setSelectedStockCode(code)}
           />
         </div>
 
