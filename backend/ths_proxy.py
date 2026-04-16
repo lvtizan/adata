@@ -186,3 +186,251 @@ def fetch_ths_kline(code: str, market: str = "stock", freq: str = "1d", bars: in
     }
     _set_cached(code, market, freq, result)
     return result
+
+
+# ── 板块列表爬虫 ─────────────────────────────────────────
+_sector_list_cache: tuple[float, list[dict[str, Any]]] | None = None
+_SECTOR_LIST_TTL = 86400  # 24 小时（板块列表基本一天内不变）
+
+# 多个引导页 URL 防单点失败/限频（任一个能访问就能拿到完整侧栏列表）
+_SECTOR_BOOTSTRAP_URLS = [
+    "https://q.10jqka.com.cn/thshy/detail/code/881121/",  # 半导体
+    "https://q.10jqka.com.cn/thshy/detail/code/881273/",  # 白酒
+    "https://q.10jqka.com.cn/thshy/detail/code/881155/",  # 银行
+    "https://q.10jqka.com.cn/thshy/detail/code/881281/",  # 电池
+]
+
+# 持久化文件缓存路径（板块列表很少变，跨重启保留）
+from pathlib import Path as _Path
+_SECTOR_LIST_FILE = _Path(__file__).parent / "data" / "ths_sector_list.json"
+
+
+def _load_sector_list_from_file() -> list[dict[str, Any]] | None:
+    """从持久化文件读板块列表。"""
+    if not _SECTOR_LIST_FILE.exists():
+        return None
+    try:
+        return json.loads(_SECTOR_LIST_FILE.read_text(encoding="utf-8"))
+    except Exception as exc:
+        logger.warning(f"sector list file read failed: {exc}")
+        return None
+
+
+def _save_sector_list_to_file(data: list[dict[str, Any]]) -> None:
+    """写持久化文件。"""
+    try:
+        _SECTOR_LIST_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _SECTOR_LIST_FILE.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception as exc:
+        logger.warning(f"sector list file write failed: {exc}")
+
+
+def fetch_ths_sector_list() -> list[dict[str, Any]]:
+    """从 q.10jqka.com.cn 爬取全量 881xxx 板块列表。
+
+    缓存层次（从快到慢）：
+    1. 内存缓存（24h TTL）
+    2. JSON 文件缓存（持久化，跨重启）
+    3. 多个引导 URL 轮询爬取
+    4. 全失败：返回内存或文件中的旧数据
+
+    返回: [{"code": "881121", "name": "半导体"}, ...]
+    """
+    global _sector_list_cache
+
+    # 1. 内存缓存
+    if _sector_list_cache is not None:
+        ts, data = _sector_list_cache
+        if time.time() - ts < _SECTOR_LIST_TTL:
+            return data
+
+    # 2. 文件缓存（重启后第一次使用）
+    file_data = _load_sector_list_from_file()
+    if file_data:
+        _sector_list_cache = (time.time(), file_data)
+        # 已读到文件后仍异步重新爬一次没意义，文件够用
+        return file_data
+
+    # 3. 网络爬取，多个引导 URL 轮询
+    pattern = r'href="[^"]*code/(881\d{3})/?"[^>]*>([^<]+)</a>'
+    for url in _SECTOR_BOOTSTRAP_URLS:
+        try:
+            resp = requests.get(url, headers=_THS_HEADERS, timeout=10)
+            resp.encoding = "gbk"
+            html = resp.text
+        except Exception as exc:
+            logger.warning(f"THS sector list fetch failed: url={url} err={exc}")
+            continue
+
+        matches = re.findall(pattern, html)
+        seen: set[str] = set()
+        result: list[dict[str, Any]] = []
+        for code, name in matches:
+            if code in seen:
+                continue
+            name = name.strip()
+            if not name:
+                continue
+            seen.add(code)
+            result.append({"code": code, "name": name})
+
+        if len(result) >= 50:  # 至少 50 个才算成功（防部分爬到）
+            _sector_list_cache = (time.time(), result)
+            _save_sector_list_to_file(result)
+            logger.info(f"THS sector list: {len(result)} sectors from {url}")
+            return result
+        else:
+            logger.warning(f"THS sector list partial: only {len(result)} from {url}, retry next URL")
+
+    # 4. 全失败兜底
+    logger.warning("THS sector list: all bootstrap URLs failed")
+    return _sector_list_cache[1] if _sector_list_cache else []
+
+
+# ── 板块成分股爬虫 ────────────────────────────────────────
+# key: sector_code, value: (timestamp, data)
+_members_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+_MEMBERS_TTL = 3600  # 1 小时
+
+
+def _parse_amount(text: str) -> float:
+    """'1.23亿' → 1.23e8, '5230万' → 5.23e7"""
+    text = text.replace(",", "").strip()
+    if text in ("--", ""):
+        return 0.0
+    try:
+        if text.endswith("亿"):
+            return float(text[:-1]) * 1e8
+        if text.endswith("万"):
+            return float(text[:-1]) * 1e4
+        return float(text)
+    except ValueError:
+        return 0.0
+
+
+def _parse_members_rows(html: str) -> list[dict[str, Any]]:
+    """解析成分股 HTML 表格（非 ajax 完整页面格式）。"""
+    # 提取 tbody 里的每行
+    rows = re.findall(r"<tr[^>]*>(.*?)</tr>", html, re.DOTALL)
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        cells = re.findall(r"<td[^>]*>(.*?)</td>", row, re.DOTALL)
+        if len(cells) < 11:
+            continue
+
+        # 代码在第 2 列（含 <a href="...stockpage...">600519</a>）
+        code_match = re.search(r"(\d{6})", cells[1])
+        if not code_match:
+            continue
+        code = code_match.group(1)
+
+        # 名称在第 3 列
+        name_match = re.search(r">([^<]+)</a>", cells[2])
+        name = name_match.group(1).strip() if name_match else re.sub(r"<[^>]+>", "", cells[2]).strip()
+        if not name:
+            continue
+
+        def _clean(text: str) -> str:
+            return re.sub(r"<[^>]+>", "", text).strip()
+
+        # 最新价：第 4 列（index 3）
+        try:
+            price = float(_clean(cells[3]))
+        except (ValueError, IndexError):
+            price = 0.0
+
+        # 涨跌幅：第 5 列（index 4），格式 "1.48" 或 "-0.25"（无百分号）
+        try:
+            pct_text = _clean(cells[4]).rstrip("%")
+            pct = float(pct_text) if pct_text not in ("--", "") else 0.0
+        except (ValueError, IndexError):
+            pct = 0.0
+
+        # 成交额：第 11 列（index 10），固定位置，格式 "7.24亿"
+        try:
+            amount = _parse_amount(_clean(cells[10]))
+        except IndexError:
+            amount = 0.0
+        # 兜底：如果 col[10] 没有亿/万，扫其余列
+        if amount == 0.0:
+            for c in cells[5:]:
+                text = _clean(c)
+                if text.endswith("亿") or text.endswith("万"):
+                    amount = _parse_amount(text)
+                    if amount > 0:
+                        break
+
+        result.append({
+            "code": code,
+            "name": name,
+            "price": price,
+            "pctChange": pct,
+            "amount": amount,
+        })
+    return result
+
+
+def fetch_ths_sector_members(sector_code: str) -> list[dict[str, Any]]:
+    """爬取指定板块的成分股（1 小时缓存）。
+
+    Args:
+        sector_code: 881xxx 的板块代码
+
+    Returns:
+        [
+            {
+              "code": "600519",
+              "name": "贵州茅台",
+              "price": 1688.0,     # 最新价
+              "pctChange": 2.35,   # 涨跌幅（百分比数字，如 2.35 表示 +2.35%）
+              "amount": 1.23e9,    # 成交额（单位：元）
+            },
+            ...
+        ]
+    """
+    sector_code = sector_code.strip()
+    if not sector_code.startswith("881") or len(sector_code) != 6:
+        return []
+
+    # 缓存命中
+    cached = _members_cache.get(sector_code)
+    if cached and time.time() - cached[0] < _MEMBERS_TTL:
+        return cached[1]
+
+    all_results: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    # 最多翻 10 页（每页 20 只，上限 200 只）
+    for page in range(1, 11):
+        if page == 1:
+            url = f"https://q.10jqka.com.cn/thshy/detail/code/{sector_code}/"
+        else:
+            url = f"https://q.10jqka.com.cn/thshy/detail/code/{sector_code}/page/{page}/"
+        try:
+            resp = requests.get(url, headers=_THS_HEADERS, timeout=10)
+            resp.encoding = "gbk"
+            html = resp.text
+        except Exception as exc:
+            logger.warning(f"THS members fetch failed: sector={sector_code} page={page} err={exc}")
+            break
+        if not html or "<tr" not in html:
+            break
+
+        page_results = _parse_members_rows(html)
+        new_count = 0
+        for item in page_results:
+            if item["code"] in seen:
+                continue
+            seen.add(item["code"])
+            all_results.append(item)
+            new_count += 1
+        # 本页没有新数据 → 已到末页
+        if new_count == 0:
+            break
+
+    if all_results:
+        _members_cache[sector_code] = (time.time(), all_results)
+    return all_results

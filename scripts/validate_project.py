@@ -183,7 +183,7 @@ def check_ports():
 
     if hardcoded_ports:
         for file_path, port in sorted(hardcoded_ports):
-            if port not in ("5173", "8080", "8082", "8083"):
+            if port not in ("5188", "8088", "8082", "8083"):
                 warn(f"非标准端口 {port} 在 {file_path}")
             else:
                 ok(f"端口 {port} 在 {file_path}")

@@ -1,14 +1,12 @@
-import { useEffect, useRef } from "react";
-import { useMarketOverview, useSectorRankings, useSectorStocks, useWatchlist, useRealtimeQuotes } from "@/queries";
+import { useRef, useState } from "react";
+import { useMarketOverview } from "@/queries";
 import { useDashboardStore, useAppStore } from "@/store";
 import { MarketSummary } from "@/features/market/components/market-summary";
-import { SectorTable } from "@/features/sectors/components/sector-table";
-import { StockTable } from "@/features/stocks/components/stock-table";
-import { CandlestickPanel } from "@/features/chart/components/candlestick-panel";
-import { ChartShell } from "@/shared/charts";
-import { useNavigate } from "react-router-dom";
+import { SectorListPanel } from "@/features/sectors/components/sector-list-panel";
+import { MySectorsDialog } from "@/features/sectors/components/my-sectors-dialog";
+import { SectorMembersPanel } from "@/features/stocks/components/sector-members-panel";
+import { DashboardChartColumn } from "@/features/chart/components/dashboard-chart-column";
 import { ChevronLeft, ChevronRight } from "lucide-react";
-import { StockKlineWorkbench } from "@/shared/charts/stock-kline-workbench";
 import { Resizer, useResizablePct } from "@/shared/layout";
 
 // 初始比例: 板块 33%, 个股 30%, 图表 37% (余量)
@@ -16,36 +14,15 @@ const COL1_PCT = 0.33;
 const COL2_PCT = 0.30;
 
 export default function DashboardPage() {
-  const navigate = useNavigate();
+  const [myDialogOpen, setMyDialogOpen] = useState(false);
   const { data: overview } = useMarketOverview();
-  const { data: rankings = [] } = useSectorRankings();
   const { selectedSectorCode, selectedStockCode, setSelectedSectorCode, setSelectedStockCode } = useDashboardStore();
-  const { data: stocks = [], isLoading: stocksLoading } = useSectorStocks(selectedSectorCode);
-  const { data: watchlistItems = [] } = useWatchlist();
-  const { data: realtimeMap } = useRealtimeQuotes(stocks.map((s) => s.tsCode));
   const stealthMode = useAppStore((s) => s.stealthMode);
   const toggleStealth = useAppStore((s) => s.toggleStealthMode);
-
-  const watchlistCodes = new Set(watchlistItems.map((w) => w.tsCode));
 
   const containerRef = useRef<HTMLDivElement>(null);
   const col1 = useResizablePct(COL1_PCT, 0.18, 0.45, containerRef);
   const col2 = useResizablePct(COL2_PCT, 0.18, 0.42, containerRef);
-
-  useEffect(() => {
-    if (!selectedSectorCode && rankings.length > 0) {
-      setSelectedSectorCode(rankings[0].sectorCode);
-    }
-  }, [rankings, selectedSectorCode, setSelectedSectorCode]);
-
-  useEffect(() => {
-    if (stocks.length > 0 && !stocks.some((s) => s.tsCode === selectedStockCode)) {
-      setSelectedStockCode(stocks[0].tsCode);
-    }
-  }, [stocks, selectedStockCode, setSelectedStockCode]);
-
-  const selectedSector = rankings.find((s) => s.sectorCode === selectedSectorCode);
-  const selectedStock = stocks.find((s) => s.tsCode === selectedStockCode);
 
   return (
     <div className="flex flex-col h-full">
@@ -56,43 +33,29 @@ export default function DashboardPage() {
 
       {/* Main layout: 3-column */}
       <div ref={containerRef} className="flex-1 flex min-h-0 border-t border-border-default overflow-hidden">
-        {/* Column 1: Sector rankings */}
+        {/* Column 1: Sector list panel */}
         <div
           className="flex flex-col min-h-0 border-r border-border-default overflow-hidden"
           style={stealthMode ? { flex: "1 1 50%" } : { flex: `0 1 ${col1.pct * 100}%`, minWidth: 220 }}
         >
-          <div className="px-3 py-2 border-b border-border-default shrink-0">
-            <h2 className="text-sm font-medium">板块列表</h2>
-            <p className="text-xs text-text-tertiary">{rankings.length} 个候选板块</p>
-          </div>
-          <SectorTable data={rankings} selectedCode={selectedSectorCode} onSelect={setSelectedSectorCode} />
+          <SectorListPanel
+            selectedCode={selectedSectorCode}
+            onSelect={(code) => setSelectedSectorCode(code)}
+            onManageClick={() => setMyDialogOpen(true)}
+          />
         </div>
 
         {!stealthMode && <Resizer onMouseDown={col1.onMouseDown} />}
 
-        {/* Column 2: Sector stocks */}
+        {/* Column 2: Sector members with filter */}
         <div
           className={`flex flex-col min-h-0 overflow-hidden ${stealthMode ? "" : "border-r border-border-default"}`}
           style={stealthMode ? { flex: "1 1 50%" } : { flex: `0 1 ${col2.pct * 100}%`, minWidth: 220 }}
         >
-          <div className="px-3 py-2 border-b border-border-default shrink-0">
-            <h2 className="text-sm font-medium">板块内个股</h2>
-            <p className="text-xs text-text-tertiary">
-              {selectedSector ? `${selectedSector.sectorName} · ${stocks.length} 只` : "选择板块后加载"}
-            </p>
-          </div>
-          <StockTable
-            data={stocks}
-            selectedCode={selectedStockCode}
-            onSelect={setSelectedStockCode}
-            onNameClick={(item) => {
-              navigate(`/sector-workbench?sectorCode=${encodeURIComponent(selectedSector?.sectorCode || "")}&sectorName=${encodeURIComponent(selectedSector?.sectorName || "")}&stockCode=${encodeURIComponent(item.tsCode)}`);
-            }}
-            loading={stocksLoading}
-            watchlistCodes={watchlistCodes}
-            sectorCode={selectedSector?.sectorCode}
-            sectorName={selectedSector?.sectorName}
-            realtimeMap={realtimeMap}
+          <SectorMembersPanel
+            sectorCode={selectedSectorCode}
+            selectedStockCode={selectedStockCode}
+            onSelectStock={(code) => setSelectedStockCode(code)}
           />
         </div>
 
@@ -118,31 +81,14 @@ export default function DashboardPage() {
             >
               <ChevronRight className="w-3.5 h-3.5" />
             </button>
-            <div className="flex-1 min-h-0">
-              <CandlestickPanel kind="sector" code={selectedSector?.sectorCode || ""} label={selectedSector?.sectorName || ""} title="细分板块 K 线" emptyText="选择板块后显示" />
-            </div>
-            <div className="flex-1 min-h-0">
-              <ChartShell
-                title="选中个股 K 线"
-                subtitle={selectedStock?.stockName || ""}
-                empty={!selectedStock?.tsCode ? "选择个股后显示" : undefined}
-                className="h-full"
-              >
-                {selectedStock?.tsCode ? (
-                  <StockKlineWorkbench
-                    tsCode={selectedStock.tsCode}
-                    sectorCode={selectedSector?.sectorCode || ""}
-                    stockName={selectedStock.stockName}
-                    showDrawingsPanel
-                  />
-                ) : (
-                  <div />
-                )}
-              </ChartShell>
-            </div>
+            <DashboardChartColumn
+              sectorCode={selectedSectorCode || undefined}
+              stockCode={selectedStockCode || undefined}
+            />
           </div>
         )}
       </div>
+      <MySectorsDialog open={myDialogOpen} onClose={() => setMyDialogOpen(false)} />
     </div>
   );
 }

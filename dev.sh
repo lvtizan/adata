@@ -57,7 +57,7 @@ show_status() {
         fi
     }
     check_port 8088 "A-Stock 后端    "
-    check_port 5174 "A-Stock 前端    "
+    check_port 5188 "A-Stock 前端    "
     if [ -d "$DEERFLOW_DIR" ]; then
         check_port 2024 "DeerFlow LangGraph"
         check_port 8001 "DeerFlow Gateway  "
@@ -118,7 +118,7 @@ echo $! > "$PID_DIR/news_daemon.pid"
 # ═══════════════════════════════════════
 echo -e "${YELLOW}[2/3]${NC} 启动 A-Stock 前端..."
 cd "$DIR/frontend"
-nohup npx vite --host 127.0.0.1 --port 5174 > "$LOG_DIR/a-data-frontend.log" 2>&1 &
+nohup npx vite --host 127.0.0.1 --port 5188 > "$LOG_DIR/a-data-frontend.log" 2>&1 &
 echo $! > "$PID_DIR/frontend.pid"
 
 # ═══════════════════════════════════════
@@ -168,7 +168,7 @@ fi
 
 for i in $(seq 1 $TIMEOUT); do
     BACK_OK=$(lsof -ti :8088 2>/dev/null)
-    FRONT_OK=$(lsof -ti :5174 2>/dev/null)
+    FRONT_OK=$(lsof -ti :5188 2>/dev/null)
 
     if [ "$HAS_DEERFLOW" = true ]; then
         DF_OK=$(lsof -ti :3000 2>/dev/null)
@@ -194,8 +194,8 @@ else
     ALL_OK=false
 fi
 
-if lsof -ti :5174 >/dev/null 2>&1; then
-    echo -e "  ${GREEN}✓${NC} A-Stock 前端      http://127.0.0.1:5174"
+if lsof -ti :5188 >/dev/null 2>&1; then
+    echo -e "  ${GREEN}✓${NC} A-Stock 前端      http://127.0.0.1:5188"
 else
     echo -e "  ${RED}✗${NC} A-Stock 前端      → tail -f $LOG_DIR/a-data-frontend.log"
     ALL_OK=false
@@ -239,6 +239,6 @@ echo "  状态: bash dev.sh status"
 echo ""
 
 # 打开浏览器
-if lsof -ti :5174 >/dev/null 2>&1; then
-    sleep 1 && open "http://127.0.0.1:5174" &
+if lsof -ti :5188 >/dev/null 2>&1; then
+    sleep 1 && open "http://127.0.0.1:5188" &
 fi

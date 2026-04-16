@@ -26,7 +26,9 @@ from news_aggregator import (
     save_zsxq_cookies, _load_zsxq_cookies, search_zsxq_topics, query_zsxq_stock_detail,
     reindex_zsxq_stock_mentions, compute_zsxq_mainlines,
 )
-from ths_proxy import fetch_ths_kline
+from ths_proxy import fetch_ths_kline, fetch_ths_sector_list, fetch_ths_sector_members
+from ths_sector_strength import load_cached_sector_rs120, refresh_all_sector_rs120
+from my_sectors_store import MySectorsStore
 from pattern_predictor import predict_patterns
 
 # 初始化日志和配置
@@ -50,6 +52,7 @@ engine = MarketEngine(config)
 watchlist_store = WatchlistStore(WATCHLIST_DB)
 briefs_store = DailyBriefsStore()
 drawings_store = DrawingsStore(DRAWINGS_DB)
+my_sectors_store = MySectorsStore(ROOT / "backend" / "data" / "my_sectors.db")
 
 # 初始化新闻数据库
 init_news_db()
@@ -443,12 +446,53 @@ class Handler(BaseHTTPRequestHandler):
             logger.debug(f"获取个股K线: {ts_code}, {trade_date}, bars={bars}")
             return json_response(self, engine.stock_kline(ts_code, trade_date, bars=bars))
 
-        # 板块K线API
+        # 板块K线API（Tushare → THS JSONP → 新浪合成 三级兜底）
         if path.startswith("/api/charts/sector/"):
             sector_code = path.split("/")[4]
             bars = int(q.get("bars", ["180"])[0])
             logger.debug(f"获取板块K线: {sector_code}, {trade_date}, bars={bars}")
-            return json_response(self, engine.sector_kline(sector_code, trade_date, bars=bars))
+            result = engine.sector_kline(sector_code, trade_date, bars=bars)
+
+            # 兜底 1：881xxx 格式用 THS JSONP
+            if not result.get("points") and sector_code.startswith("881") and len(sector_code) == 6:
+                try:
+                    ths_result = fetch_ths_kline(sector_code, market="sector", freq="1d", bars=bars)
+                    ths_points = ths_result.get("points", [])
+                    if ths_points:
+                        logger.info(f"板块K线 {sector_code} THS 兜底成功: {len(ths_points)} 根")
+                        result = {
+                            "code": sector_code,
+                            "name": ths_result.get("name", sector_code),
+                            "points": ths_points,
+                            "source": "ths_fallback",
+                        }
+                except Exception as exc:
+                    logger.warning(f"板块K线 THS 兜底失败 {sector_code}: {exc}")
+
+            # 兜底 2：新浪 sw2_/new_/gn_ 从成分股合成
+            if not result.get("points") and sector_code.startswith(("sw2_", "sw_", "new_", "gn_")):
+                try:
+                    from sina_proxy import compute_sector_kline_from_members
+
+                    def _get_kline(ts_code: str, nbars: int) -> list[dict[str, Any]]:
+                        r = engine.stock_kline_ashare(ts_code, "1d", bars=nbars)
+                        return r.get("points", []) if r else []
+
+                    synth_points = compute_sector_kline_from_members(
+                        sector_code, _get_kline, bars=bars, top_n=20
+                    )
+                    if synth_points:
+                        logger.info(f"板块K线 {sector_code} 新浪合成成功: {len(synth_points)} 根（基于前 20 只成分股）")
+                        result = {
+                            "code": sector_code,
+                            "name": sector_code,
+                            "points": synth_points,
+                            "source": "sina_synthetic",
+                        }
+                except Exception as exc:
+                    logger.warning(f"板块K线 新浪合成失败 {sector_code}: {exc}")
+
+            return json_response(self, result)
 
         # 指数K线API（用于指数对比图表）
         if path.startswith("/api/charts/index/"):
@@ -799,7 +843,7 @@ class Handler(BaseHTTPRequestHandler):
             stats = query_zsxq_stock_stats(limit=limit)
             return json_response(self, {"items": stats})
 
-        # 同花顺 K线代理（code/market/freq）
+        # 同花顺 K线代理（code/market/freq），新浪板块合成兜底
         if path == "/api/ths/kline":
             code = q.get("code", [""])[0]
             market = q.get("market", ["stock"])[0]
@@ -807,12 +851,148 @@ class Handler(BaseHTTPRequestHandler):
             bars = int(q.get("bars", ["240"])[0])
             if not code:
                 return json_response(self, {"error": "missing code"}, 400)
+
+            # 新浪板块 code 走合成路径（THS 不认识这些 code）
+            if market == "sector" and code.startswith(("sw2_", "sw_", "new_", "gn_")) and freq == "1d":
+                try:
+                    from sina_proxy import compute_sector_kline_from_members
+
+                    def _get_kline(ts_code: str, nbars: int) -> list[dict[str, Any]]:
+                        r = engine.stock_kline_ashare(ts_code, "1d", bars=nbars)
+                        return r.get("points", []) if r else []
+
+                    synth_points = compute_sector_kline_from_members(
+                        code, _get_kline, bars=bars, top_n=20
+                    )
+                    if synth_points:
+                        return json_response(self, {
+                            "code": code,
+                            "name": code,
+                            "market": market,
+                            "freq": freq,
+                            "points": synth_points,
+                            "source": "sina_synthetic",
+                        })
+                except Exception as exc:
+                    logger.warning(f"新浪板块合成 {code}: {exc}")
+
             try:
                 result = fetch_ths_kline(code, market=market, freq=freq, bars=bars)
                 return json_response(self, result)
             except Exception as exc:
                 logger.warning(f"THS kline error: {exc}")
                 return json_response(self, {"error": str(exc)}, 500)
+
+        # GET /api/ths/sectors - 双数据源合并（THS 881xxx + 新浪 new_/sw2_/gn_）
+        if path == "/api/ths/sectors":
+            ths_sectors = fetch_ths_sector_list()
+            # 新浪补充/兜底
+            try:
+                from sina_proxy import fetch_sina_sector_list
+                sina_sectors = fetch_sina_sector_list()
+            except ImportError:
+                sina_sectors = []
+
+            rs_map = load_cached_sector_rs120()
+            enriched: list[dict[str, Any]] = []
+            # THS 优先
+            ths_names_seen: set[str] = set()
+            for s in ths_sectors:
+                ths_names_seen.add(s["name"])
+                enriched.append({
+                    "code": s["code"],
+                    "name": s["name"],
+                    "rs120": rs_map.get(s["code"]),
+                    "source": "ths",
+                })
+            # 新浪补充（按名去重：已在 THS 出现的不再加）
+            for s in sina_sectors:
+                if s["name"] in ths_names_seen:
+                    continue
+                enriched.append({
+                    "code": s["code"],
+                    "name": s["name"],
+                    "rs120": None,  # 新浪 code 和 THS 不同，没 RS120 可查
+                    "source": "sina",
+                })
+            # RS120 降序（None 排最后）
+            enriched.sort(key=lambda x: (x["rs120"] is None, -(x["rs120"] or 0)))
+            return json_response(self, {"items": enriched})
+
+        # GET /api/ths/sectors/{code}/members - 板块成分股（按 code 前缀派发到不同数据源）
+        if path.startswith("/api/ths/sectors/") and path.endswith("/members"):
+            sector_code = path.split("/")[4]
+            members: list[dict[str, Any]] = []
+
+            # THS 881xxx
+            if sector_code.startswith("881") and len(sector_code) == 6:
+                members = fetch_ths_sector_members(sector_code)
+            # 新浪 new_/sw_/sw2_/gn_
+            elif sector_code.startswith(("new_", "sw2_", "sw_", "gn_")):
+                try:
+                    from sina_proxy import fetch_sina_sector_members
+                    raw_members = fetch_sina_sector_members(sector_code)
+                    # 新浪返回 {code, tsCode, name, price, pctChange, amount}
+                    # THS 返回 {code, name, price, pctChange, amount}
+                    # 统一成 THS 字段集（保留 tsCode 供前端可选使用）
+                    members = [
+                        {
+                            "code": m["code"],
+                            "name": m.get("name", ""),
+                            "price": m.get("price", 0),
+                            "pctChange": m.get("pctChange", 0),
+                            "amount": m.get("amount", 0),
+                            "tsCode": m.get("tsCode", ""),
+                        }
+                        for m in raw_members
+                    ]
+                except ImportError:
+                    members = []
+            else:
+                return json_response(self, {"error": "invalid sector code"}, 400)
+
+            # 计算板块内 RS（按 pctChange 百分位）
+            if members:
+                sorted_by_pct = sorted(members, key=lambda m: m.get("pctChange", 0))
+                n = len(sorted_by_pct)
+                rank_map = {m["code"]: i for i, m in enumerate(sorted_by_pct)}
+                for m in members:
+                    rank = rank_map.get(m["code"], 0)
+                    m["rs120"] = int(round(rank / max(n - 1, 1) * 100)) if n > 1 else 50
+            return json_response(self, {"items": members})
+
+        # GET /api/ths/my-sectors
+        if path == "/api/ths/my-sectors" and method == "GET":
+            return json_response(self, {"items": my_sectors_store.list()})
+
+        # POST /api/ths/my-sectors
+        if path == "/api/ths/my-sectors" and method == "POST":
+            action = (body or {}).get("action")
+            code = (body or {}).get("code", "").strip()
+            name = (body or {}).get("name", "").strip()
+            if action == "add":
+                if not code or not name:
+                    return json_response(self, {"error": "code and name required"}, 400)
+                my_sectors_store.add(code, name)
+                return json_response(self, {"ok": True, "action": "add", "code": code})
+            elif action == "remove":
+                if not code:
+                    return json_response(self, {"error": "code required"}, 400)
+                my_sectors_store.remove(code)
+                return json_response(self, {"ok": True, "action": "remove", "code": code})
+            return json_response(self, {"error": "invalid action"}, 400)
+
+        # POST /api/ths/refresh-rs120 - 手动触发 RS120 重算（后台任务）
+        if path == "/api/ths/refresh-rs120" and method == "POST":
+            import threading as _thr
+            def _do_refresh():
+                try:
+                    result = refresh_all_sector_rs120()
+                    logger.info(f"RS120 refresh done: {len(result)} sectors")
+                except Exception as exc:
+                    logger.error(f"RS120 refresh failed: {exc}")
+            _thr.Thread(target=_do_refresh, daemon=True).start()
+            return json_response(self, {"ok": True, "message": "RS120 刷新已触发，约 5 分钟完成"})
 
         # 知识星球市场主线
         if path == "/api/zsxq/mainlines":

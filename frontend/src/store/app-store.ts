@@ -24,6 +24,7 @@ interface AppState {
   setTheme: (t: Theme) => void;
   setLocale: (l: Locale) => void;
   toggleRightPanel: () => void;
+  toggleLeftRailCollapsed: () => void;
   setLeftRailCollapsed: (v: boolean) => void;
   toggleStealthMode: () => void;
   setStealthMode: (v: boolean) => void;
@@ -33,7 +34,7 @@ export const useAppStore = create<AppState>((set) => ({
   theme: (localStorage.getItem("theme") as Theme) || "light",
   locale: (localStorage.getItem("locale") as Locale) || "zh-CN",
   rightPanelOpen: false,
-  leftRailCollapsed: false,
+  leftRailCollapsed: localStorage.getItem("leftRailCollapsed") === "true",
   // 每次加载根据当前时间判断，工作时间自动开启摸鱼模式
   stealthMode: isWorkHours(),
   toggleTheme: () =>
@@ -53,7 +54,16 @@ export const useAppStore = create<AppState>((set) => ({
     set({ locale: l });
   },
   toggleRightPanel: () => set((s) => ({ rightPanelOpen: !s.rightPanelOpen })),
-  setLeftRailCollapsed: (v) => set({ leftRailCollapsed: v }),
+  toggleLeftRailCollapsed: () =>
+    set((s) => {
+      const next = !s.leftRailCollapsed;
+      localStorage.setItem("leftRailCollapsed", String(next));
+      return { leftRailCollapsed: next };
+    }),
+  setLeftRailCollapsed: (v) => {
+    localStorage.setItem("leftRailCollapsed", String(v));
+    set({ leftRailCollapsed: v });
+  },
   toggleStealthMode: () =>
     set((s) => ({ stealthMode: !s.stealthMode })),
   setStealthMode: (v) => set({ stealthMode: v }),
