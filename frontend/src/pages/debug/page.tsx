@@ -1,4 +1,6 @@
+import * as React from "react";
 import { FilterChip, FilterBar } from "@/shared/ui/filter-chip";
+import { SegmentedControl } from "@/shared/ui/segmented-control";
 import { Panel } from "@/shared/ui/panel";
 import { PageHeader } from "@/shared/ui/page-header";
 import { StatStrip } from "@/shared/ui/stat-strip";
@@ -129,6 +131,11 @@ export default function DebugPage() {
       </section>
 
       <section>
+        <h2 className="text-sm font-semibold text-text-primary mb-3">SegmentedControl</h2>
+        <SegmentedControlDemo />
+      </section>
+
+      <section>
         <h2 className="text-sm font-semibold text-text-primary mb-3">Panel</h2>
         <div className="grid grid-cols-2 gap-4">
           <Panel title="基础卡片">这是 Panel 内的内容</Panel>
@@ -162,6 +169,54 @@ export default function DebugPage() {
           </Panel>
         </div>
       </section>
+    </div>
+  );
+}
+
+function SegmentedControlDemo() {
+  const [tab, setTab] = React.useState<"recommend" | "mine">("recommend");
+  const [freq, setFreq] = React.useState<"1d" | "1w" | "1M">("1d");
+  const [size, setSize] = React.useState<"3d" | "7d" | "15d" | "30d">("7d");
+  return (
+    <div className="space-y-3">
+      <div>
+        <div className="text-[11px] text-text-tertiary mb-1.5">md（默认）· 2 选</div>
+        <SegmentedControl
+          value={tab}
+          onChange={setTab}
+          options={[
+            { value: "recommend", label: "系统推荐" },
+            { value: "mine", label: "我的主流" },
+          ]}
+        />
+        <div className="text-[10px] text-text-tertiary mt-1">当前：{tab}</div>
+      </div>
+      <div>
+        <div className="text-[11px] text-text-tertiary mb-1.5">md · 3 选（K线周期）</div>
+        <SegmentedControl
+          value={freq}
+          onChange={setFreq}
+          options={[
+            { value: "1d", label: "日K" },
+            { value: "1w", label: "周K" },
+            { value: "1M", label: "月K" },
+          ]}
+        />
+      </div>
+      <div>
+        <div className="text-[11px] text-text-tertiary mb-1.5">sm · 4 选（时间窗口）</div>
+        <SegmentedControl
+          size="sm"
+          value={size}
+          onChange={setSize}
+          options={[
+            { value: "3d", label: "3日" },
+            { value: "7d", label: "7日" },
+            { value: "15d", label: "15日" },
+            { value: "30d", label: "30日" },
+          ]}
+        />
+      </div>
     </div>
   );
 }
