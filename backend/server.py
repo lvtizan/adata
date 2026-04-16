@@ -28,10 +28,6 @@ from news_aggregator import (
 )
 from ths_proxy import fetch_ths_kline
 from pattern_predictor import predict_patterns
-from hot_rank_proxy import (
-    fetch_eastmoney_hot_rank, fetch_ths_hot_rank,
-    fetch_eastmoney_hot_themes, fetch_eastmoney_theme_stocks,
-)
 
 # 初始化日志和配置
 init_logging()
@@ -883,20 +879,6 @@ class Handler(BaseHTTPRequestHandler):
                     logger.error(f"知识星球采集失败: {exc}")
             _thr.Thread(target=_do_zsxq, daemon=True).start()
             return json_response(self, {"ok": True, "message": "采集已触发"})
-
-        # ── 热门看板：外部数据代理 ──────────────────────────
-        if path == "/api/hot-rank/eastmoney":
-            return json_response(self, {"items": fetch_eastmoney_hot_rank()})
-
-        if path == "/api/hot-rank/ths":
-            return json_response(self, {"items": fetch_ths_hot_rank()})
-
-        if path == "/api/hot-themes":
-            return json_response(self, {"items": fetch_eastmoney_hot_themes()})
-
-        if path.startswith("/api/hot-themes/") and path.endswith("/stocks"):
-            board_code = path.split("/")[3]
-            return json_response(self, {"items": fetch_eastmoney_theme_stocks(board_code)})
 
         # 未找到API
         logger.warning(f"未找到API: {path}")

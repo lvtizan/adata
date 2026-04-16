@@ -2,7 +2,7 @@ import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import { AppShell, TopBar, BottomBar, LeftRail } from "@/shared/layout";
 import { AiResearchPanel } from "@/shared/layout/ai-research-panel";
 import { useMarketOverview, useBullCamp, useWatchlist } from "@/queries";
-import { Activity, BarChart3, Eye, Flame, Settings, Crosshair, FileText, TrendingUp, GitCommit, Newspaper, ClipboardList, BookMarked, Zap, Sparkles, LayoutDashboard, type LucideIcon } from "lucide-react";
+import { Activity, BarChart3, Eye, Flame, Settings, Crosshair, FileText, TrendingUp, GitCommit, Newspaper, ClipboardList, BookMarked, Sparkles, type LucideIcon } from "lucide-react";
 import { useUII18n, type UIKey } from "@/i18n/ui";
 
 const navItems: Array<{ path: string; labelKey: UIKey; icon: LucideIcon }> = [
@@ -16,9 +16,7 @@ const navItems: Array<{ path: string; labelKey: UIKey; icon: LucideIcon }> = [
   { path: "/morning-brief", labelKey: "nav.morningBrief", icon: Newspaper },
   { path: "/stock-compare", labelKey: "nav.stockCompare", icon: GitCommit },
   { path: "/core-mainline", labelKey: "nav.coreMainline", icon: BookMarked },
-  { path: "/hot-board", labelKey: "nav.hotBoard", icon: Zap },
   { path: "/zsxq-mainlines", labelKey: "nav.zsxqMainlines", icon: Sparkles },
-  { path: "/ths-dashboard", labelKey: "nav.thsDashboard", icon: LayoutDashboard },
   { path: "/trade-plan", labelKey: "nav.tradePlan", icon: ClipboardList },
   { path: "/settings", labelKey: "nav.settings", icon: Settings },
 ];
@@ -26,11 +24,11 @@ const navItems: Array<{ path: string; labelKey: UIKey; icon: LucideIcon }> = [
 const navGroups: Array<{ titleKey: UIKey; paths: string[] }> = [
   {
     titleKey: "nav.realtime",
-    paths: ["/intraday", "/dashboard", "/index-radar", "/hot-board"],
+    paths: ["/intraday", "/dashboard", "/index-radar"],
   },
   {
     titleKey: "nav.trading",
-    paths: ["/watchlist", "/bullcamp", "/hh-scan", "/stock-compare", "/core-mainline", "/ths-dashboard", "/trade-plan"],
+    paths: ["/watchlist", "/bullcamp", "/hh-scan", "/stock-compare", "/core-mainline", "/trade-plan"],
   },
   {
     titleKey: "nav.review",

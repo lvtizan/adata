@@ -17,6 +17,8 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
+import threading
 from typing import Any
 from urllib.parse import urlparse
 
@@ -100,6 +102,36 @@ def _parse_kline_csv(raw: dict[str, Any], freq: str) -> list[dict[str, Any]]:
     return points
 
 
+# ── 内存缓存 ──────────────────────────────────────────────
+# key: (code, market, freq)  value: (timestamp, result_dict)
+_cache: dict[tuple[str, str, str], tuple[float, dict[str, Any]]] = {}
+_cache_lock = threading.Lock()
+
+# 缓存 TTL（秒）：日K/周K/月K 缓存 1 小时，5 分钟线缓存 60 秒
+_TTL = {"1d": 3600, "1w": 3600, "1M": 3600, "5m": 60}
+
+
+def _get_cached(code: str, market: str, freq: str) -> dict[str, Any] | None:
+    key = (code, market, freq)
+    with _cache_lock:
+        entry = _cache.get(key)
+        if entry is None:
+            return None
+        ts, result = entry
+        if time.time() - ts > _TTL.get(freq, 3600):
+            del _cache[key]
+            return None
+        return result
+
+
+def _set_cached(code: str, market: str, freq: str, result: dict[str, Any]) -> None:
+    if not result.get("points"):
+        return  # 不缓存空结果
+    key = (code, market, freq)
+    with _cache_lock:
+        _cache[key] = (time.time(), result)
+
+
 def fetch_ths_kline(code: str, market: str = "stock", freq: str = "1d", bars: int = 240) -> dict[str, Any]:
     """取同花顺 K线数据。
 
@@ -116,6 +148,14 @@ def fetch_ths_kline(code: str, market: str = "stock", freq: str = "1d", bars: in
         raise ValueError(f"unsupported freq: {freq}")
     if market not in ("stock", "sector", "index"):
         raise ValueError(f"unsupported market: {market}")
+
+    cached = _get_cached(code, market, freq)
+    if cached is not None:
+        # 按 bars 截断返回
+        pts = cached["points"]
+        if bars and len(pts) > bars:
+            pts = pts[-bars:]
+        return {**cached, "points": pts, "_cached": True}
 
     ths_code = _normalize_code(code, market)
     prefix = _prefix(market)
@@ -136,7 +176,7 @@ def fetch_ths_kline(code: str, market: str = "stock", freq: str = "1d", bars: in
         points = points[-bars:]
 
     name = raw.get("name") or code
-    return {
+    result = {
         "code": code,
         "name": name,
         "market": market,
@@ -144,3 +184,5 @@ def fetch_ths_kline(code: str, market: str = "stock", freq: str = "1d", bars: in
         "points": points,
         "source": "ths",
     }
+    _set_cached(code, market, freq, result)
+    return result
