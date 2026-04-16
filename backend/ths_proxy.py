@@ -186,3 +186,55 @@ def fetch_ths_kline(code: str, market: str = "stock", freq: str = "1d", bars: in
     }
     _set_cached(code, market, freq, result)
     return result
+
+
+# ── 板块列表爬虫 ─────────────────────────────────────────
+_sector_list_cache: tuple[float, list[dict[str, Any]]] | None = None
+_SECTOR_LIST_TTL = 86400  # 24 小时（板块列表基本一天内不变）
+
+# 以任意一个已知板块详情页为入口，其侧栏含有全量板块列表
+_SECTOR_BOOTSTRAP_URL = "https://q.10jqka.com.cn/thshy/detail/code/881121/"
+
+
+def fetch_ths_sector_list() -> list[dict[str, Any]]:
+    """从 q.10jqka.com.cn 爬取全量 881xxx 板块列表（24h 缓存）。
+
+    使用板块详情页侧栏作为入口，该侧栏包含所有行业板块的链接。
+
+    返回: [{"code": "881121", "name": "半导体"}, ...]
+    """
+    global _sector_list_cache
+    if _sector_list_cache is not None:
+        ts, data = _sector_list_cache
+        if time.time() - ts < _SECTOR_LIST_TTL:
+            return data
+
+    try:
+        resp = requests.get(_SECTOR_BOOTSTRAP_URL, headers=_THS_HEADERS, timeout=10)
+        resp.encoding = "gbk"
+        html = resp.text
+    except Exception as exc:
+        logger.warning(f"THS sector list fetch failed: {exc}")
+        # 失败时返回上次缓存（即使过期）
+        return _sector_list_cache[1] if _sector_list_cache else []
+
+    # 侧栏链接格式:
+    #   <a href="http://q.10jqka.com.cn/thshy/detail/code/881121/" target="_blank">半导体</a>
+    pattern = r'href="[^"]*code/(881\d{3})/?"[^>]*>([^<]+)</a>'
+    matches = re.findall(pattern, html)
+    seen: set[str] = set()
+    result: list[dict[str, Any]] = []
+    for code, name in matches:
+        if code in seen:
+            continue
+        name = name.strip()
+        if not name:
+            continue
+        seen.add(code)
+        result.append({"code": code, "name": name})
+
+    if result:
+        _sector_list_cache = (time.time(), result)
+    else:
+        logger.warning("THS sector list: no sectors parsed from HTML")
+    return result
