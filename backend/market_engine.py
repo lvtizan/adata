@@ -2135,7 +2135,8 @@ class MarketEngine:
     def _fetch_ths_scraper_members(self) -> tuple[dict[str, list[str]], dict[str, str]]:
         """用 ths_proxy 的网页爬虫获取板块成分股映射。
 
-        不依赖 Tushare 配额。约 90 个板块，每个 ~1 秒，首次约 90 秒。
+        不依赖 Tushare 配额。约 90 个板块，请求间隔 0.8s 防限频，
+        失败重试 1 次（间隔 3s）。首次完整跑约 2 分钟。
         """
         try:
             from ths_proxy import fetch_ths_sector_list, fetch_ths_sector_members
@@ -2150,12 +2151,15 @@ class MarketEngine:
 
         mapping: dict[str, list[str]] = {}
         names: dict[str, str] = {}
-        for i, s in enumerate(sectors):
+        failed_codes: list[tuple[str, str]] = []  # 第二轮重试列表
+
+        def _scrape_one(s: dict) -> bool:
+            """成功返回 True，失败 False。"""
             code = s["code"]
             try:
                 members = fetch_ths_sector_members(code)
                 if not members:
-                    continue
+                    return False
                 # 把 6 位裸代码转成 ts_code 格式（沪/深/北）
                 normalized: list[str] = []
                 for m in members:
@@ -2171,12 +2175,28 @@ class MarketEngine:
                 if normalized:
                     mapping[code] = normalized
                     names[code] = s["name"]
+                    return True
+                return False
             except Exception as exc:
                 logger.warning(f"ths scraper for {code} failed: {exc}")
-                continue
-            # 进度日志（每 20 个）
+                return False
+
+        import time as _time
+        # 第一轮：顺序拉，每个之间间隔 0.8s 避免触发限频
+        for i, s in enumerate(sectors):
+            ok = _scrape_one(s)
+            if not ok:
+                failed_codes.append((s["code"], s["name"]))
+            _time.sleep(0.8)
             if (i + 1) % 20 == 0:
-                logger.info(f"THS 爬虫: {i+1}/{len(sectors)} 板块")
+                logger.info(f"THS 爬虫第1轮: {i+1}/{len(sectors)} 已处理, 成功 {len(mapping)}")
+
+        # 第二轮：失败的重试（间隔 3 秒）
+        if failed_codes:
+            logger.info(f"THS 爬虫第2轮重试: {len(failed_codes)} 个板块")
+            for code, name in failed_codes:
+                ok = _scrape_one({"code": code, "name": name})
+                _time.sleep(3.0)
 
         logger.info(f"THS 爬虫完成: {len(mapping)}/{len(sectors)} 板块成功")
         return mapping, names
