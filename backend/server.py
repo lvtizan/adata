@@ -26,7 +26,9 @@ from news_aggregator import (
     save_zsxq_cookies, _load_zsxq_cookies, search_zsxq_topics, query_zsxq_stock_detail,
     reindex_zsxq_stock_mentions, compute_zsxq_mainlines,
 )
-from ths_proxy import fetch_ths_kline
+from ths_proxy import fetch_ths_kline, fetch_ths_sector_list, fetch_ths_sector_members
+from ths_sector_strength import load_cached_sector_rs120, refresh_all_sector_rs120
+from my_sectors_store import MySectorsStore
 from pattern_predictor import predict_patterns
 
 # 初始化日志和配置
@@ -50,6 +52,7 @@ engine = MarketEngine(config)
 watchlist_store = WatchlistStore(WATCHLIST_DB)
 briefs_store = DailyBriefsStore()
 drawings_store = DrawingsStore(DRAWINGS_DB)
+my_sectors_store = MySectorsStore(ROOT / "backend" / "data" / "my_sectors.db")
 
 # 初始化新闻数据库
 init_news_db()
@@ -813,6 +816,71 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as exc:
                 logger.warning(f"THS kline error: {exc}")
                 return json_response(self, {"error": str(exc)}, 500)
+
+        # GET /api/ths/sectors - 按 RS120 降序的板块列表
+        if path == "/api/ths/sectors":
+            sectors = fetch_ths_sector_list()
+            rs_map = load_cached_sector_rs120()
+            enriched = []
+            for s in sectors:
+                rs = rs_map.get(s["code"])
+                enriched.append({
+                    "code": s["code"],
+                    "name": s["name"],
+                    "rs120": rs,
+                })
+            # RS120 降序（None 排最后）
+            enriched.sort(key=lambda x: (x["rs120"] is None, -(x["rs120"] or 0)))
+            return json_response(self, {"items": enriched})
+
+        # GET /api/ths/sectors/{code}/members - 板块成分股
+        if path.startswith("/api/ths/sectors/") and path.endswith("/members"):
+            sector_code = path.split("/")[4]
+            if not sector_code.startswith("881") or len(sector_code) != 6:
+                return json_response(self, {"error": "invalid sector code"}, 400)
+            members = fetch_ths_sector_members(sector_code)
+            # 计算板块内 RS（按 pctChange 百分位，简化版，不读 K线）
+            if members:
+                sorted_by_pct = sorted(members, key=lambda m: m.get("pctChange", 0))
+                n = len(sorted_by_pct)
+                rank_map = {m["code"]: i for i, m in enumerate(sorted_by_pct)}
+                for m in members:
+                    rank = rank_map.get(m["code"], 0)
+                    m["rs120"] = int(round(rank / max(n - 1, 1) * 100)) if n > 1 else 50
+            return json_response(self, {"items": members})
+
+        # GET /api/ths/my-sectors
+        if path == "/api/ths/my-sectors" and method == "GET":
+            return json_response(self, {"items": my_sectors_store.list()})
+
+        # POST /api/ths/my-sectors
+        if path == "/api/ths/my-sectors" and method == "POST":
+            action = (body or {}).get("action")
+            code = (body or {}).get("code", "").strip()
+            name = (body or {}).get("name", "").strip()
+            if action == "add":
+                if not code or not name:
+                    return json_response(self, {"error": "code and name required"}, 400)
+                my_sectors_store.add(code, name)
+                return json_response(self, {"ok": True, "action": "add", "code": code})
+            elif action == "remove":
+                if not code:
+                    return json_response(self, {"error": "code required"}, 400)
+                my_sectors_store.remove(code)
+                return json_response(self, {"ok": True, "action": "remove", "code": code})
+            return json_response(self, {"error": "invalid action"}, 400)
+
+        # POST /api/ths/refresh-rs120 - 手动触发 RS120 重算（后台任务）
+        if path == "/api/ths/refresh-rs120" and method == "POST":
+            import threading as _thr
+            def _do_refresh():
+                try:
+                    result = refresh_all_sector_rs120()
+                    logger.info(f"RS120 refresh done: {len(result)} sectors")
+                except Exception as exc:
+                    logger.error(f"RS120 refresh failed: {exc}")
+            _thr.Thread(target=_do_refresh, daemon=True).start()
+            return json_response(self, {"ok": True, "message": "RS120 刷新已触发，约 5 分钟完成"})
 
         # 知识星球市场主线
         if path == "/api/zsxq/mainlines":
