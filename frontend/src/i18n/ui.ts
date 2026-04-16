@@ -9,7 +9,6 @@ export type UIKey =
   | "nav.system"
   | "nav.intraday"
   | "nav.dashboard"
-  | "nav.indexRadar"
   | "nav.watchlist"
   | "nav.bullcamp"
   | "nav.hhScan"
@@ -46,7 +45,6 @@ const messages: Record<Locale, Record<UIKey, string>> = {
     "nav.system": "系统",
     "nav.intraday": "盘中观察",
     "nav.dashboard": "板块分析",
-    "nav.indexRadar": "指数雷达",
     "nav.watchlist": "自选股",
     "nav.bullcamp": "牛股集中营",
     "nav.hhScan": "双底扫描",
@@ -82,7 +80,6 @@ const messages: Record<Locale, Record<UIKey, string>> = {
     "nav.system": "System",
     "nav.intraday": "Intraday",
     "nav.dashboard": "Sector Matrix",
-    "nav.indexRadar": "Index Radar",
     "nav.watchlist": "Watchlist",
     "nav.bullcamp": "Momentum Camp",
     "nav.hhScan": "Double-Bottom Scan",

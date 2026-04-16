@@ -2,14 +2,13 @@ import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import { AppShell, TopBar, BottomBar, LeftRail } from "@/shared/layout";
 import { AiResearchPanel } from "@/shared/layout/ai-research-panel";
 import { useMarketOverview, useBullCamp, useWatchlist } from "@/queries";
-import { Activity, BarChart3, Eye, Flame, Settings, Crosshair, FileText, TrendingUp, GitCommit, Newspaper, ClipboardList, BookMarked, Sparkles, PanelLeftClose, PanelLeftOpen, type LucideIcon } from "lucide-react";
+import { BarChart3, Eye, Flame, Settings, Crosshair, FileText, TrendingUp, GitCommit, Newspaper, ClipboardList, BookMarked, Sparkles, PanelLeftClose, PanelLeftOpen, type LucideIcon } from "lucide-react";
 import { useUII18n, type UIKey } from "@/i18n/ui";
 import { useAppStore } from "@/store/app-store";
 
 const navItems: Array<{ path: string; labelKey: UIKey; icon: LucideIcon }> = [
   { path: "/intraday", labelKey: "nav.intraday", icon: TrendingUp },
   { path: "/dashboard", labelKey: "nav.dashboard", icon: BarChart3 },
-  { path: "/index-radar", labelKey: "nav.indexRadar", icon: Activity },
   { path: "/watchlist", labelKey: "nav.watchlist", icon: Eye },
   { path: "/bullcamp", labelKey: "nav.bullcamp", icon: Flame },
   { path: "/hh-scan", labelKey: "nav.hhScan", icon: Crosshair },
@@ -25,7 +24,7 @@ const navItems: Array<{ path: string; labelKey: UIKey; icon: LucideIcon }> = [
 const navGroups: Array<{ titleKey: UIKey; paths: string[] }> = [
   {
     titleKey: "nav.realtime",
-    paths: ["/intraday", "/dashboard", "/index-radar"],
+    paths: ["/intraday", "/dashboard"],
   },
   {
     titleKey: "nav.trading",
