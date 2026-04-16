@@ -446,19 +446,20 @@ class Handler(BaseHTTPRequestHandler):
             logger.debug(f"获取个股K线: {ts_code}, {trade_date}, bars={bars}")
             return json_response(self, engine.stock_kline(ts_code, trade_date, bars=bars))
 
-        # 板块K线API（Tushare 主路径 + THS JSONP 兜底）
+        # 板块K线API（Tushare → THS JSONP → 新浪合成 三级兜底）
         if path.startswith("/api/charts/sector/"):
             sector_code = path.split("/")[4]
             bars = int(q.get("bars", ["180"])[0])
             logger.debug(f"获取板块K线: {sector_code}, {trade_date}, bars={bars}")
             result = engine.sector_kline(sector_code, trade_date, bars=bars)
-            # Tushare 返回空 → THS JSONP 兜底（仅对 881xxx 有效）
+
+            # 兜底 1：881xxx 格式用 THS JSONP
             if not result.get("points") and sector_code.startswith("881") and len(sector_code) == 6:
                 try:
                     ths_result = fetch_ths_kline(sector_code, market="sector", freq="1d", bars=bars)
                     ths_points = ths_result.get("points", [])
                     if ths_points:
-                        logger.info(f"板块K线 {sector_code} Tushare 空，THS 兜底成功: {len(ths_points)} 根")
+                        logger.info(f"板块K线 {sector_code} THS 兜底成功: {len(ths_points)} 根")
                         result = {
                             "code": sector_code,
                             "name": ths_result.get("name", sector_code),
@@ -467,6 +468,30 @@ class Handler(BaseHTTPRequestHandler):
                         }
                 except Exception as exc:
                     logger.warning(f"板块K线 THS 兜底失败 {sector_code}: {exc}")
+
+            # 兜底 2：新浪 sw2_/new_/gn_ 从成分股合成
+            if not result.get("points") and sector_code.startswith(("sw2_", "sw_", "new_", "gn_")):
+                try:
+                    from sina_proxy import compute_sector_kline_from_members
+
+                    def _get_kline(ts_code: str, nbars: int) -> list[dict[str, Any]]:
+                        r = engine.stock_kline_ashare(ts_code, "1d", bars=nbars)
+                        return r.get("points", []) if r else []
+
+                    synth_points = compute_sector_kline_from_members(
+                        sector_code, _get_kline, bars=bars, top_n=20
+                    )
+                    if synth_points:
+                        logger.info(f"板块K线 {sector_code} 新浪合成成功: {len(synth_points)} 根（基于前 20 只成分股）")
+                        result = {
+                            "code": sector_code,
+                            "name": sector_code,
+                            "points": synth_points,
+                            "source": "sina_synthetic",
+                        }
+                except Exception as exc:
+                    logger.warning(f"板块K线 新浪合成失败 {sector_code}: {exc}")
+
             return json_response(self, result)
 
         # 指数K线API（用于指数对比图表）
@@ -818,7 +843,7 @@ class Handler(BaseHTTPRequestHandler):
             stats = query_zsxq_stock_stats(limit=limit)
             return json_response(self, {"items": stats})
 
-        # 同花顺 K线代理（code/market/freq）
+        # 同花顺 K线代理（code/market/freq），新浪板块合成兜底
         if path == "/api/ths/kline":
             code = q.get("code", [""])[0]
             market = q.get("market", ["stock"])[0]
@@ -826,6 +851,31 @@ class Handler(BaseHTTPRequestHandler):
             bars = int(q.get("bars", ["240"])[0])
             if not code:
                 return json_response(self, {"error": "missing code"}, 400)
+
+            # 新浪板块 code 走合成路径（THS 不认识这些 code）
+            if market == "sector" and code.startswith(("sw2_", "sw_", "new_", "gn_")) and freq == "1d":
+                try:
+                    from sina_proxy import compute_sector_kline_from_members
+
+                    def _get_kline(ts_code: str, nbars: int) -> list[dict[str, Any]]:
+                        r = engine.stock_kline_ashare(ts_code, "1d", bars=nbars)
+                        return r.get("points", []) if r else []
+
+                    synth_points = compute_sector_kline_from_members(
+                        code, _get_kline, bars=bars, top_n=20
+                    )
+                    if synth_points:
+                        return json_response(self, {
+                            "code": code,
+                            "name": code,
+                            "market": market,
+                            "freq": freq,
+                            "points": synth_points,
+                            "source": "sina_synthetic",
+                        })
+                except Exception as exc:
+                    logger.warning(f"新浪板块合成 {code}: {exc}")
+
             try:
                 result = fetch_ths_kline(code, market=market, freq=freq, bars=bars)
                 return json_response(self, result)

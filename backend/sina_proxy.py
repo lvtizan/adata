@@ -235,3 +235,121 @@ def fetch_sina_sector_members(sector_code: str, max_per_page: int = 100) -> list
         with _members_cache_lock:
             _members_cache[sector_code] = (time.time(), all_members)
     return all_members
+
+
+# ── 合成板块 K 线 ─────────────────────────────────
+# 新浪没有公开的板块历史 K 线 API，用成分股等权合成
+_synth_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+_synth_cache_lock = threading.Lock()
+_SYNTH_TTL = 3600  # 1 小时
+
+
+def compute_sector_kline_from_members(
+    sector_code: str,
+    get_stock_kline,  # callable: (ts_code: str, bars: int) -> list[{time, close, ...}]
+    bars: int = 240,
+    top_n: int = 20,
+) -> list[dict[str, Any]]:
+    """按 top N 成分股（按成交额）等权合成板块 K 线。
+
+    Args:
+        sector_code: 新浪板块 code（sw2_/new_/gn_）
+        get_stock_kline: 取个股 K 线的 callable，返回 [{time, open, high, low, close, volume}]
+        bars: 返回 K 线根数
+        top_n: 用前 N 只（按当日成交额）合成
+
+    Returns:
+        [{time, open, high, low, close, volume}, ...] 归一化为以首日 close=100 的相对指数
+        失败返回 []
+    """
+    with _synth_cache_lock:
+        cached = _synth_cache.get(sector_code)
+        if cached and time.time() - cached[0] < _SYNTH_TTL:
+            return cached[1]
+
+    members = fetch_sina_sector_members(sector_code)
+    if not members:
+        return []
+    # 按成交额降序取前 N
+    members_sorted = sorted(members, key=lambda m: m.get("amount", 0), reverse=True)[:top_n]
+
+    # 收集每只股票的 K 线（dict: time → close）
+    stock_series: list[dict[str, dict[str, float]]] = []
+    for m in members_sorted:
+        ts_code = m.get("tsCode")
+        if not ts_code:
+            continue
+        try:
+            pts = get_stock_kline(ts_code, bars)
+        except Exception as exc:
+            logger.warning(f"kline fetch failed {ts_code}: {exc}")
+            continue
+        if not pts:
+            continue
+        series = {}
+        for p in pts:
+            t = str(p.get("time", ""))
+            if not t:
+                continue
+            series[t] = {
+                "open": float(p.get("open", 0) or 0),
+                "high": float(p.get("high", 0) or 0),
+                "low": float(p.get("low", 0) or 0),
+                "close": float(p.get("close", 0) or 0),
+                "volume": float(p.get("volume", 0) or 0),
+            }
+        if series:
+            stock_series.append(series)
+
+    if not stock_series:
+        logger.warning(f"合成板块 K 线 {sector_code}: 无股票数据")
+        return []
+
+    # 所有日期的并集，作为合成指数的时间轴
+    all_dates = sorted({t for s in stock_series for t in s.keys()})
+    if not all_dates:
+        return []
+
+    # 对每只股票，以第一个有数据的 close 作为基准 100，后续按相对涨跌幅
+    # 然后每日所有股票的相对值等权平均
+    synth_points: list[dict[str, Any]] = []
+    for date in all_dates:
+        day_opens: list[float] = []
+        day_highs: list[float] = []
+        day_lows: list[float] = []
+        day_closes: list[float] = []
+        day_vols: list[float] = []
+        for series in stock_series:
+            # 找基准：这只股票第一个有数据的 close
+            base_date = min((d for d in series if d <= date), default=None)
+            base_row = series.get(base_date) if base_date else None
+            base = base_row["close"] if base_row and base_row["close"] > 0 else 0
+            if base <= 0:
+                continue
+            row = series.get(date)
+            if not row:
+                continue
+            scale = 100.0 / base
+            day_opens.append(row["open"] * scale)
+            day_highs.append(row["high"] * scale)
+            day_lows.append(row["low"] * scale)
+            day_closes.append(row["close"] * scale)
+            day_vols.append(row["volume"])
+        if not day_closes:
+            continue
+        synth_points.append({
+            "time": date,
+            "open": round(sum(day_opens) / len(day_opens), 2),
+            "high": round(sum(day_highs) / len(day_highs), 2),
+            "low": round(sum(day_lows) / len(day_lows), 2),
+            "close": round(sum(day_closes) / len(day_closes), 2),
+            "volume": sum(day_vols),
+        })
+
+    # 按 bars 截断最近 N 根
+    if bars and len(synth_points) > bars:
+        synth_points = synth_points[-bars:]
+
+    with _synth_cache_lock:
+        _synth_cache[sector_code] = (time.time(), synth_points)
+    return synth_points
