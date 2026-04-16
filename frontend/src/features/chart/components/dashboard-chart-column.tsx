@@ -140,16 +140,7 @@ function SectorKlinePane({ sectorCode }: { sectorCode?: string }) {
           <EmptyState
             size="sm"
             icon={<BarChart3 className="w-7 h-7" />}
-            title={
-              sectorCode && !sectorCode.startsWith("881")
-                ? "新浪板块暂无 K 线"
-                : "暂无 K 线数据"
-            }
-            description={
-              sectorCode && !sectorCode.startsWith("881")
-                ? "选择 881xxx（同花顺）板块可查看 K 线"
-                : undefined
-            }
+            title="暂无 K 线数据"
           />
         ) : (
           <KlineChart
