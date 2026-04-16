@@ -19,9 +19,17 @@ interface DataTableProps<T> {
   defaultSort?: { key: string; dir: "asc" | "desc" };
   sortFn?: (a: T, b: T, key: string, dir: "asc" | "desc") => number;
   className?: string;
+  /** @deprecated Use density="compact" instead. compact=true maps to density="relaxed" for backward compat (original h-9 rows). */
   compact?: boolean;
+  density?: "compact" | "normal" | "relaxed";
   emptyText?: string;
 }
+
+const sizingMap = {
+  compact: { cell: "h-6 py-0.5 text-[11px]", header: "h-6 text-[10px]" },
+  normal:  { cell: "h-7 py-1 text-[12px]",   header: "h-7 text-[11px]" },
+  relaxed: { cell: "h-9 py-2 text-[13px]",   header: "h-9 text-[11px]" },
+} as const;
 
 export function DataTable<T>({
   columns,
@@ -32,9 +40,15 @@ export function DataTable<T>({
   defaultSort,
   sortFn,
   className,
-  compact = false,
+  compact,
+  density,
   emptyText = "暂无数据",
 }: DataTableProps<T>) {
+  // density takes priority; compact boolean maps to relaxed (original h-9) for backward compat
+  const effectiveDensity: "compact" | "normal" | "relaxed" =
+    density ?? (compact ? "relaxed" : "relaxed");
+  const sz = sizingMap[effectiveDensity];
+
   const [sort, setSort] = useState(defaultSort || { key: "", dir: "desc" as const });
 
   const sorted = useMemo(() => {
@@ -48,19 +62,17 @@ export function DataTable<T>({
     );
   }
 
-  const rowHeight = compact ? "h-9" : "h-10";
-
   return (
     <div className={cn("overflow-auto", className)}>
-      <table className="w-full border-collapse text-base" style={{ tableLayout: "auto" }}>
+      <table className="w-full border-collapse" style={{ tableLayout: "auto" }}>
         <thead>
           <tr>
             {columns.map((col) => (
               <th
                 key={col.key}
                 className={cn(
-                  "sticky top-0 z-10 bg-surface px-3 text-xs font-semibold text-text-secondary border-b border-border-default whitespace-nowrap",
-                  rowHeight,
+                  "sticky top-0 z-10 bg-surface px-3 font-semibold text-text-secondary border-b border-border-default whitespace-nowrap",
+                  sz.header,
                   col.align === "right" ? "text-right" : "text-left",
                   col.sortable && "cursor-pointer select-none hover:text-text-primary"
                 )}
@@ -89,7 +101,7 @@ export function DataTable<T>({
               <tr
                 key={key}
                 className={cn(
-                  rowHeight,
+                  sz.cell,
                   "cursor-pointer border-b border-border-subtle hover:bg-surface-hover transition-colors",
                   key === selectedKey && "bg-surface-active"
                 )}

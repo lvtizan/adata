@@ -9,6 +9,8 @@ import { PageHeader } from "@/shared/ui/page-header";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/shared/ui/tabs";
 import { StatStrip } from "@/shared/ui/stat-strip";
 import { StockTag } from "@/shared/ui/stock-tag";
+import { DataTable } from "@/shared/table";
+import { cn } from "@/lib/utils";
 
 export default function DebugPage() {
   return (
@@ -185,6 +187,11 @@ export default function DebugPage() {
       </section>
 
       <section>
+        <h2 className="text-sm font-semibold text-text-primary mb-3">DataTable density</h2>
+        <DataTableDemo />
+      </section>
+
+      <section>
         <h2 className="text-sm font-semibold text-text-primary mb-3">Panel</h2>
         <div className="grid grid-cols-2 gap-4">
           <Panel title="基础卡片">这是 Panel 内的内容</Panel>
@@ -266,6 +273,43 @@ function ThresholdDemo() {
       <ThresholdInput label="成交额 ≥" value={amount} onChange={setAmount} min={0} suffix="亿" />
       <ThresholdInput label="RS120 ≥" value={rs} onChange={setRs} min={0} max={100} />
       <ThresholdInput label="涨幅 ≥" value={pctChange} onChange={setPctChange} min={-20} max={20} step={0.5} suffix="%" />
+    </div>
+  );
+}
+
+function DataTableDemo() {
+  const rows = [
+    { code: "600519", name: "贵州茅台", price: 1688.0, pct: 2.35, amount: 12.3 },
+    { code: "000858", name: "五粮液", price: 168.5, pct: -1.8, amount: 8.7 },
+    { code: "688981", name: "中芯国际", price: 98.2, pct: 4.3, amount: 15.6 },
+    { code: "300750", name: "宁德时代", price: 215.4, pct: -3.2, amount: 9.2 },
+  ];
+  const columns = [
+    { key: "name", label: "名称", render: (r: any) => <div><div className="text-text-primary">{r.name}</div><div className="text-[10px] text-text-tertiary font-mono">{r.code}</div></div> },
+    { key: "price", label: "现价", align: "right" as const, render: (r: any) => <span className="font-mono tabular-nums">{r.price.toFixed(2)}</span> },
+    { key: "pct", label: "涨跌幅", align: "right" as const, render: (r: any) => <span className={cn("font-mono tabular-nums", r.pct >= 0 ? "text-state-up" : "text-state-down")}>{r.pct >= 0 ? "+" : ""}{r.pct.toFixed(2)}%</span> },
+    { key: "amount", label: "成交额", align: "right" as const, render: (r: any) => <span className="font-mono tabular-nums text-text-secondary">{r.amount.toFixed(1)}亿</span> },
+  ];
+  return (
+    <div className="space-y-4">
+      <div>
+        <div className="text-[11px] text-text-tertiary mb-1.5">compact（24px 行高）</div>
+        <div className="border border-border-default rounded-md overflow-hidden">
+          <DataTable data={rows} columns={columns} rowKey={(r) => r.code} density="compact" />
+        </div>
+      </div>
+      <div>
+        <div className="text-[11px] text-text-tertiary mb-1.5">normal（默认 28px）</div>
+        <div className="border border-border-default rounded-md overflow-hidden">
+          <DataTable data={rows} columns={columns} rowKey={(r) => r.code} density="normal" />
+        </div>
+      </div>
+      <div>
+        <div className="text-[11px] text-text-tertiary mb-1.5">relaxed（36px）</div>
+        <div className="border border-border-default rounded-md overflow-hidden">
+          <DataTable data={rows} columns={columns} rowKey={(r) => r.code} density="relaxed" />
+        </div>
+      </div>
     </div>
   );
 }
