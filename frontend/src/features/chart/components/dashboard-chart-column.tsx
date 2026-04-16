@@ -137,7 +137,20 @@ function SectorKlinePane({ sectorCode }: { sectorCode?: string }) {
             加载失败：{(sectorQuery.error as Error).message}
           </div>
         ) : sectorPoints.length === 0 ? (
-          <EmptyState size="sm" title="无数据" />
+          <EmptyState
+            size="sm"
+            icon={<BarChart3 className="w-7 h-7" />}
+            title={
+              sectorCode && !sectorCode.startsWith("881")
+                ? "新浪板块暂无 K 线"
+                : "暂无 K 线数据"
+            }
+            description={
+              sectorCode && !sectorCode.startsWith("881")
+                ? "选择 881xxx（同花顺）板块可查看 K 线"
+                : undefined
+            }
+          />
         ) : (
           <KlineChart
             points={sectorPoints}
