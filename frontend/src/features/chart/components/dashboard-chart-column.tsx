@@ -8,6 +8,7 @@ import { StockKlineWorkbench } from "@/shared/charts/stock-kline-workbench";
 import { BarChart3, Minus, PenLine, MoveUpRight, Square, StickyNote, Eraser } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { CandlePoint, ChartDrawingOverlay } from "@/shared/types";
+import { IndexPip } from "./index-pip";
 
 interface DashboardChartColumnProps {
   sectorCode?: string;
@@ -126,7 +127,7 @@ function SectorKlinePane({ sectorCode }: { sectorCode?: string }) {
           </div>
         )}
       </div>
-      <div className="flex-1 min-h-0 p-1">
+      <div className="flex-1 min-h-0 p-1 relative">
         {!sectorCode ? (
           <EmptyState size="sm" icon={<BarChart3 className="w-7 h-7" />} title="请选择板块" />
         ) : sectorQuery.isLoading ? (
@@ -149,6 +150,8 @@ function SectorKlinePane({ sectorCode }: { sectorCode?: string }) {
             onDrawingsChange={setDrawings}
           />
         )}
+        {/* 上证 5m 画中画 */}
+        <IndexPip />
       </div>
     </div>
   );
