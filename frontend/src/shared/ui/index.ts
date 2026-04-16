@@ -4,3 +4,4 @@ export * from "./stat-strip";
 export * from "./stock-tag";
 export * from "./filter-chip";
 export * from "./segmented-control";
+export * from "./threshold-input";

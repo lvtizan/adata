@@ -1,6 +1,7 @@
 import * as React from "react";
 import { FilterChip, FilterBar } from "@/shared/ui/filter-chip";
 import { SegmentedControl } from "@/shared/ui/segmented-control";
+import { ThresholdInput } from "@/shared/ui/threshold-input";
 import { Panel } from "@/shared/ui/panel";
 import { PageHeader } from "@/shared/ui/page-header";
 import { StatStrip } from "@/shared/ui/stat-strip";
@@ -136,6 +137,11 @@ export default function DebugPage() {
       </section>
 
       <section>
+        <h2 className="text-sm font-semibold text-text-primary mb-3">ThresholdInput</h2>
+        <ThresholdDemo />
+      </section>
+
+      <section>
         <h2 className="text-sm font-semibold text-text-primary mb-3">Panel</h2>
         <div className="grid grid-cols-2 gap-4">
           <Panel title="基础卡片">这是 Panel 内的内容</Panel>
@@ -169,6 +175,19 @@ export default function DebugPage() {
           </Panel>
         </div>
       </section>
+    </div>
+  );
+}
+
+function ThresholdDemo() {
+  const [amount, setAmount] = React.useState(8);
+  const [rs, setRs] = React.useState(87);
+  const [pctChange, setPctChange] = React.useState(2);
+  return (
+    <div className="flex items-center gap-4 flex-wrap">
+      <ThresholdInput label="成交额 ≥" value={amount} onChange={setAmount} min={0} suffix="亿" />
+      <ThresholdInput label="RS120 ≥" value={rs} onChange={setRs} min={0} max={100} />
+      <ThresholdInput label="涨幅 ≥" value={pctChange} onChange={setPctChange} min={-20} max={20} step={0.5} suffix="%" />
     </div>
   );
 }
