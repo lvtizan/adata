@@ -1,3 +1,4 @@
+import { FilterChip, FilterBar } from "@/shared/ui/filter-chip";
 import { Panel } from "@/shared/ui/panel";
 import { PageHeader } from "@/shared/ui/page-header";
 import { StatStrip } from "@/shared/ui/stat-strip";
@@ -90,6 +91,39 @@ export default function DebugPage() {
               <StockTag size="sm" code="000858" name="五粮液" pctChange={-1.8} rs={78} />
               <StockTag size="sm" code="688981" name="中芯国际" pctChange={4.3} rs={95} />
             </div>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <h2 className="text-sm font-semibold text-text-primary mb-3">FilterChip / FilterBar</h2>
+        <div className="space-y-3">
+          <div>
+            <div className="text-[11px] text-text-tertiary mb-1.5">基础筛选（时间窗口）</div>
+            <FilterBar>
+              <FilterChip label="3日" />
+              <FilterChip label="7日" active />
+              <FilterChip label="15日" />
+              <FilterChip label="30日" />
+            </FilterBar>
+          </div>
+          <div>
+            <div className="text-[11px] text-text-tertiary mb-1.5">带计数（阶段筛选）</div>
+            <FilterBar>
+              <FilterChip label="全部" value="42" active />
+              <FilterChip label="萌芽" value="8" />
+              <FilterChip label="发酵" value="15" />
+              <FilterChip label="共识" value="12" />
+              <FilterChip label="退潮" value="7" />
+            </FilterBar>
+          </div>
+          <div>
+            <div className="text-[11px] text-text-tertiary mb-1.5">带清除按钮（已选）</div>
+            <FilterBar>
+              <FilterChip label="板块" value="白酒" active onClear={() => alert("清除板块")} />
+              <FilterChip label="成交额" value="≥8亿" active onClear={() => {}} />
+              <FilterChip label="RS120" value="≥87" active onClear={() => {}} />
+            </FilterBar>
           </div>
         </div>
       </section>
