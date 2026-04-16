@@ -6,6 +6,7 @@ import { SegmentedControl } from "@/shared/ui/segmented-control";
 import { ThresholdInput } from "@/shared/ui/threshold-input";
 import { Panel } from "@/shared/ui/panel";
 import { PageHeader } from "@/shared/ui/page-header";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/shared/ui/tabs";
 import { StatStrip } from "@/shared/ui/stat-strip";
 import { StockTag } from "@/shared/ui/stock-tag";
 
@@ -179,6 +180,11 @@ export default function DebugPage() {
       </section>
 
       <section>
+        <h2 className="text-sm font-semibold text-text-primary mb-3">Tabs</h2>
+        <TabsDemo />
+      </section>
+
+      <section>
         <h2 className="text-sm font-semibold text-text-primary mb-3">Panel</h2>
         <div className="grid grid-cols-2 gap-4">
           <Panel title="基础卡片">这是 Panel 内的内容</Panel>
@@ -212,6 +218,41 @@ export default function DebugPage() {
           </Panel>
         </div>
       </section>
+    </div>
+  );
+}
+
+function TabsDemo() {
+  return (
+    <div className="space-y-6">
+      <div>
+        <div className="text-[11px] text-text-tertiary mb-2">default（原风格）</div>
+        <Tabs defaultValue="a">
+          <TabsList>
+            <TabsTrigger value="a">全部</TabsTrigger>
+            <TabsTrigger value="b">已选</TabsTrigger>
+            <TabsTrigger value="c">已弃</TabsTrigger>
+          </TabsList>
+          <TabsContent value="a" className="text-[11px] text-text-secondary mt-2">内容 A</TabsContent>
+          <TabsContent value="b" className="text-[11px] text-text-secondary mt-2">内容 B</TabsContent>
+          <TabsContent value="c" className="text-[11px] text-text-secondary mt-2">内容 C</TabsContent>
+        </Tabs>
+      </div>
+      <div>
+        <div className="text-[11px] text-text-tertiary mb-2">minimal（TradingView 风格）</div>
+        <Tabs defaultValue="overview">
+          <TabsList variant="minimal">
+            <TabsTrigger value="overview">概览</TabsTrigger>
+            <TabsTrigger value="kline">K线</TabsTrigger>
+            <TabsTrigger value="fundamentals">基本面</TabsTrigger>
+            <TabsTrigger value="news">新闻</TabsTrigger>
+          </TabsList>
+          <TabsContent value="overview" className="text-[11px] text-text-secondary mt-3">概览内容</TabsContent>
+          <TabsContent value="kline" className="text-[11px] text-text-secondary mt-3">K线内容</TabsContent>
+          <TabsContent value="fundamentals" className="text-[11px] text-text-secondary mt-3">基本面内容</TabsContent>
+          <TabsContent value="news" className="text-[11px] text-text-secondary mt-3">新闻内容</TabsContent>
+        </Tabs>
+      </div>
     </div>
   );
 }
