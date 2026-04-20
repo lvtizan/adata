@@ -20,6 +20,10 @@ export function getSectorChart(sectorCode: string, bars = 120) {
   return api<ChartData>(`/charts/sector/${sectorCode}?bars=${bars}`, { cacheTTL: 300_000 });
 }
 
+export function getSectorEqualWeightChart(sectorCode: string, bars = 180) {
+  return api<ChartData>(`/charts/sector/${sectorCode}/equal-weight?bars=${bars}`, { cacheTTL: 600_000 });
+}
+
 export function getIndexChart(tsCode: string, bars = 180) {
   return api<ChartData>(`/charts/index/${tsCode}?bars=${bars}`, { cacheTTL: 300_000 });
 }

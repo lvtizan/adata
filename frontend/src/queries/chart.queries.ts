@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { getStockChart, getSectorChart, getRelativeStrength } from "@/services";
+import { getStockChart, getSectorChart, getSectorEqualWeightChart, getRelativeStrength } from "@/services";
 
 interface UseStockChartOptions {
   realOnly?: boolean;
@@ -20,6 +20,15 @@ export function useSectorChart(sectorCode: string, bars = 120) {
     queryFn: () => getSectorChart(sectorCode, bars),
     enabled: !!sectorCode,
     staleTime: 60_000,
+  });
+}
+
+export function useSectorEqualWeightChart(sectorCode: string, bars = 180) {
+  return useQuery({
+    queryKey: ["chart", "sector-eq", sectorCode, bars],
+    queryFn: () => getSectorEqualWeightChart(sectorCode, bars),
+    enabled: !!sectorCode,
+    staleTime: 600_000,
   });
 }
 

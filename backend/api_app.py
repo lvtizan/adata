@@ -99,6 +99,12 @@ async def get_stock_chart(ts_code: str, bars: int = 120, frequency: str = "1d", 
 
 
 # ===== 板块K线 =====
+@app.get("/api/charts/sector/{sector_code}/equal-weight")
+async def get_sector_equal_weight_chart(sector_code: str, bars: int = 180):
+    date = engine.latest_data_trade_date()
+    return engine.sector_equal_weight_kline(sector_code, date, bars=bars)
+
+
 @app.get("/api/charts/sector/{sector_code}")
 async def get_sector_chart(sector_code: str, bars: int = 120):
     date = engine.latest_data_trade_date()

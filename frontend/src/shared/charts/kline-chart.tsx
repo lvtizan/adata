@@ -1,5 +1,34 @@
 import { useEffect, useRef, useCallback } from "react";
-import { init, dispose, registerOverlay, type Chart } from "klinecharts";
+import { init, dispose, registerOverlay, registerIndicator, type Chart } from "klinecharts";
+
+// Module-level store: tsCode → (date string → normalized sector price)
+const _sectorStore = new Map<string, Map<string, number>>();
+let _sectorIndicatorRegistered = false;
+
+function ensureSectorIndicator() {
+  if (_sectorIndicatorRegistered) return;
+  try {
+    registerIndicator<{ value: number | null }, string>({
+      name: "SECTOR_OVERLAY",
+      shortName: "板块",
+      figures: [{ key: "value", type: "line" }],
+      styles: { lines: [{ color: "rgba(150,150,150,0.55)", size: 1.5, smooth: true }] },
+      calc: (dataList: any[], indicator: any) => {
+        const tsCode = (indicator?.calcParams?.[0] ?? "") as string;
+        const priceMap = _sectorStore.get(tsCode) ?? new Map<string, number>();
+        return dataList.map((bar: any) => {
+          const dateStr = new Date(bar.timestamp).toISOString().split("T")[0];
+          const value = priceMap.get(dateStr);
+          return { value: value != null ? value : null };
+        });
+      },
+    });
+    _sectorIndicatorRegistered = true;
+  } catch {
+    // already registered
+    _sectorIndicatorRegistered = true;
+  }
+}
 import { useAppStore } from "@/store";
 import { getKLineStyles, dateToTimestamp } from "@/app/theme/chart-theme";
 import type { CandlePoint, FengSignals, ChartDrawingOverlay, ChartSignal } from "@/shared/types";
@@ -18,12 +47,17 @@ interface KlineChartProps {
   fengSignals?: FengSignals;
   predictions?: PatternPrediction[];
   frequency?: string;
+  /** 板块等权指数叠加线，已归一化到个股价格坐标 */
+  tsCode?: string;
+  sectorNormalizedPoints?: Array<{ time: string; value: number }>;
   /** 画线工具相关 */
   enableDrawing?: boolean;
   activeTool?: string | null;
   drawingColor?: string;
   initialDrawings?: ChartDrawingOverlay[];
   onDrawingsChange?: (overlays: ChartDrawingOverlay[]) => void;
+  /** 一条画线完成时触发（用于自动重置工具） */
+  onDrawingComplete?: () => void;
   /** 暴露 chart 实例给父组件 */
   chartRef?: React.MutableRefObject<Chart | null>;
 }
@@ -280,6 +314,107 @@ function ensureOverlays() {
     },
   });
 
+  // 等距通道（3点：P0定向起点，P1定向终点，P2定通道宽度）
+  registerOverlay({
+    name: "equalDistanceChannel",
+    totalStep: 3,
+    needDefaultPointFigure: true,
+    needDefaultXAxisFigure: false,
+    needDefaultYAxisFigure: false,
+    createPointFigures: ({ overlay, coordinates, bounding }) => {
+      const [p0, p1, p2] = coordinates ?? [];
+      const color: string = (overlay.styles as any)?.line?.color ?? "#3b82f6";
+      const w = bounding.width;
+
+      if (!p0 || !p1) return [];
+
+      const dx = p1.x - p0.x;
+      const dy = p1.y - p0.y;
+
+      function extendLine(ox: number, oy: number): [{ x: number; y: number }, { x: number; y: number }] {
+        if (Math.abs(dx) < 0.001) {
+          return [{ x: p0.x + ox, y: 0 }, { x: p0.x + ox, y: bounding.height }];
+        }
+        const slope = dy / dx;
+        const ax = p0.x + ox;
+        const ay = p0.y + oy;
+        return [{ x: 0, y: ay + slope * (0 - ax) }, { x: w, y: ay + slope * (w - ax) }];
+      }
+
+      const [ml0, ml1] = extendLine(0, 0);
+      const figures: any[] = [{
+        type: "line", attrs: { coordinates: [ml0, ml1] },
+        styles: { style: "solid" as const, color, size: 1.5 },
+      }];
+
+      if (!p2) return figures;
+
+      const len2 = dx * dx + dy * dy;
+      if (len2 < 0.001) return figures;
+
+      const t = ((p2.x - p0.x) * dx + (p2.y - p0.y) * dy) / len2;
+      const projX = p0.x + t * dx;
+      const projY = p0.y + t * dy;
+      const offX = p2.x - projX;
+      const offY = p2.y - projY;
+
+      const [ul0, ul1] = extendLine(offX, offY);
+      const [ll0, ll1] = extendLine(-offX, -offY);
+
+      figures.push(
+        { type: "line", attrs: { coordinates: [ul0, ul1] }, styles: { style: "dashed" as const, color, size: 1, dashedValue: [6, 3] } },
+        { type: "line", attrs: { coordinates: [ll0, ll1] }, styles: { style: "dashed" as const, color, size: 1, dashedValue: [6, 3] } },
+      );
+      return figures;
+    },
+  });
+
+  // 安德鲁分叉（Andrews' Pitchfork，3点：P0为柄，P1/P2为两翼）
+  registerOverlay({
+    name: "pitchfork",
+    totalStep: 3,
+    needDefaultPointFigure: true,
+    needDefaultXAxisFigure: false,
+    needDefaultYAxisFigure: false,
+    createPointFigures: ({ overlay, coordinates, bounding }) => {
+      const [p0, p1, p2] = coordinates ?? [];
+      const color: string = (overlay.styles as any)?.line?.color ?? "#f59e0b";
+      const w = bounding.width;
+
+      if (!p0 || !p1) return [];
+
+      function extendFrom(ax: number, ay: number, bx: number, by: number): [{ x: number; y: number }, { x: number; y: number }] {
+        const ddx = bx - ax;
+        const ddy = by - ay;
+        if (Math.abs(ddx) < 0.001) {
+          return [{ x: ax, y: 0 }, { x: ax, y: bounding.height }];
+        }
+        const slope = ddy / ddx;
+        return [{ x: 0, y: ay + slope * (0 - ax) }, { x: w, y: ay + slope * (w - ax) }];
+      }
+
+      if (!p2) {
+        const [a, b] = extendFrom(p0.x, p0.y, p1.x, p1.y);
+        return [{ type: "line", attrs: { coordinates: [a, b] }, styles: { style: "solid" as const, color, size: 1 } }];
+      }
+
+      const midX = (p1.x + p2.x) / 2;
+      const midY = (p1.y + p2.y) / 2;
+      const [ml0, ml1] = extendFrom(p0.x, p0.y, midX, midY);
+      const dirX = midX - p0.x;
+      const dirY = midY - p0.y;
+      const [ul0, ul1] = extendFrom(p1.x, p1.y, p1.x + dirX, p1.y + dirY);
+      const [ll0, ll1] = extendFrom(p2.x, p2.y, p2.x + dirX, p2.y + dirY);
+
+      return [
+        { type: "line", attrs: { coordinates: [p1, p2] }, styles: { style: "solid" as const, color: color + "80", size: 1 } },
+        { type: "line", attrs: { coordinates: [ml0, ml1] }, styles: { style: "solid" as const, color, size: 1.5 } },
+        { type: "line", attrs: { coordinates: [ul0, ul1] }, styles: { style: "dashed" as const, color, size: 1, dashedValue: [6, 3] } },
+        { type: "line", attrs: { coordinates: [ll0, ll1] }, styles: { style: "dashed" as const, color, size: 1, dashedValue: [6, 3] } },
+      ];
+    },
+  });
+
   // 左侧价格标签（贴左边缘）
   registerOverlay<{ text: string; color: string; bg: string }>({
     name: "leftTag",
@@ -318,7 +453,8 @@ const SYSTEM_GROUP = "__system__";
 
 export function KlineChart({
   points, height, showVolume = true, signals, drawdowns, supports, resistances, fengSignals, predictions, frequency,
-  enableDrawing, activeTool, drawingColor, initialDrawings, onDrawingsChange, chartRef: externalChartRef,
+  tsCode, sectorNormalizedPoints,
+  enableDrawing, activeTool, drawingColor, initialDrawings, onDrawingsChange, onDrawingComplete, chartRef: externalChartRef,
 }: KlineChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<Chart | null>(null);
@@ -346,6 +482,7 @@ export function KlineChart({
 
   useEffect(() => {
     ensureOverlays();
+    ensureSectorIndicator();
     const el = containerRef.current;
     if (!el) return;
 
@@ -359,6 +496,15 @@ export function KlineChart({
 
     if (showVolume) {
       chart.createIndicator("VOL", false, { id: "pane_vol", height: height ? Math.round(height * 0.2) : 48 });
+    }
+
+    // 板块等权指数叠加线
+    if (tsCode) {
+      if (sectorNormalizedPoints?.length) {
+        const priceMap = new Map(sectorNormalizedPoints.map((p) => [p.time, p.value]));
+        _sectorStore.set(tsCode, priceMap);
+      }
+      chart.createIndicator({ name: "SECTOR_OVERLAY", calcParams: [tsCode] } as any, true);
     }
 
     // 填充K线数据
@@ -580,16 +726,19 @@ export function KlineChart({
     }
 
     // ── 画线变更监听 ──
-    if (enableDrawing && onDrawingsChange) {
+    if (enableDrawing) {
       const saveTimer = { current: null as number | null };
       const debounceSave = () => {
         if (saveTimer.current) clearTimeout(saveTimer.current);
         saveTimer.current = window.setTimeout(() => {
-          onDrawingsChange(snapshotUserDrawings());
+          onDrawingsChange?.(snapshotUserDrawings());
         }, 500);
       };
       (chart as any).bindEvent?.("bindOverlay", debounceSave);
-      (chart as any).bindEvent?.("bindOverlayEnd", debounceSave);
+      (chart as any).bindEvent?.("bindOverlayEnd", () => {
+        debounceSave();
+        onDrawingComplete?.();
+      });
     }
 
     return () => {
@@ -599,6 +748,15 @@ export function KlineChart({
       if (externalChartRef) externalChartRef.current = null;
     };
   }, [points, height, showVolume, isDark, signals, drawdowns, supports, resistances, fengSignals, predictions, initialDrawings]);
+
+  // ── 板块叠加线：数据异步到达时更新 ──
+  useEffect(() => {
+    const chart = chartRef.current as any;
+    if (!chart || !tsCode || !sectorNormalizedPoints?.length) return;
+    const priceMap = new Map(sectorNormalizedPoints.map((p) => [p.time, p.value]));
+    _sectorStore.set(tsCode, priceMap);
+    chart.overrideIndicator?.({ name: "SECTOR_OVERLAY", calcParams: [tsCode] });
+  }, [sectorNormalizedPoints, tsCode]);
 
   // ── 画线工具切换 ──
   useEffect(() => {

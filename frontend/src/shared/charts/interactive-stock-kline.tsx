@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { type Chart } from "klinecharts";
 import { useChartDrawings } from "@/queries";
 import { KlineChart } from "./kline-chart";
@@ -76,6 +76,7 @@ interface InteractiveStockKlineProps {
   resistances?: ResistanceLevel[];
   fengSignals?: FengSignals;
   rsData?: RelativeStrengthData;
+  sectorNormalizedPoints?: Array<{ time: string; value: number }>;
   isLoading?: boolean;
   error?: string;
   activeTool?: string | null;
@@ -84,6 +85,14 @@ interface InteractiveStockKlineProps {
   onChangeOverlayColor?: (chart: any, overlayId: string, color: string) => void;
   onDrawingsChange?: (overlays: Array<{ id: string; name: string; lock: boolean; points: number; label?: string }>) => void;
   onBuyPlanChange?: (plan: { entryPrice: number; stopLoss: number; takeProfit: number; riskReward: number | null }) => void;
+  onToolReset?: () => void;
+}
+
+interface ContextMenu {
+  x: number;
+  y: number;
+  overlayId: string;
+  locked: boolean;
 }
 
 export function InteractiveStockKline({
@@ -97,6 +106,7 @@ export function InteractiveStockKline({
   resistances,
   fengSignals,
   rsData,
+  sectorNormalizedPoints,
   isLoading,
   error,
   activeTool,
@@ -104,11 +114,17 @@ export function InteractiveStockKline({
   onSelectionChange,
   onDrawingsChange,
   onBuyPlanChange,
+  onToolReset,
 }: InteractiveStockKlineProps) {
   const [buyMode, setBuyMode] = useState(false);
+  const [contextMenu, setContextMenu] = useState<ContextMenu | null>(null);
   const chartRef = useRef<Chart | null>(null);
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const saveTimerRef = useRef<number | null>(null);
+
+  // ── Undo/Redo history stack ──
+  const historyRef = useRef<ChartDrawingOverlay[][]>([[]]);
+  const historyIdxRef = useRef(0);
 
   const { data: drawingsDoc } = useChartDrawings(tsCode, "stock", "1d");
 
@@ -151,6 +167,49 @@ export function InteractiveStockKline({
   const persistChartDrawings = useCallback((chart: any) => {
     handleDrawingsChange(snapshotUserDrawings(chart));
   }, [handleDrawingsChange, snapshotUserDrawings]);
+
+  const pushHistory = useCallback((overlays: ChartDrawingOverlay[]) => {
+    const newStack = historyRef.current.slice(0, historyIdxRef.current + 1);
+    newStack.push(overlays);
+    historyRef.current = newStack;
+    historyIdxRef.current = newStack.length - 1;
+  }, []);
+
+  const restoreSnapshot = useCallback((overlays: ChartDrawingOverlay[]) => {
+    const chart = chartRef.current as any;
+    if (!chart) return;
+    const all: any[] = chart.getOverlaysByType?.() ?? [];
+    for (const o of all) {
+      if (o.groupId !== "__system__") chart.removeOverlay?.({ id: o.id });
+    }
+    for (const d of overlays) {
+      chart.createOverlay({ id: d.id, name: d.name, points: d.points as any, styles: d.styles as any, extendData: d.extendData });
+    }
+    handleDrawingsChange(overlays);
+  }, [handleDrawingsChange]);
+
+  const undo = useCallback(() => {
+    if (historyIdxRef.current <= 0) return;
+    historyIdxRef.current--;
+    restoreSnapshot(historyRef.current[historyIdxRef.current] ?? []);
+  }, [restoreSnapshot]);
+
+  const redo = useCallback(() => {
+    if (historyIdxRef.current >= historyRef.current.length - 1) return;
+    historyIdxRef.current++;
+    restoreSnapshot(historyRef.current[historyIdxRef.current] ?? []);
+  }, [restoreSnapshot]);
+
+  // Expose undo/redo via window event for toolbar buttons
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const action = (e as CustomEvent<{ action: string }>).detail?.action;
+      if (action === "undo") undo();
+      else if (action === "redo") redo();
+    };
+    window.addEventListener(`chart-history:${tsCode}`, handler as EventListener);
+    return () => window.removeEventListener(`chart-history:${tsCode}`, handler as EventListener);
+  }, [tsCode, undo, redo]);
 
   const updateSelection = useCallback((chart: any) => {
     try {
@@ -293,6 +352,43 @@ export function InteractiveStockKline({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [buyMode]);
 
+  // ── Keyboard shortcuts: Ctrl+Z, Ctrl+Shift+Z, Delete, Escape ──
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const chart = chartRef.current as any;
+
+      if ((e.metaKey || e.ctrlKey) && e.key === "z" && !e.shiftKey) {
+        e.preventDefault();
+        undo();
+        return;
+      }
+      if ((e.metaKey || e.ctrlKey) && (e.key === "y" || (e.key === "z" && e.shiftKey))) {
+        e.preventDefault();
+        redo();
+        return;
+      }
+      if (e.key === "Escape") {
+        onToolReset?.();
+        setContextMenu(null);
+        return;
+      }
+      if ((e.key === "Delete" || e.key === "Backspace") && !buyMode) {
+        if (!chart) return;
+        const all: any[] = chart.getOverlaysByType?.() ?? [];
+        const selected = all.find((o: any) => o.groupId !== "__system__" && (o.isSelected || o.selected));
+        if (selected) {
+          chart.removeOverlay?.({ id: selected.id });
+          const snap = snapshotUserDrawings(chart);
+          pushHistory(snap);
+          handleDrawingsChange(snap);
+          onSelectionChange?.({ id: null, locked: false, name: null });
+        }
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [buyMode, undo, redo, onToolReset, pushHistory, handleDrawingsChange, snapshotUserDrawings, onSelectionChange]);
+
   useEffect(() => {
     const handler = (event: Event) => {
       const detail = (event as CustomEvent<{ action: string }>).detail;
@@ -363,7 +459,22 @@ export function InteractiveStockKline({
 
   return (
     <div className="flex flex-col h-full">
-      <div ref={chartContainerRef} className="relative flex-1 min-h-0">
+      <div
+        ref={chartContainerRef}
+        className="relative flex-1 min-h-0"
+        onContextMenu={(e: ReactMouseEvent) => {
+          e.preventDefault();
+          setTimeout(() => {
+            const chart = chartRef.current as any;
+            const all: any[] = chart?.getOverlaysByType?.() ?? [];
+            const selected = all.find((o: any) => o.groupId !== "__system__" && (o.isSelected || o.selected));
+            if (selected) {
+              setContextMenu({ x: e.clientX, y: e.clientY, overlayId: selected.id, locked: !!selected.lock });
+            }
+          }, 30);
+        }}
+        onClick={() => setContextMenu(null)}
+      >
         {buyMode && (
           <>
             <div
@@ -392,16 +503,60 @@ export function InteractiveStockKline({
           supports={supports}
           resistances={resistances}
           fengSignals={fengSignals}
+          tsCode={tsCode}
+          sectorNormalizedPoints={sectorNormalizedPoints}
           enableDrawing
           activeTool={activeTool}
           drawingColor={drawingColor}
           initialDrawings={savedDrawings}
           onDrawingsChange={handleDrawingsChange}
+          onDrawingComplete={() => {
+            onToolReset?.();
+            setTimeout(() => {
+              const snap = snapshotUserDrawings(chartRef.current as any);
+              pushHistory(snap);
+            }, 50);
+          }}
           chartRef={chartRef}
           frequency={frequency}
         />
 
         {rsData && <RsMiniChart rsData={rsData} stockName={stockName} />}
+
+        {contextMenu && (
+          <div
+            className="fixed z-[100] min-w-[130px] bg-canvas border border-border-default rounded-lg shadow-lg py-1 text-sm"
+            style={{ left: contextMenu.x, top: contextMenu.y }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              className="w-full px-3 py-1.5 text-left hover:bg-surface-hover text-state-down"
+              onClick={() => {
+                const chart = chartRef.current as any;
+                chart?.removeOverlay?.({ id: contextMenu.overlayId });
+                const snap = snapshotUserDrawings(chart);
+                pushHistory(snap);
+                handleDrawingsChange(snap);
+                onSelectionChange?.({ id: null, locked: false, name: null });
+                setContextMenu(null);
+              }}
+            >
+              删除
+            </button>
+            <button
+              className="w-full px-3 py-1.5 text-left hover:bg-surface-hover"
+              onClick={() => {
+                const chart = chartRef.current as any;
+                chart?.overrideOverlay?.({ id: contextMenu.overlayId, lock: !contextMenu.locked });
+                persistChartDrawings(chart);
+                updateSelection(chart);
+                setContextMenu(null);
+              }}
+            >
+              {contextMenu.locked ? "解锁" : "锁定"}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

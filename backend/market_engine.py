@@ -69,7 +69,8 @@ class MarketEngine:
                 "ths_members": self._source_status.get("ths_members"),
                 "eastmoney_members": self._source_status.get("eastmoney_members"),
                 "local_clusters": self._source_status.get("local_clusters"),
-                "sina_realtime": self._source_status.get("sina_realtime"),
+                "tushare_realtime": self._source_status.get("tushare_realtime"),
+                "sina_realtime": self._source_status.get("tushare_realtime"),
             },
             "updatedAt": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
         }
@@ -1529,38 +1530,59 @@ class MarketEngine:
         return result
 
     def _detect_patterns_batch(self, ts_codes: list[str], trade_date: str) -> dict[str, list[str]]:
-        """批量检测形态，返回 {ts_code: [pattern_tags]}"""
+        """批量检测形态，返回 {ts_code: [pattern_tags]}。
+        使用本地快照数据，不走 Tushare 网络请求，避免超时。
+        """
         result: dict[str, list[str]] = {}
-        dates = self.trade_dates(trade_date, need=280)
-        start = dates[-270] if len(dates) >= 270 else dates[0]
+        if not ts_codes:
+            return result
 
-        def _detect_one(ts_code: str) -> tuple[str, list[str]]:
-            try:
-                df = ts.pro_bar(
-                    pro_api=self.pro,
-                    ts_code=ts_code,
-                    adj="qfq",
-                    start_date=start,
-                    end_date=trade_date,
-                    asset="E",
-                )
-                if df is None or df.empty:
-                    return ts_code, []
-                tags = detect_all_patterns(df)
-                return ts_code, tags
-            except Exception as exc:
-                logger.debug(f"形态检测失败 {ts_code}: {exc}")
-                return ts_code, []
+        # 复用 _stock_kline_daily_from_snapshots 的逻辑，但批量处理
+        all_dates = self._cached_snapshot_dates("stock_snapshot")
+        if not all_dates:
+            return result
 
-        # 并发检测（最多 4 线程，避免 Tushare 限频）
-        with ThreadPoolExecutor(max_workers=4) as pool:
-            futures = {pool.submit(_detect_one, code): code for code in ts_codes}
-            for future in as_completed(futures):
+        lookback_dates = all_dates[-270:]
+        codes_set = set(ts_codes)
+
+        # 每只股票的日线数据
+        rows_by_code: dict[str, list[dict[str, Any]]] = {c: [] for c in ts_codes}
+        snapshots = self.stock_snapshot_batch(list(lookback_dates))
+
+        for date_str in lookback_dates:
+            frame = snapshots.get(date_str)
+            if frame is None or frame.empty or "ts_code" not in frame.columns:
+                continue
+            members = frame[frame["ts_code"].isin(codes_set)]
+            for _, row in members.iterrows():
+                code = str(row["ts_code"])
                 try:
-                    code, tags = future.result(timeout=30)
-                    result[code] = tags
-                except Exception:
-                    pass
+                    o = float(row.get("open", 0) or 0)
+                    h = float(row.get("high", 0) or 0)
+                    lo = float(row.get("low", 0) or 0)
+                    c = float(row.get("close", 0) or 0)
+                    if o <= 0 or h <= 0 or lo <= 0 or c <= 0:
+                        continue
+                    rows_by_code[code].append({
+                        "trade_date": date_str,
+                        "open": o, "high": h, "low": lo, "close": c,
+                        "vol": float(row.get("vol", 0) or 0),
+                        "amount": float(row.get("amount", 0) or 0),
+                    })
+                except (TypeError, ValueError):
+                    continue
+
+        for code, rows in rows_by_code.items():
+            if len(rows) < 20:
+                result[code] = []
+                continue
+            try:
+                df = pd.DataFrame(rows).sort_values("trade_date").reset_index(drop=True)
+                tags = detect_all_patterns(df)
+                result[code] = tags
+            except Exception as exc:
+                logger.debug(f"形态检测失败 {code}: {exc}")
+                result[code] = []
 
         return result
 
@@ -2402,75 +2424,24 @@ class MarketEngine:
         return result
 
     def _fetch_all_realtime_quotes(self) -> dict[str, float]:
-        """新浪 API 并发拉全市场实时涨跌幅，返回 {ts_code: pct_change}，缓存 30 秒"""
+        """Tushare 批量拉全市场实时涨跌幅，返回 {ts_code: pct_change}，缓存 30 秒"""
         cached = self._cache.get("_all_realtime")
         if cached and time.time() - cached[0] < 30:
             return cached[1]
 
-        import ssl
-        import urllib.request
-        from concurrent.futures import ThreadPoolExecutor
-
-        # 从成分股映射中提取所有股票代码（不依赖 Tushare stock_basic）
+        # 从成分股映射中提取所有股票代码
         mapping, _ = self._ensure_ths_member_cache()
         code_set: set[str] = set()
         for codes in mapping.values():
             code_set.update(codes)
         if not code_set:
-            # fallback: 尝试 Tushare
             try:
                 basic = self.pro.stock_basic(exchange="", list_status="L", fields="ts_code")
                 code_set = set(basic["ts_code"].tolist())
             except Exception:
                 pass
-        all_codes = list(code_set)
-
-        sina_codes: list[str] = []
-        code_map: dict[str, str] = {}
-        for tc in all_codes:
-            parts = tc.split(".")
-            pure, suffix = parts[0], (parts[1] if len(parts) > 1 else "")
-            prefix = "sh" if suffix == "SH" else "sz"
-            sc = prefix + pure
-            sina_codes.append(sc)
-            code_map[sc] = tc
-
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-
-        def _fetch_batch(batch: list[str]) -> str:
-            url = f"https://hq.sinajs.cn/list={','.join(batch)}"
-            req = urllib.request.Request(url, headers={"Referer": "https://finance.sina.com.cn"})
-            try:
-                return urllib.request.urlopen(req, timeout=10, context=ctx).read().decode("gb2312", errors="replace")
-            except Exception:
-                return ""
-
-        batches = [sina_codes[i:i + 80] for i in range(0, len(sina_codes), 80)]
-        result: dict[str, float] = {}
-
-        with ThreadPoolExecutor(max_workers=15) as pool:
-            raw_list = list(pool.map(_fetch_batch, batches))
-
-        for raw in raw_list:
-            for line in raw.strip().split("\n"):
-                if "=" not in line or '"' not in line:
-                    continue
-                sina_code = line.split("=")[0].split("_")[-1]
-                fields = line.split('"')[1].split(",")
-                if len(fields) < 4:
-                    continue
-                try:
-                    price = float(fields[3])
-                    prev_close = float(fields[2])
-                except (ValueError, IndexError):
-                    continue
-                if price <= 0 or prev_close <= 0:
-                    continue
-                ts_code = code_map.get(sina_code)
-                if ts_code:
-                    result[ts_code] = round((price - prev_close) / prev_close * 100, 2)
+        items = self._fetch_tushare_quotes(list(code_set))
+        result = {str(it["tsCode"]): float(it["pctChange"]) for it in items if it.get("tsCode")}
 
         self._cache["_all_realtime"] = (time.time(), result)
         logger.info(f"全市场实时行情: {len(result)} 只股票")
@@ -2543,7 +2514,7 @@ class MarketEngine:
             if not stock_codes:
                 return []
 
-            quotes = {q["tsCode"]: q for q in self._fetch_sina_quotes(stock_codes)}
+            quotes = {q["tsCode"]: q for q in self._fetch_tushare_quotes(stock_codes)}
             items: list[dict[str, Any]] = []
             for code in stock_codes:
                 q = quotes.get(code, {})
@@ -2569,143 +2540,222 @@ class MarketEngine:
         return self._cached(f"intraday_stocks:{sector_code}:{trade_date}", 30, _load)
 
     def realtime_quotes(self, ts_codes: list[str] | None = None) -> dict[str, Any]:
-        """用新浪财经 API 获取实时行情，返回 {items: [{tsCode, name, price, pctChange, ...}]}"""
+        """用 Tushare 获取实时行情，返回 {items: [{tsCode, name, price, pctChange, ...}]}"""
         def _load():
             if not ts_codes:
                 return {"items": []}
-            items = self._fetch_sina_quotes(ts_codes)
-            self._mark_source("sina_realtime", bool(items), detail="quotes_fetch", count=len(items))
+            items = self._fetch_tushare_quotes(ts_codes)
+            self._mark_source("tushare_realtime", bool(items), detail="quotes_fetch", count=len(items))
             return {"items": items}
 
         cache_key = ",".join(sorted(ts_codes)) if ts_codes else "__none__"
         return self._cached(f"realtime_quotes:{cache_key}", 15, _load)
 
-    @staticmethod
-    def _fetch_sina_quotes(ts_codes: list[str]) -> list[dict[str, Any]]:
-        """通过新浪财经 hq API 批量获取实时行情（无需认证，延迟 <1s）"""
-        import ssl
-        import urllib.request
+    def _fetch_tushare_quotes(self, ts_codes: list[str]) -> list[dict[str, Any]]:
+        """通过 Tushare realtime_quote 批量获取实时行情。"""
+        uniq_codes = sorted({str(c).strip() for c in ts_codes if str(c).strip()})
+        if not uniq_codes:
+            return []
 
-        # ts_code 600519.SH → sh600519
-        sina_codes: list[str] = []
-        sina_to_ts: dict[str, str] = {}
-        for tc in ts_codes:
-            parts = tc.split(".")
-            pure = parts[0]
-            suffix = parts[1] if len(parts) > 1 else ""
-            prefix = "sh" if suffix == "SH" else "sz" if suffix == "SZ" else ("sh" if pure.startswith(("6", "9")) else "sz")
-            sina_code = prefix + pure
-            sina_codes.append(sina_code)
-            sina_to_ts[sina_code] = tc
+        def _pick_col(cols: dict[str, str], *names: str) -> str | None:
+            for n in names:
+                key = n.lower()
+                if key in cols:
+                    return cols[key]
+            return None
 
-        # 每批最多 80 个（避免 URL 过长）
         items: list[dict[str, Any]] = []
-        for i in range(0, len(sina_codes), 80):
-            batch = sina_codes[i:i + 80]
-            url = f"https://hq.sinajs.cn/list={','.join(batch)}"
-            req = urllib.request.Request(url, headers={"Referer": "https://finance.sina.com.cn"})
-            ctx = ssl.create_default_context()
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
+        for i in range(0, len(uniq_codes), 120):
+            batch = uniq_codes[i : i + 120]
             try:
-                resp = urllib.request.urlopen(req, timeout=10, context=ctx)
-                data = resp.read().decode("gb2312", errors="replace")
+                ts.set_token(self.config.tushare_token)
+                df = ts.realtime_quote(ts_code=",".join(batch))
             except Exception as exc:
-                logger.warning(f"新浪实时行情获取失败: {exc}")
+                logger.warning(f"Tushare realtime_quote 失败: {exc}")
+                continue
+            if df is None or df.empty:
                 continue
 
-            for line in data.strip().split("\n"):
-                if "=" not in line or '"' not in line:
+            cols = {str(c).lower(): c for c in df.columns}
+            ts_code_col = _pick_col(cols, "ts_code", "code")
+            name_col = _pick_col(cols, "name")
+            price_col = _pick_col(cols, "price", "now", "current")
+            pre_close_col = _pick_col(cols, "pre_close", "prev_close", "last_close", "close")
+            change_col = _pick_col(cols, "change")
+            pct_col = _pick_col(cols, "pct_chg", "chg_pct", "pct_change")
+            vol_col = _pick_col(cols, "vol", "volume")
+            amount_col = _pick_col(cols, "amount")
+            open_col = _pick_col(cols, "open")
+            high_col = _pick_col(cols, "high")
+            low_col = _pick_col(cols, "low")
+            date_col = _pick_col(cols, "date", "trade_date")
+            time_col = _pick_col(cols, "time", "trade_time")
+
+            if not ts_code_col or not price_col:
+                continue
+
+            for _, row in df.iterrows():
+                ts_code = str(row.get(ts_code_col, "")).strip()
+                if not ts_code:
                     continue
-                var_part = line.split("=")[0]  # var hq_str_sh600519
-                sina_code = var_part.split("_")[-1]
-                fields = line.split('"')[1].split(",")
-                if len(fields) < 4:
-                    continue
-                ts_code = sina_to_ts.get(sina_code, sina_code)
                 try:
-                    price = float(fields[3])
-                    prev_close = float(fields[2])
-                except (ValueError, IndexError):
+                    price = float(row.get(price_col, 0) or 0)
+                except Exception:
                     continue
-                if price <= 0 or prev_close <= 0:
+                if price <= 0:
                     continue
-                pct = round((price - prev_close) / prev_close * 100, 2)
+
+                prev_close = 0.0
+                if pre_close_col:
+                    try:
+                        prev_close = float(row.get(pre_close_col, 0) or 0)
+                    except Exception:
+                        prev_close = 0.0
+                if prev_close <= 0 and change_col:
+                    try:
+                        prev_close = price - float(row.get(change_col, 0) or 0)
+                    except Exception:
+                        prev_close = 0.0
+
+                pct = 0.0
+                if prev_close > 0:
+                    pct = round((price - prev_close) / prev_close * 100, 2)
+                elif pct_col:
+                    try:
+                        pct = round(float(row.get(pct_col, 0) or 0), 2)
+                    except Exception:
+                        pct = 0.0
+
+                change_val = 0.0
+                if change_col:
+                    try:
+                        change_val = float(row.get(change_col, 0) or 0)
+                    except Exception:
+                        change_val = 0.0
+                elif prev_close > 0:
+                    change_val = price - prev_close
+
+                date_val = str(row.get(date_col, "")).replace("-", "") if date_col else ""
+                if not date_val:
+                    date_val = pd.Timestamp.now().strftime("%Y%m%d")
+                time_val = str(row.get(time_col, "")).replace(":", "").replace(" ", "") if time_col else ""
+
                 items.append({
                     "tsCode": ts_code,
-                    "name": fields[0],
+                    "name": str(row.get(name_col, ts_code)) if name_col else ts_code,
                     "price": round(price, 2),
                     "pctChange": pct,
-                    "change": round(price - prev_close, 2),
-                    "volume": float(fields[8]) if len(fields) > 8 else 0,
-                    "amount": float(fields[9]) if len(fields) > 9 else 0,
+                    "change": round(change_val, 2),
+                    "volume": float(row.get(vol_col, 0) or 0) if vol_col else 0.0,
+                    "amount": float(row.get(amount_col, 0) or 0) if amount_col else 0.0,
+                    "open": float(row.get(open_col, 0) or 0) if open_col else 0.0,
+                    "high": float(row.get(high_col, 0) or 0) if high_col else 0.0,
+                    "low": float(row.get(low_col, 0) or 0) if low_col else 0.0,
+                    "tradeDate": date_val,
+                    "tradeTime": time_val,
                 })
-        return items
+
+        dedup: dict[str, dict[str, Any]] = {}
+        for item in items:
+            dedup[str(item["tsCode"])] = item
+        return list(dedup.values())
 
     def stock_kline_ashare(self, ts_code: str, frequency: str = "1d", bars: int = 180) -> dict[str, Any]:
-        """用 Ashare 获取日/周/月线（支持盘中实时），5 分钟缓存"""
+        """个股K线（已统一到 Tushare 实现），5 分钟缓存。"""
         cache_key = f"kline_ashare:{ts_code}:{frequency}:{bars}"
         local_cache_key = f"{ts_code}:{frequency}:{bars}"
         minute_mode = bool(re.match(r"^\d+m$", frequency))
 
         def _load() -> dict[str, Any]:
             cached_df = self._data_store.get_frame("stock_kline_ashare", local_cache_key)
-            if (
-                cached_df is not None
-                and not cached_df.empty
-                and minute_mode
-                and "trade_date" in cached_df.columns
-                and cached_df["trade_date"].astype(str).str.len().max() <= 8
-            ):
-                # 历史缓存里分钟线时间被截断为 YYYYMMDD，判定为脏缓存并强制刷新
-                cached_df = None
             if cached_df is not None and not cached_df.empty:
                 df_norm = cached_df.copy()
             else:
-                try:
-                    from ashare import get_price
-                except ImportError:
-                    logger.warning("Ashare 未安装")
-                    return {"code": ts_code, "name": ts_code, "points": []}
-                # ts_code 格式: 600519.SH → sh600519
-                pure = ts_code.split(".")[0]
-                suffix = ts_code.split(".")[-1] if "." in ts_code else ""
-                prefix = "sh" if suffix == "SH" else "sz" if suffix == "SZ" else ""
-                ashare_code = prefix + pure
-                try:
-                    df = get_price(ashare_code, frequency=frequency, count=bars)
-                except Exception as exc:
-                    logger.warning(f"Ashare 获取失败: {ts_code} {frequency}, {exc}")
-                    df = None
+                df_norm = pd.DataFrame()
+                if frequency in ("1d", "1w", "1M"):
+                    freq_map = {"1d": "D", "1w": "W", "1M": "M"}
+                    end_date = self.latest_trade_date()
+                    start_date = (
+                        pd.Timestamp(end_date) - pd.Timedelta(days=max(380, bars * 6))
+                    ).strftime("%Y%m%d")
+                    try:
+                        df = ts.pro_bar(
+                            ts_code=ts_code,
+                            api=self.pro,
+                            adj="qfq",
+                            freq=freq_map[frequency],
+                            start_date=start_date,
+                            end_date=end_date,
+                            asset="E",
+                        )
+                    except Exception as exc:
+                        logger.warning(f"Tushare K线获取失败: {ts_code} {frequency}, {exc}")
+                        df = None
 
-                if (df is None or df.empty) and frequency == "1d":
+                    if df is not None and not df.empty:
+                        amount_series = df["amount"] if "amount" in df.columns else pd.Series(0.0, index=df.index)
+                        df = df.sort_values("trade_date").tail(max(1, int(bars)))
+                        df_norm = pd.DataFrame(
+                            {
+                                "trade_date": df["trade_date"].astype(str),
+                                "open": pd.to_numeric(df["open"], errors="coerce"),
+                                "high": pd.to_numeric(df["high"], errors="coerce"),
+                                "low": pd.to_numeric(df["low"], errors="coerce"),
+                                "close": pd.to_numeric(df["close"], errors="coerce"),
+                                "volume": pd.to_numeric(df["vol"], errors="coerce"),
+                                "amount": pd.to_numeric(amount_series, errors="coerce").fillna(0.0),
+                            }
+                        ).dropna(subset=["trade_date", "open", "high", "low", "close", "volume"])
+
+                elif minute_mode:
+                    freq_map = {"1m": "1min", "5m": "5min", "15m": "15min", "30m": "30min", "60m": "60min"}
+                    ts_freq = freq_map.get(frequency)
+                    if ts_freq:
+                        end_ts = pd.Timestamp.now()
+                        start_ts = end_ts - pd.Timedelta(days=max(3, int(bars / 48) + 2))
+                        try:
+                            mdf = self.pro.stk_mins(
+                                ts_code=ts_code,
+                                freq=ts_freq,
+                                start_date=start_ts.strftime("%Y-%m-%d %H:%M:%S"),
+                                end_date=end_ts.strftime("%Y-%m-%d %H:%M:%S"),
+                            )
+                        except Exception as exc:
+                            logger.warning(f"Tushare 分钟线获取失败: {ts_code} {frequency}, {exc}")
+                            mdf = None
+                        if mdf is not None and not mdf.empty:
+                            cols = {str(c).lower(): c for c in mdf.columns}
+                            time_col = cols.get("trade_time") or cols.get("trade_date")
+                            if time_col:
+                                raw_time = mdf[time_col].astype(str).str.replace("-", "", regex=False)
+                                raw_time = raw_time.str.replace(":", "", regex=False).str.replace(" ", "", regex=False)
+                                vol_col = cols.get("vol") or cols.get("volume")
+                                amount_col = cols.get("amount")
+                                volume_series = mdf[vol_col] if vol_col else pd.Series(0.0, index=mdf.index)
+                                amount_series = mdf[amount_col] if amount_col else pd.Series(0.0, index=mdf.index)
+                                df_norm = pd.DataFrame(
+                                    {
+                                        "trade_date": raw_time.str.slice(0, 12),
+                                        "open": pd.to_numeric(mdf[cols.get("open", "open")], errors="coerce"),
+                                        "high": pd.to_numeric(mdf[cols.get("high", "high")], errors="coerce"),
+                                        "low": pd.to_numeric(mdf[cols.get("low", "low")], errors="coerce"),
+                                        "close": pd.to_numeric(mdf[cols.get("close", "close")], errors="coerce"),
+                                        "volume": pd.to_numeric(volume_series, errors="coerce"),
+                                        "amount": pd.to_numeric(amount_series, errors="coerce").fillna(0.0),
+                                    }
+                                ).dropna(subset=["trade_date", "open", "high", "low", "close", "volume"])
+                                if not df_norm.empty:
+                                    df_norm = df_norm.sort_values("trade_date").tail(max(1, int(bars)))
+
+                if (df_norm is None or df_norm.empty) and frequency == "1d":
                     local_daily = self._stock_kline_daily_from_snapshots(ts_code, bars=bars)
                     if local_daily is not None and not local_daily.empty:
                         logger.info(f"个股日K回退本地快照成功: {ts_code}, bars={bars}")
                         df_norm = local_daily
-                    else:
-                        return {"code": ts_code, "name": ts_code, "points": []}
-                elif df is None or df.empty:
+
+                if df_norm is None or df_norm.empty:
                     return {"code": ts_code, "name": ts_code, "points": []}
 
-                if df is not None and not df.empty:
-                    def _fmt_idx(idx: Any) -> str:
-                        if hasattr(idx, "strftime"):
-                            return idx.strftime("%Y%m%d%H%M") if minute_mode else idx.strftime("%Y%m%d")
-                        s = str(idx).replace("-", "").replace(":", "").replace(" ", "")
-                        return s[:12] if minute_mode else s[:8]
-
-                    df_norm = pd.DataFrame(
-                        {
-                            "trade_date": [_fmt_idx(idx) for idx in df.index],
-                            "open": pd.to_numeric(df["open"], errors="coerce"),
-                            "high": pd.to_numeric(df["high"], errors="coerce"),
-                            "low": pd.to_numeric(df["low"], errors="coerce"),
-                            "close": pd.to_numeric(df["close"], errors="coerce"),
-                            "volume": pd.to_numeric(df["volume"], errors="coerce"),
-                            "amount": 0.0,
-                        }
-                    ).dropna(subset=["trade_date", "open", "high", "low", "close", "volume"])
                 if not df_norm.empty:
                     self._data_store.set_frame("stock_kline_ashare", local_cache_key, df_norm)
 
@@ -2722,7 +2772,7 @@ class MarketEngine:
                     "amount": float(r["amount"]) if "amount" in r else 0.0,
                 })
 
-            # 日线：追加今天的实时 bar（新浪行情）
+            # 日线：追加今天的实时 bar（Tushare 实时行情）
             if frequency == "1d" and points:
                 today_bar = self._fetch_today_bar(ts_code)
                 if today_bar:
@@ -2779,44 +2829,20 @@ class MarketEngine:
         return out.tail(max(1, int(bars))).reset_index(drop=True)
 
     def _fetch_today_bar(self, ts_code: str) -> dict[str, Any] | None:
-        """从新浪获取今日实时 OHLCV bar"""
-        quotes = self._fetch_sina_quotes([ts_code])
+        """从 Tushare 实时行情获取今日 OHLCV bar"""
+        quotes = self._fetch_tushare_quotes([ts_code])
         if not quotes:
             return None
         q = quotes[0]
-        # 新浪字段需要完整的 OHLCV，用 _fetch_sina_quotes 只有 price/pctChange
-        # 需要单独解析完整字段
-        import ssl
-        import urllib.request
-        parts = ts_code.split(".")
-        pure, suffix = parts[0], (parts[1] if len(parts) > 1 else "")
-        prefix = "sh" if suffix == "SH" else "sz"
-        sina_code = prefix + pure
-
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        url = f"https://hq.sinajs.cn/list={sina_code}"
-        req = urllib.request.Request(url, headers={"Referer": "https://finance.sina.com.cn"})
-        try:
-            resp = urllib.request.urlopen(req, timeout=5, context=ctx)
-            data = resp.read().decode("gb2312", errors="replace")
-        except Exception:
-            return None
-
-        fields = data.split('"')[1].split(",") if '"' in data else []
-        if len(fields) < 31:
-            return None
-        try:
-            open_p = float(fields[1])
-            close_p = float(fields[3])
-            high_p = float(fields[4])
-            low_p = float(fields[5])
-            volume = float(fields[8])
-            amount = float(fields[9])
-            date_str = fields[30].replace("-", "")
-        except (ValueError, IndexError):
-            return None
+        open_p = float(q.get("open", 0) or 0)
+        close_p = float(q.get("price", 0) or 0)
+        high_p = float(q.get("high", 0) or 0)
+        low_p = float(q.get("low", 0) or 0)
+        volume = float(q.get("volume", 0) or 0)
+        amount = float(q.get("amount", 0) or 0)
+        date_str = str(q.get("tradeDate", "") or "")
+        if not date_str:
+            date_str = pd.Timestamp.now().strftime("%Y%m%d")
         if open_p <= 0 or close_p <= 0:
             return None
         return {
@@ -3250,6 +3276,96 @@ class MarketEngine:
             return {"code": ts_code, "name": name, "points": points}
 
         return self._cached(cache_key, 300, _load)
+
+    def sector_equal_weight_kline(self, sector_code: str, trade_date: str, bars: int = 180) -> dict[str, Any]:
+        """等权归一化板块指数：从成员股票日K数据自建，不依赖THS/申万官方指数。
+        算法与 A项目 一致：每只股票以首日收盘价为基准归一到100，每日取中位数聚合OHLC。
+        """
+        cache_key = f"sector_eq_kline:{sector_code}:{trade_date}:{bars}"
+        hit = self._cache.get(cache_key)
+        if hit and time.time() - hit[0] < 600:
+            return hit[1]
+
+        stock_codes = self._get_sector_member_codes(sector_code, trade_date)
+        if not stock_codes:
+            result: dict[str, Any] = {"code": sector_code, "name": sector_code, "points": []}
+            self._cache[cache_key] = (time.time(), result)
+            return result
+
+        # 限制最多80个成员避免计算过慢
+        stock_codes = stock_codes[:80]
+        codes_set = set(stock_codes)
+
+        # 获取交易日历
+        dates = self.trade_dates(trade_date, need=bars + 20)
+        lookback = dates[-bars:] if len(dates) >= bars else dates
+
+        # 批量读取快照（本地缓存，不走网络）
+        snapshots = self.stock_snapshot_batch(list(lookback))
+
+        # 收集每只股票的首日基准价
+        first_close: dict[str, float] = {}
+        # 按日期收集各成员OHLC
+        by_date: dict[str, dict[str, list]] = {}
+
+        for date_str in sorted(lookback):
+            frame = snapshots.get(date_str)
+            if frame is None or frame.empty or "ts_code" not in frame.columns:
+                continue
+            members = frame[frame["ts_code"].isin(codes_set)]
+            day_rows: list[dict[str, float]] = []
+            for _, row in members.iterrows():
+                code = str(row["ts_code"])
+                c = float(row.get("close", 0) or 0)
+                if c <= 0:
+                    continue
+                if code not in first_close:
+                    first_close[code] = c
+                o = float(row.get("open", c) or c) or c
+                h = float(row.get("high", c) or c) or c
+                lo = float(row.get("low", c) or c) or c
+                day_rows.append({"code": code, "open": o, "high": h, "low": lo, "close": c})
+            if day_rows:
+                by_date[date_str] = {"rows": day_rows}
+
+        def _median(arr: list[float]) -> float:
+            if not arr:
+                return 0.0
+            s = sorted(arr)
+            n = len(s)
+            return s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2.0
+
+        points: list[dict[str, Any]] = []
+        for date_str in sorted(by_date.keys()):
+            rows = by_date[date_str]["rows"]
+            opens, highs, lows, closes = [], [], [], []
+            for r in rows:
+                base = first_close.get(r["code"])
+                if not base:
+                    continue
+                scale = 100.0 / base
+                sc = r["close"] * scale
+                if sc <= 0 or sc > 100_000:
+                    continue
+                opens.append(r["open"] * scale)
+                highs.append(r["high"] * scale)
+                lows.append(r["low"] * scale)
+                closes.append(sc)
+            if closes:
+                points.append({
+                    "time": date_str,
+                    "open": round(_median(opens), 4),
+                    "high": round(_median(highs), 4),
+                    "low": round(_median(lows), 4),
+                    "close": round(_median(closes), 4),
+                    "volume": 0,
+                })
+
+        name_map = self.sw_l3_map() if sector_code.endswith(".SI") else self.sector_name_map()
+        name = name_map.get(sector_code, sector_code)
+        result = {"code": sector_code, "name": name, "points": points, "memberCount": len(stock_codes)}
+        self._cache[cache_key] = (time.time(), result)
+        return result
 
     def sector_kline(self, sector_code: str, trade_date: str, bars: int = 180) -> dict[str, Any]:
         dates = self.trade_dates(trade_date, need=max(bars + 30, 220))
