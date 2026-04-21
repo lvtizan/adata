@@ -80,7 +80,7 @@ export function StockTable({
             onClick={onNameClick ? (e) => { e.stopPropagation(); onNameClick(item); } : undefined}
           >
             <span>{item.stockName}</span>
-            <span className="text-xs text-text-quaternary">{item.tsCode.replace(/\.\w+$/, '')}</span>
+            <span className="text-xs text-text-quaternary">{item.tsCode?.replace(/\.\w+$/, '')}</span>
           </span>
           <button
             className="shrink-0 p-1 rounded hover:bg-accent-soft transition-colors cursor-pointer"

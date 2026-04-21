@@ -1,0 +1,89 @@
+# A数据 板块知识导入模板
+# 使用方法:
+#   1. 复制此模板
+#   2. 让 AI（ChatGPT/DeepSeek/Kimi 等）按此格式整理板块资料
+#   3. 保存为 xxx.yaml
+#   4. 运行: python scripts/import_obsidian.py --template xxx.yaml
+
+type: bundle  # bundle = 板块 + 个股一起导入
+
+# ─── 板块信息 ───────────────────────────────────────
+sector:
+  sector_code: "PCB"              # 板块代码（英文，唯一标识）
+  sector_name: "PCB（印制电路板）"  # 板块中文名
+  updated: "2026-04-21"
+
+  # 一段话概述
+  summary: >
+    AI 服务器需求爆发推动高多层 PCB、背板、载板（ABF）景气大幅提升。
+    AI 服务器单台 PCB 价值量是传统服务器的 5-8 倍。
+
+  # 板块驱动逻辑（列表）
+  drivers:
+    - "AI 服务器 PCB 量价齐升：单台价值量 5-8 倍于普通服务器"
+    - "封装基板国产替代：ABF 基板此前 90%+ 被日台垄断"
+    - "汽车电动智能化：单车 PCB 价值量从 3000 升至 15000 元"
+
+  # 炒作顺序（文本描述）
+  trading_sequence: |
+    第一波：AI 服务器 PCB 龙头（沪电 → 胜宏 → 深南）
+    第二波：汽车 PCB（博敏电子）
+    第三波：FPC 龙头（鹏鼎 → 东山）
+
+  # 风险（列表）
+  risks:
+    - "AI 服务器需求不及预期，产能过剩导致价格战"
+    - "铜价/CCL 等上游原材料涨价压缩利润"
+    - "地缘风险：英伟达出口管制政策变化"
+
+  # 产业链图谱
+  chain_map:
+    upstream:
+      - content: "覆铜板（CCL）、铜箔、半固化片"
+        companies: "生益科技、华正新材、嘉元科技"
+    midstream:
+      - content: "刚性 PCB、挠性 PCB（FPC）、ABF 封装基板"
+        companies: "沪电股份、深南电路、胜宏科技、鹏鼎控股"
+    downstream:
+      - content: "AI 服务器、汽车电子、消费电子、通信基站"
+        companies: "华为、英伟达、比亚迪、苹果"
+
+# ─── 个股信息 ───────────────────────────────────────
+stocks:
+  - ts_code: "002463.SZ"
+    name: "沪电股份"
+    one_liner: "高端 AI 服务器 PCB，华为/英伟达认证"
+    core_clients: "华为、思科、瞻博、英伟达"
+    industry_position: "国内通信 PCB 技术最强，高多层板良率领先"
+    sector_code: "PCB"
+    upstream:
+      - code: "600183.SH"
+        name: "生益科技"
+        desc: "CCL 主供应商"
+    downstream:
+      - code: ""
+        name: "华为"
+        desc: "网络设备/昇腾服务器 PCB"
+      - code: ""
+        name: "英伟达"
+        desc: "背板已通过 78 层认证"
+
+  - ts_code: "300476.SZ"
+    name: "胜宏科技"
+    one_liner: "AI 服务器 PCB 龙头，英伟达 GB200/300 核心供应商"
+    core_clients: "英伟达、OPPO、vivo、华为"
+    industry_position: "AI 服务器 PCB 成长最快，2026 年规划产值 600 亿"
+    sector_code: "PCB"
+    upstream:
+      - code: "600183.SH"
+        name: "生益科技"
+        desc: "标准及高频 CCL"
+    downstream:
+      - code: ""
+        name: "英伟达"
+        desc: "GB200/300 AI 服务器"
+
+# ─── 使用说明 ───────────────────────────────────────
+# upstream/downstream 中的 code 如果是 A 股公司就填 ts_code
+# 如果是海外公司（英伟达、苹果等）code 留空即可
+# one_liner 控制在 30 字以内，是股票列表里最核心的一句话

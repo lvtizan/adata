@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 
+const API_BASE = import.meta.env.VITE_API_URL || "/api";
+
 /**
  * 等待后端可连接即放行（不等预热），实现秒开。
  * 显示品牌化加载动画而非白屏。
@@ -14,7 +16,10 @@ export function ServerReadyGate({ children }: { children: React.ReactNode }) {
     const ping = async () => {
       while (!cancelled) {
         try {
-          const res = await fetch("/api/status");
+          const token = import.meta.env.VITE_API_TOKEN || "";
+            const headers: Record<string, string> = {};
+            if (token) headers["Authorization"] = `Bearer ${token}`;
+            const res = await fetch(`${API_BASE}/status`, { headers });
           if (res.ok) {
             if (!cancelled) setReachable(true);
             return;

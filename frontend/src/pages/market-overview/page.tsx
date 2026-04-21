@@ -60,7 +60,7 @@ const stockColumns: Column<ScoredStockRow>[] = [
     render: (item) => (
       <div className="leading-tight">
         <span className="block text-sm font-medium">{item.stockName}</span>
-        <span className="block text-[10px] font-mono text-text-tertiary">{item.tsCode.replace(/\.\w+$/, "")}</span>
+        <span className="block text-[10px] font-mono text-text-tertiary">{item.tsCode?.replace(/\.\w+$/, "")}</span>
       </div>
     ),
   },

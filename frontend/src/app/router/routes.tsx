@@ -20,7 +20,7 @@ export const router = createBrowserRouter([
     path: "/",
     element: <RootLayout />,
     children: [
-      { index: true, element: <Navigate to="/intraday" replace /> },
+      { index: true, element: <Navigate to="/watchlist" replace /> },
       { path: "dashboard", element: <DashboardPage /> },
       { path: "sector-workbench", element: <SectorWorkbenchPage /> },
       { path: "intraday", element: <IntradayPage /> },

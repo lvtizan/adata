@@ -48,7 +48,7 @@ export default function SectorWorkbenchPage() {
       render: (item) => (
         <div className="leading-tight">
           <span className="text-sm">{item.stockName}</span>
-          <span className="block text-[10px] text-text-tertiary font-mono">{item.tsCode.replace(/\.\w+$/, "")}</span>
+          <span className="block text-[10px] text-text-tertiary font-mono">{item.tsCode?.replace(/\.\w+$/, "")}</span>
         </div>
       ),
     },

@@ -1,8 +1,16 @@
 import { fastCache } from "@/lib/fast-cache";
 
-const BASE = "/api";
+// 本地开发走 Vite 代理，生产环境走 Cloudflare Worker
+const BASE = import.meta.env.VITE_API_URL || "/api";
+const TOKEN = import.meta.env.VITE_API_TOKEN || "";
 
 const WRITE_METHODS = new Set(["POST", "PUT", "DELETE", "PATCH"]);
+
+function authHeaders(): Record<string, string> {
+  const h: Record<string, string> = { "Content-Type": "application/json" };
+  if (TOKEN) h["Authorization"] = `Bearer ${TOKEN}`;
+  return h;
+}
 
 /**
  * 带本地缓存的 API 请求
@@ -19,7 +27,7 @@ export async function api<T>(path: string, options?: RequestInit & { cacheTTL?: 
   if (isWrite) {
     invalidateCache(path);
     const res = await fetch(`${BASE}${path}`, {
-      headers: { "Content-Type": "application/json" },
+      headers: authHeaders(),
       ...options,
     });
     if (!res.ok) {
@@ -36,7 +44,7 @@ export async function api<T>(path: string, options?: RequestInit & { cacheTTL?: 
       // 后台静默刷新，不阻塞当前返回
       setTimeout(() => {
         fetch(`${BASE}${path}`, {
-          headers: { "Content-Type": "application/json" },
+          headers: authHeaders(),
         }).then(r => r.ok ? r.json() : null).then(data => {
           if (data) fastCache.set(cacheKey, data as T, ttl);
         }).catch(() => {});
@@ -46,7 +54,7 @@ export async function api<T>(path: string, options?: RequestInit & { cacheTTL?: 
   }
 
   const res = await fetch(`${BASE}${path}`, {
-    headers: { "Content-Type": "application/json" },
+    headers: authHeaders(),
     ...options,
   });
   if (!res.ok) {

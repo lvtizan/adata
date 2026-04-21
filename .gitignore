@@ -14,7 +14,11 @@ deer-flow-service/
 
 # 环境与密钥
 .env
+.env.production
+.env.local
 backend/.env
+frontend/.env.production
+frontend/.env.local
 
 # 后端缓存数据（SQLite 等）
 backend/data/
