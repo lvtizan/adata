@@ -103,8 +103,9 @@ export default {
       if (path.startsWith('/api/double-bottom-scan')) return json({ items: [] });
       if (path.startsWith('/api/price-alerts')) return handleAlerts(request, env);
       if (path.startsWith('/api/settings')) return json({ configured: false });
+      if (path.startsWith('/api/relative-strength')) return handleRelativeStrength(request, env);
       if (path.startsWith('/api/market')) return json({});
-      if (path.startsWith('/api/charts')) return json({ data: [] });
+      if (path.startsWith('/api/charts')) return handleCharts(request, env);
       if (path.startsWith('/api/ths')) return json({ items: [] });
       if (path.startsWith('/api/camp')) return json({ items: [] });
       if (path.startsWith('/api/intraday')) return json({});
@@ -119,3 +120,76 @@ export default {
     }
   },
 };
+
+/** /api/charts/stock/:code — 从 D1 stock_daily 读 K 线 */
+async function handleCharts(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+  const pathParts = url.pathname.split('/').filter(Boolean);
+  // /api/charts/stock/:code or /api/charts/sector/:code
+  const kind = pathParts[2]; // 'stock' or 'sector' or 'index'
+  const code = pathParts[3];
+  const bars = parseInt(url.searchParams.get('bars') ?? '120');
+
+  if (!code) return json({ code: '', name: '', points: [] });
+
+  if (kind === 'stock') {
+    const rows = await env.DB.prepare(`
+      SELECT trade_date, open, high, low, close, vol, amount
+      FROM stock_daily
+      WHERE ts_code = ?
+      ORDER BY trade_date DESC
+      LIMIT ?
+    `).bind(code, bars).all();
+
+    // 查股票名
+    const profile = await env.DB.prepare(
+      'SELECT stock_name FROM stock_profiles WHERE ts_code = ?'
+    ).bind(code).first();
+
+    const points = rows.results.reverse().map(r => ({
+      time: String(r.trade_date),
+      open: r.open,
+      high: r.high,
+      low: r.low,
+      close: r.close,
+      volume: r.vol,
+      amount: r.amount,
+    }));
+
+    return json({
+      code,
+      name: (profile as Record<string, unknown>)?.stock_name ?? code,
+      points,
+    });
+  }
+
+  // sector/index — 暂无数据
+  return json({ code: code ?? '', name: '', points: [] });
+}
+
+/** /api/relative-strength — RS 数据 (暂返回空结构防崩溃) */
+async function handleRelativeStrength(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+  const tsCode = url.searchParams.get('tsCode') ?? '';
+  const sectorCode = url.searchParams.get('sectorCode') ?? '';
+
+  // 暂无 RPS 数据，返回空但格式正确的结构
+  return json({
+    stock: {
+      tsCode,
+      name: '',
+      pctChange5d: 0,
+      pctChange10d: 0,
+      pctChange20d: 0,
+      rpsSeries: [],
+    },
+    sector: {
+      sectorCode,
+      name: '',
+      pctChange5d: 0,
+      pctChange10d: 0,
+      pctChange20d: 0,
+      rpsSeries: [],
+    },
+  });
+}

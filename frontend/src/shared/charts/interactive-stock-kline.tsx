@@ -11,8 +11,8 @@ const ALERT_ICON = "🔔 ";
 
 function RsMiniChart({ rsData, stockName }: { rsData: RelativeStrengthData; stockName?: string }) {
   const W = 150, H = 60;
-  const stockSeries = rsData.stock.rpsSeries;
-  const sectorSeries = rsData.sector.rpsSeries;
+  const stockSeries = rsData.stock?.rpsSeries ?? [];
+  const sectorSeries = rsData.sector?.rpsSeries ?? [];
   const marketSeries = rsData.market?.rpsSeries ?? [];
   if (!stockSeries.length) return null;
 
