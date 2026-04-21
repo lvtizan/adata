@@ -156,6 +156,42 @@ async function handleCharts(request: Request, env: Env): Promise<Response> {
       amount: r.amount,
     }));
 
+    // 检查是否缺今天数据 → 自动从新浪实时补一条
+    const now = new Date(Date.now() + 8 * 3600 * 1000); // UTC+8
+    const today = now.toISOString().slice(0, 10).replace(/-/g, '');
+    const day = now.getUTCDay();
+    const hour = now.getUTCHours() + 8; // 北京时间
+    const isWeekday = day >= 1 && day <= 5;
+    const latestDate = points.length > 0 ? points[points.length - 1].time : '';
+
+    if (isWeekday && latestDate !== today && hour >= 9) {
+      // D1 没有今天数据，从新浪抓实时
+      const codeNum = code.split('.')[0];
+      const prefix = code.endsWith('.SH') ? 'sh' : 'sz';
+      const sinaCode = `${prefix}${codeNum}`;
+      try {
+        const sinaResp = await fetch(`https://hq.sinajs.cn/list=${sinaCode}`, {
+          headers: { 'Referer': 'https://finance.sina.com.cn' },
+        });
+        const text = await sinaResp.text();
+        const match = text.match(/"(.+)"/);
+        if (match) {
+          const parts = match[1].split(',');
+          if (parts.length >= 32 && parseFloat(parts[3]) > 0) {
+            points.push({
+              time: today,
+              open: parseFloat(parts[1]),
+              high: parseFloat(parts[4]),
+              low: parseFloat(parts[5]),
+              close: parseFloat(parts[3]),
+              volume: parseFloat(parts[8]),
+              amount: parseFloat(parts[9]),
+            });
+          }
+        }
+      } catch { /* 新浪不可用就跳过 */ }
+    }
+
     return json({
       code,
       name: (profile as Record<string, unknown>)?.stock_name ?? code,
